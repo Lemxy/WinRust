@@ -1,4 +1,11 @@
-﻿<p align="center"><img src="assets/logo.svg" alt="WinRust" width="160"></p>
+<img width="3168" height="1530" alt="image" src="https://github.com/user-attachments/assets/2340af9e-5919-4df2-84ae-a69a6929d349" />
+
+ 
+ 
+
+
+
+
 
 # WinRust
 
@@ -73,20 +80,7 @@ In short: **85–99% faster or smaller in every size/speed test, and equal on id
 
 ## Screenshots
 
-**Taskbar**
 
-![Taskbar on the desktop](docs/screenshots/taskbar.webp)
-![Taskbar menu](docs/screenshots/taskbar-menu.png)
-
-**Task Manager** (Russian UI)
-
-![Task Manager](docs/screenshots/task-manager.webp)
-
-**File manager**
-
-![File manager](docs/screenshots/explorer.png)
-
----
 
 ## For developers
 
