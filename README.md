@@ -4,7 +4,7 @@
 
 **A Windows shell written in Rust: faster and lighter than the stock one.** Small native programs (no .NET, no Electron) that replace parts of Windows: the taskbar, File Explorer, file search, Task Manager, plus a disk cleaner, a disk map and a photo viewer. One installer puts them in, one button takes them all out.
 
-English | [Русский](README.ru.md)
+**English** | [Русский](README.ru.md) | [Português](README.ptbr.md)
 
 <p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
 
@@ -28,16 +28,16 @@ The installer is in English. The **Русский** button in its corner (or "Wi
 
 ## What gets installed
 
-| Plugin | What you get | What it changes in Windows |
-|---|---|---|
-| **rust-search** | File search over all NTFS drives, Alt+Space | Disables the Windows Search service, blocks SearchHost.exe, hides the taskbar search box |
-| **rtaskmgr-win32** | Task Manager (Ctrl+Shift+Esc opens it) | `taskmgr.exe` is redirected to it (the system file is untouched). Also installs the **rs-du** disk cleaner |
-| **topbar** | A Windows 11-style bottom bar: windows, clock, volume, menus | Hides the stock taskbar. Also installs **reshell** (hotkeys: Win+1/2/3 and Win+\` switch desktops, Win+D shows the desktop, Win+I opens Settings, Win+E the file manager; brings the taskbar back if the bar dies), **rs-du**, and a block in your PowerShell profile (`zoxide`, `grep`=rg, `ll`=eza, `cat`=bat; does nothing if they are missing) |
-| **rust-explorer** | A file manager with tabs, and the desktop | Folders and drives open in it; **Explorer stops being the shell** (comes back by itself if topbar fails). Disables PcaSvc, InventorySvc, lfsvc, cbdhsvc, sets DoSvc to manual, merges svchost processes. Requires topbar |
-| **wiztree** | A disk-usage map ("WinRust Disk" in Start) | Nothing, apart from the file and a shortcut |
-| **photoview** | A fast photo viewer | Adds it to "Open with" (it does not become the default) |
-| **debloat** | Off: telemetry, Copilot, Recall, Start ads, Edge in the background | Services and registry policies; old values are saved and restored on uninstall. **Command line only:** `install debloat --yes` |
-| chrome-rs | A browser | Not installable yet |
+| Plugin             | What you get                                                       | What it changes in Windows                                                                                                                                                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **rust-search**    | File search over all NTFS drives, Alt+Space                        | Disables the Windows Search service, blocks SearchHost.exe, hides the taskbar search box                                                                                                                                                                                                                                                           |
+| **rtaskmgr-win32** | Task Manager (Ctrl+Shift+Esc opens it)                             | `taskmgr.exe` is redirected to it (the system file is untouched). Also installs the **rs-du** disk cleaner                                                                                                                                                                                                                                         |
+| **topbar**         | A Windows 11-style bottom bar: windows, clock, volume, menus       | Hides the stock taskbar. Also installs **reshell** (hotkeys: Win+1/2/3 and Win+\` switch desktops, Win+D shows the desktop, Win+I opens Settings, Win+E the file manager; brings the taskbar back if the bar dies), **rs-du**, and a block in your PowerShell profile (`zoxide`, `grep`=rg, `ll`=eza, `cat`=bat; does nothing if they are missing) |
+| **rust-explorer**  | A file manager with tabs, and the desktop                          | Folders and drives open in it; **Explorer stops being the shell** (comes back by itself if topbar fails). Disables PcaSvc, InventorySvc, lfsvc, cbdhsvc, sets DoSvc to manual, merges svchost processes. Requires topbar                                                                                                                           |
+| **wiztree**        | A disk-usage map ("WinRust Disk" in Start)                         | Nothing, apart from the file and a shortcut                                                                                                                                                                                                                                                                                                        |
+| **photoview**      | A fast photo viewer                                                | Adds it to "Open with" (it does not become the default)                                                                                                                                                                                                                                                                                            |
+| **debloat**        | Off: telemetry, Copilot, Recall, Start ads, Edge in the background | Services and registry policies; old values are saved and restored on uninstall. **Command line only:** `install debloat --yes`                                                                                                                                                                                                                     |
+| chrome-rs          | A browser                                                          | Not installable yet                                                                                                                                                                                                                                                                                                                                |
 
 Every change is reversible: uninstall puts back the values that were there before.
 
@@ -45,12 +45,12 @@ Every change is reversible: uninstall puts back the values that were there befor
 
 The gear at the left end of the bar opens **Style**. The choice applies at once to the bar, the file manager (rust-explorer) and the search window (Alt+Space):
 
-| Style | Look |
-|---|---|
-| **Normal** | Windows 11 blue, the bar at the bottom |
-| **Terminal** | Green on black, Consolas, square corners |
+| Style             | Look                                                                                                                                      |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Normal**        | Windows 11 blue, the bar at the bottom                                                                                                    |
+| **Terminal**      | Green on black, Consolas, square corners                                                                                                  |
 | **Floating dock** | A pill-shaped bar in the middle; maximized windows get the whole screen, the dock slides away over them and comes back at the bottom edge |
-| **Tiling** | A thin bar at the top, amber accent, square corners; "Tile the windows" puts the open windows side by side |
+| **Tiling**        | A thin bar at the top, amber accent, square corners; "Tile the windows" puts the open windows side by side                                |
 
 The choice is stored in `%ProgramData%\WinRust\style.txt`.
 
@@ -58,16 +58,16 @@ The choice is stored in `%ProgramData%\WinRust\style.txt`.
 
 One-off measurements on one machine (Windows 11 IoT Enterprise 10.0.26300, RTX 4060 Laptop, NTFS). Treat them as orders of magnitude, not lab numbers.
 
-| What | Windows | WinRust | Difference |
-|---|---|---|---|
-| File search (rust-search over all of C: vs `dir /s` over one folder) | 8,340 ms | 45 ms | **99.5%** faster |
-| Same vs `Get-ChildItem -Recurse` | 16,200 – 28,600 ms | 45 ms | **99.7–99.8%** faster |
-| Open a folder window (rust-explorer, median of 5 runs) | 420 ms | 60 ms | **86%** faster |
-| Shell memory (topbar + rust-explorer + rs-shell + reshell vs explorer.exe) | 366 MB | 46 MB | **87%** less |
-| Same, plus the search index (53 MB) | 366 MB | 99 MB | **73%** less |
-| File manager binary size | 3,280 KB | 498 KB | **85%** smaller |
-| Task manager binary size | 5,791 KB | 869 KB | **85%** smaller |
-| Idle CPU of the bar (topbar after optimization, % of one core) | 0.00–0.10% (explorer) | 0.05–0.10% | on par with Explorer |
+| What                                                                       | Windows               | WinRust    | Difference            |
+| -------------------------------------------------------------------------- | --------------------- | ---------- | --------------------- |
+| File search (rust-search over all of C: vs `dir /s` over one folder)       | 8,340 ms              | 45 ms      | **99.5%** faster      |
+| Same vs `Get-ChildItem -Recurse`                                           | 16,200 – 28,600 ms    | 45 ms      | **99.7–99.8%** faster |
+| Open a folder window (rust-explorer, median of 5 runs)                     | 420 ms                | 60 ms      | **86%** faster        |
+| Shell memory (topbar + rust-explorer + rs-shell + reshell vs explorer.exe) | 366 MB                | 46 MB      | **87%** less          |
+| Same, plus the search index (53 MB)                                        | 366 MB                | 99 MB      | **73%** less          |
+| File manager binary size                                                   | 3,280 KB              | 498 KB     | **85%** smaller       |
+| Task manager binary size                                                   | 5,791 KB              | 869 KB     | **85%** smaller       |
+| Idle CPU of the bar (topbar after optimization, % of one core)             | 0.00–0.10% (explorer) | 0.05–0.10% | on par with Explorer  |
 
 In short: **85–99% faster or smaller in every size/speed test, and equal on idle CPU.** Caveats: rs searches a ready-made MFT index (it pays 53 MB of memory for that), while `dir` and PowerShell walk the disk from scratch; explorer.exe was still running with its windows during the test, so the memory gain is slightly overstated; Windows Search and the stock Task Manager were not compared.
 
@@ -91,6 +91,7 @@ In short: **85–99% faster or smaller in every size/speed test, and equal on id
 ## For developers
 
 ### Layout
+
 ```
 src/            the installer (plugin-launcher.exe)
   main.rs         the plugin table PLUGINS: name, texts, install/uninstall pair, icon
@@ -103,26 +104,32 @@ payload.txt     the exes embedded into the installer, and where the build puts t
 payload/        those exes once built (not in git)
 scripts/        build, update, release
 ```
+
 Everything is one cargo workspace (one `Cargo.lock`, every exe in `target\release`). `plugins/rust-search` and `plugins/chrome-rs` build separately because they need `panic = "unwind"` (see `Cargo.toml`).
 
 ### Build
+
 Needs Windows x64, Rust stable (1.85+) with the MSVC toolchain.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 ```
+
 Result: `target\release\plugin-launcher.exe`, with every plugin inside. Close a running installer first. Tests: `cargo test --workspace` (and `cargo test` in `plugins\rust-search`). CI runs the same on every push (`.github/workflows/build.yml`).
 
-| Script | What it does |
-|---|---|
-| `build-all.ps1` | everything: plugins → `payload\` → installer |
-| `build-plugins.ps1` | plugins only → `payload\` (no installer rebuild) |
-| `update-plugin.ps1 <plugin>` | rebuild and reinstall one installed plugin without rebuilding the installer (asks for admin via UAC) |
+| Script                            | What it does                                                                                                                      |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `build-all.ps1`                   | everything: plugins → `payload\` → installer                                                                                      |
+| `build-plugins.ps1`               | plugins only → `payload\` (no installer rebuild)                                                                                  |
+| `update-plugin.ps1 <plugin>`      | rebuild and reinstall one installed plugin without rebuilding the installer (asks for admin via UAC)                              |
 | `user-mode.ps1`, `dev-update.ps1` | developer mode: run topbar, rust-explorer, rs-shell and reshell from `%LOCALAPPDATA%` on top of Explorer, swap them without admin |
-| `bench.ps1` | the search and Task Manager benchmark |
-| `publish.ps1`, `release.ps1` | commit and push; GitHub release with `WinRust.exe` |
+| `bench.ps1`                       | the search and Task Manager benchmark                                                                                             |
+| `publish.ps1`, `release.ps1`      | commit and push; GitHub release with `WinRust.exe`                                                                                |
 
 ### Command line
+
 From a terminal **with administrator rights**:
+
 ```
 plugin-launcher list
 plugin-launcher install <plugin> --yes   (without --yes it only prints the warning and changes nothing)
@@ -130,9 +137,11 @@ plugin-launcher update <plugin>          (reinstall from payload\ next to the ex
 plugin-launcher uninstall <plugin>
 plugin-launcher rollback --yes           (remove everything)
 ```
+
 Exit codes: 0 success, 1 error, 2 bad arguments or no `--yes`. With no arguments the window opens. Install log: `%ProgramData%\plugin-launcher\install.log`.
 
 ### Adding a plugin
+
 1. A crate in `plugins/<name>`, added to `members` in the root `Cargo.toml`.
 2. A line in `payload.txt`.
 3. `src/install/<name>.rs` with an install/uninstall pair (and a `mod` line in `src/install/mod.rs`). Save the original values before changing anything, so uninstall can put them back.
