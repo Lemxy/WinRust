@@ -204,6 +204,11 @@ fn label(dir: &PathBuf) -> String {
 /// Rows of `dir`, folders first. Desktop mode merges the public desktop (absolute names) and hides hidden files.
 /// None = `dir` itself is unreadable.
 fn rows_of(dir: &PathBuf) -> Option<Vec<Row>> {
+    if sh::is_portable(dir) {
+        let mut rows: Vec<Row> = sh::portable_rows(dir)?.into_iter().map(|(name, folder)| Row { name, dir: folder, size: 0, time: 0, icon: -1, thumb: -2 }).collect();
+        sort_rows(&mut rows, SORT_COL.load(Relaxed), SORT_ASC.load(Relaxed));
+        return Some(rows);
+    }
     let mut dirs = vec![dir.clone()];
     if desk() { dirs.extend(sh::desktop_dirs().into_iter().skip(1)); }
     let mut rows = vec![];
@@ -450,6 +455,89 @@ mod sh {
     }
 
     pub fn init() { unsafe { let _ = OleInitialize(None); } }
+
+    // ---------- phones, cameras and other portable (MTP) devices ----------
+    // They are not drives: Windows shows them under This PC through the shell. Their folders get readable paths here
+    // ("Portable devices\Nothing Phone\Internal storage\DCIM"), mapped to the shell's own parsing names.
+
+    pub const PORTABLE: &str = "Portable devices";
+
+    thread_local! {
+        static PARSE: RefCell<std::collections::HashMap<PathBuf, String>> = RefCell::new(std::collections::HashMap::new());
+    }
+
+    pub fn is_portable(p: &PathBuf) -> bool { p.starts_with(PORTABLE) }
+
+    unsafe fn name_of(it: &IShellItem, sigdn: SIGDN) -> Option<String> {
+        unsafe {
+            let p = it.GetDisplayName(sigdn).ok()?;
+            let s = p.to_string().ok();
+            CoTaskMemFree(Some(p.0 as *const c_void));
+            s
+        }
+    }
+
+    unsafe fn children(parent: &IShellItem) -> Vec<IShellItem> { unsafe {
+        let mut out = vec![];
+        let Ok(en) = parent.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) else { return out };
+        loop {
+            let mut got = [None];
+            let mut n = 0;
+            if en.Next(&mut got, Some(&mut n)).is_err() || n == 0 { break; }
+            if let Some(it) = got[0].take() { out.push(it); }
+        }
+        out
+    } }
+
+    /// The devices under This PC that are not drives (no file-system path): phones, cameras, media players.
+    pub fn portable_devices() -> Vec<String> {
+        unsafe {
+            let Ok(pc) = SHGetKnownFolderItem::<IShellItem>(&FOLDERID_ComputerFolder, KF_FLAG_DEFAULT, None) else { return vec![] };
+            children(&pc).iter().filter_map(|it| {
+                use windows::Win32::System::SystemServices::{SFGAO_FILESYSANCESTOR, SFGAO_FILESYSTEM, SFGAO_FOLDER};
+                let a = it.GetAttributes(SFGAO_FOLDER | SFGAO_FILESYSTEM | SFGAO_FILESYSANCESTOR).ok()?.0;
+                // drives and known folders carry a file-system path or contain one; a device has neither
+                if a & SFGAO_FOLDER.0 == 0 || a & (SFGAO_FILESYSTEM.0 | SFGAO_FILESYSANCESTOR.0) != 0 { return None; }
+                let parse = name_of(it, SIGDN_DESKTOPABSOLUTEPARSING)?;
+                if !parse.contains(r"\\?\") { return None; } // device paths (\\?\usb#..., \\?\swd#wpdbusenum#...), not shell folders like Network
+                let shown = name_of(it, SIGDN_NORMALDISPLAY)?;
+                PARSE.with_borrow_mut(|m| m.insert(PathBuf::from(PORTABLE).join(&shown), parse));
+                Some(shown)
+            }).collect()
+        }
+    }
+
+    /// The rows of a portable-device folder: (name, is folder). None when the device is gone.
+    pub fn portable_rows(dir: &PathBuf) -> Option<Vec<(String, bool)>> {
+        if dir.as_os_str() == PORTABLE {
+            return Some(portable_devices().into_iter().map(|n| (n, true)).collect());
+        }
+        let parse = PARSE.with_borrow(|m| m.get(dir).cloned()).or_else(|| { portable_devices(); PARSE.with_borrow(|m| m.get(dir).cloned()) })?;
+        unsafe {
+            let it: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(parse), None).ok()?;
+            Some(children(&it).iter().filter_map(|c| {
+                let shown = name_of(c, SIGDN_NORMALDISPLAY)?;
+                let p = name_of(c, SIGDN_DESKTOPABSOLUTEPARSING)?;
+                use windows::Win32::System::SystemServices::SFGAO_FOLDER;
+                let folder = c.GetAttributes(SFGAO_FOLDER).is_ok_and(|a| a.0 & SFGAO_FOLDER.0 != 0);
+                PARSE.with_borrow_mut(|m| m.insert(dir.join(&shown), p));
+                Some((shown, folder))
+            }).collect())
+        }
+    }
+
+    /// Opens a file on a device with its default app (the shell copies it out first, as Explorer does).
+    pub fn open_portable(h: *mut c_void, p: &PathBuf) -> Result<()> {
+        let parse = PARSE.with_borrow(|m| m.get(p).cloned()).ok_or(Error::empty())?;
+        unsafe {
+            let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+            SHParseDisplayName(&HSTRING::from(parse), None, &mut pidl, 0, None)?;
+            let mut ei = SHELLEXECUTEINFOW { cbSize: size_of::<SHELLEXECUTEINFOW>() as u32, fMask: SEE_MASK_IDLIST, hwnd: HWND(h), lpIDList: pidl as *mut c_void, nShow: SW_SHOWNORMAL.0, ..Default::default() };
+            let r = ShellExecuteExW(&mut ei);
+            CoTaskMemFree(Some(pidl as *const c_void));
+            r
+        }
+    }
 
     fn wide(p: &PathBuf) -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() }
 
@@ -1009,6 +1097,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     9 => search_focus(),
                     20 => { if let Some(p) = ui::nav_path(lp as usize) { load(h, p); } } // a folder in the left pane
                     21 => { if let Some(p) = ui::crumb_path(lp as usize) { load(h, p); } } // a part of the path in the address pill
+                    22 => { if let Some(p) = ui::nav_path(lp as usize).filter(|p| !sh::is_portable(p)) { let _ = sh::show(h, &[p]); ui::nav_init(ui::nav_wnd()); ui::nav_dirty(); } } // right-click in the left pane: Eject etc.
                     _ => {}
                 }
                 0
@@ -1061,6 +1150,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             if is_dir && desk() { let _ = std::process::Command::new(env::current_exe().unwrap_or_default()).arg(p).spawn(); }
                             else if is_dir { load(h, p) }
                             else if let Some(exe) = tool("photoview").filter(|_| is_pic(&p)) { let _ = std::process::Command::new(exe).arg(&p).spawn(); }
+                            else if sh::is_portable(&p) { let _ = sh::open_portable(h, &p); }
                             else { ShellExecuteW(0 as _, ptr::null(), w(&p.to_string_lossy()).as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL); }
                         }
                     }
