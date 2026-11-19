@@ -78,8 +78,12 @@ fn wide(s: &str) -> Vec<u16> { s.encode_utf16().chain([0]).collect() }
 
 fn dir() -> PathBuf { std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or_default() }
 
-/// An exe next to us, else the one the topbar plugin installed (the rust-explorer plugin keeps only its own files in its folder).
+/// An exe in %LOCALAPPDATA%\plugin-launcher\bin (updated without admin by dev-update.ps1), else next to us, else Program Files\topbar.
 fn find_exe(name: &str) -> PathBuf {
+    if let Ok(base) = std::env::var("LOCALAPPDATA") {
+        let user = PathBuf::from(base).join(r"plugin-launcher\bin").join(name);
+        if user.exists() { return user; }
+    }
     let own = dir().join(name);
     if own.exists() { return own; }
     PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into())).join("topbar").join(name)

@@ -126,7 +126,9 @@ pub(crate) fn install_plugin(i: usize) -> Result<String, String> {
     init().inspect_err(|e| log(&tf!("{}: ОШИБКА {e}", "{}: ERROR {e}", p.name)))?; // before anything is written: no user, no install
     let was = (p.installed)(); // already installed = an update: a failure must not remove the working copy
     WARN.lock().unwrap().clear();
-    soft(t!("точка восстановления не создана", "restore point was not created"), checkpoint());
+    if !was {
+        soft(t!("точка восстановления не создана", "restore point was not created"), checkpoint());
+    }
     if let Err(e) = inst() {
         log(&tf!("{}: ОШИБКА {e}", "{}: ERROR {e}", p.name));
         if was {
