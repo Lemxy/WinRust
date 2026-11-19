@@ -49,7 +49,20 @@ if($started){
 "#;
 
 /// `uri` is passed through the environment, never spliced into the script. A second call while the first still waits is harmless.
+/// When rust-settings is installed it opens the page itself: no Explorer has to be started, so no "file system error" from
+/// a Store app activating without its shell (issue #6), and the page is up in a fraction of the time.
 pub fn open(uri: &str) {
+    if let Some(exe) = rust_settings() {
+        let _ = Command::new(exe).arg(uri).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        return;
+    }
     let _ = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", PS])
         .env("WR_URI", uri).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(0x0800_0000).spawn();
+}
+
+/// rust-settings.exe, installed with the other plugins or next to the running exe.
+fn rust_settings() -> Option<std::path::PathBuf> {
+    let mine = std::env::var_os("LOCALAPPDATA").map(|b| std::path::PathBuf::from(b).join("plugin-launcher").join("bin").join("rust-settings.exe"));
+    let beside = std::env::current_exe().ok().map(|e| e.with_file_name("rust-settings.exe"));
+    [mine, beside].into_iter().flatten().find(|p| p.exists())
 }
