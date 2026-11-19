@@ -100,6 +100,7 @@ thread_local! {
     static CONFIRM: Cell<i32> = const { Cell::new(-1) };
     static LAST: Cell<(Option<Kind>, u64)> = const { Cell::new((None, 0)) }; // which flyout closed when
     static FIN: Cell<(i32, i32)> = const { Cell::new((0, 0)) }; // where the open flyout rests
+    static FMON: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) }; // monitor the open flyout belongs to
     static T0: Cell<u64> = const { Cell::new(0) }; // when it started opening
     static JUST: RefCell<(String, u64)> = const { RefCell::new((String::new(), 0)) }; // the app pinned last and when: its row pulses
     static GHOST: Cell<(HWND, u64, (i32, i32))> = const { Cell::new((null_mut(), 0, (0, 0))) }; // the closing flyout: window, start, position
@@ -726,11 +727,12 @@ pub fn toggle(k: Kind) {
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
-        let sw = GetSystemMetrics(SM_CXSCREEN);
+        let m = MON.get(); // the monitor of the bar that opened it
+        FMON.set(m);
         let x = match k {
-            Kind::Start => (sw - w) / 2,
-            Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
-            _ => sw - w - sc(8),
+            Kind::Start => m.left + (m.right - m.left - w) / 2,
+            Kind::Menu => MENU_X.get().min(m.right - w - sc(8)).max(m.left + sc(8)),
+            _ => m.right - w - sc(8),
         };
         let class = wide("topbar_fly");
         let fy = pop_y(h); // above the bar (below it at the top of the screen)
@@ -1363,7 +1365,9 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let (w, h) = (sc(size(k).0), sc(size(k).1));
                 // the panel hangs above the bar: keep its bottom edge where it is and grow / shrink upward
                 let (x, _) = FIN.get();
+                let bar_mon = MON.replace(FMON.get()); // pop_y is relative to the monitor the panel opened on
                 let y = pop_y(h);
+                MON.set(bar_mon);
                 FIN.set((x, y));
                 SetWindowPos(hw, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
                 SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 1);
