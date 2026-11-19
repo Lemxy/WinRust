@@ -187,6 +187,7 @@ thread_local! {
     static SW: RefCell<(Vec<HWND>, usize)> = const { RefCell::new((Vec::new(), 0)) }; // its windows (z-order) and selection
     static TIP: RefCell<String> = const { RefCell::new(String::new()) };
     static TIP_WINS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // windows previewed in the taskbar tooltip
+    static TIP_BTN: Cell<i32> = const { Cell::new(NONE) }; // bar button whose preview card is currently open
     static TIP_HOT: Cell<i32> = const { Cell::new(-1) }; // hovered card in TIPWND (negative - 2 = hovered close button)
     static TIP_THUMBS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) }; // active DWM thumbnails in TIPWND
     static SW_THUMBS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) }; // active DWM thumbnails in SWWND
@@ -565,7 +566,7 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_MOUSELEAVE => {
             TIP_HOT.set(-1);
             InvalidateRect(hwnd, null(), 0);
-            SetTimer(BAR.load(Relaxed) as HWND, 8, 160, None);
+            SetTimer(BAR.load(Relaxed) as HWND, 8, 320, None);
             return 0;
         }
         WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN => {
@@ -779,9 +780,10 @@ unsafe fn show_bar_tip(bar: HWND, h: i32) {
             let (w, th_h) = (wins.len() as i32 * cell + 2 * pad, sc(114));
             let h_pop = sc(27) + th_h + sc(6);
             TIP_WINS.set(wins.clone());
+            TIP_BTN.set(h);
             SetWindowRgn(tw, CreateRoundRectRgn(0, 0, w + 1, h_pop + 1, rr(10), rr(10)), 1);
             let x = (cx - w / 2).clamp(sc(4), scr - w - sc(4));
-            SetWindowPos(tw, HWND_TOPMOST, x, if at_top() { bar_h() - bar_off() + sc(6) } else { bar_top() + bar_off() - h_pop - sc(6) }, w, h_pop, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            SetWindowPos(tw, HWND_TOPMOST, x, if at_top() { bar_h() - bar_off() + sc(2) } else { bar_top() + bar_off() - h_pop - sc(2) }, w, h_pop, SWP_NOACTIVATE | SWP_SHOWWINDOW);
             for (k, &win) in wins.iter().enumerate() {
                 let lx = pad + k as i32 * cell;
                 let tr = RECT { left: lx + sc(6), top: sc(29), right: lx + cell - sc(6), bottom: h_pop - sc(8) };
@@ -963,6 +965,7 @@ unsafe fn hide_tip(bar: HWND) {
     KillTimer(bar, 2);
     KillTimer(bar, 8);
     TIP_HOT.set(-1);
+    TIP_BTN.set(NONE);
     clear_thumbs(&TIP_THUMBS);
     TIP_WINS.with_borrow_mut(Vec::clear);
     ShowWindow(TIPWND.get(), SW_HIDE);
@@ -2823,9 +2826,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             GetCursorPos(&mut pt);
             let tw = TIPWND.get();
             let mut tr: RECT = zeroed();
-            let in_tip = !tw.is_null() && IsWindowVisible(tw) != 0 && GetWindowRect(tw, &mut tr) != 0 && pt.x >= tr.left && pt.x < tr.right && pt.y >= tr.top && pt.y < tr.bottom;
-            if !in_tip && HOT.get() == NONE {
+            let in_tip = !tw.is_null() && IsWindowVisible(tw) != 0 && GetWindowRect(tw, &mut tr) != 0 && pt.x >= tr.left - sc(6) && pt.x < tr.right + sc(6) && pt.y >= tr.top - sc(6) && pt.y < tr.bottom + sc(16);
+            let h = HOT.get();
+            if !in_tip && (h == NONE || h != TIP_BTN.get()) {
                 hide_tip(hwnd);
+                if h != NONE && !fly::any_open() {
+                    SetTimer(hwnd, 2, 220, None);
+                }
             }
         }
         WM_TIMER if wp == 6 => hide_tip(hwnd), // the volume readout after a wheel turn
@@ -2870,9 +2877,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
             if HOT.replace(h) != h {
-                hide_tip(hwnd);
-                if h != NONE {
-                    SetTimer(hwnd, 2, 450, None);
+                let prev_open = TIP_WINS.with_borrow(|w| !w.is_empty()) && IsWindowVisible(TIPWND.get()) != 0;
+                if prev_open && h >= 1 {
+                    KillTimer(hwnd, 8);
+                    show_bar_tip(hwnd, h); // instant glide between app previews when one is already open
+                } else if prev_open && (h == NONE || h == TIP_BTN.get()) {
+                    if h == TIP_BTN.get() {
+                        KillTimer(hwnd, 8);
+                    } else {
+                        SetTimer(hwnd, 8, 320, None); // diagonal movement across the bar gap toward the preview card
+                    }
+                } else {
+                    hide_tip(hwnd);
+                    if h != NONE {
+                        SetTimer(hwnd, 2, 320, None);
+                    }
                 }
                 InvalidateRect(hwnd, null(), 0);
             }
@@ -2880,7 +2899,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MOUSELEAVE => {
             HOT.set(NONE);
             if TIP_WINS.with_borrow(|w| !w.is_empty()) && IsWindowVisible(TIPWND.get()) != 0 {
-                SetTimer(hwnd, 8, 180, None); // give the pointer time to cross the gap into the preview card
+                SetTimer(hwnd, 8, 320, None); // give the pointer time to cross the gap into the preview card
             } else {
                 hide_tip(hwnd);
             }
