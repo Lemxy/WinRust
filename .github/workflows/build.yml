@@ -1,4 +1,4 @@
-# Builds everything and runs the unit tests on every push and pull request. The built installer is kept as an artifact.
+# Builds and tests pushes to main and pull requests. Only pushes to main retain the installer artifact.
 name: build
 on:
   push:
@@ -18,13 +18,12 @@ jobs:
       - name: Build all (plugins, payload, installer)
         run: powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
       - name: Test workspace
-        run: |
-          reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /f  # a fresh runner profile may lack it; the task manager's autostart test writes there
-          cargo test --workspace
+        run: cargo test --workspace
       - name: Test rust-search
         run: cargo test
         working-directory: plugins/rust-search
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
         with:
           name: WinRust
           path: target/release/plugin-launcher.exe

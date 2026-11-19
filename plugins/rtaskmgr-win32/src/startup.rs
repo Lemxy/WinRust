@@ -94,7 +94,12 @@ fn approved_enabled(hklm: bool, kind: &str, name: &str) -> bool {
     let mut len = buf.len() as u32;
     let rc = unsafe { RegQueryValueExW(k, w(name).as_ptr(), null_mut(), null_mut(), buf.as_mut_ptr(), &mut len) };
     unsafe { RegCloseKey(k) };
-    rc != 0 || len == 0 || buf[0] & 1 == 0
+    let flag = (rc == 0 && len != 0).then_some(buf[0]);
+    approval_flag_enabled(flag)
+}
+
+fn approval_flag_enabled(flag: Option<u8>) -> bool {
+    flag.is_none_or(|byte| byte & 1 == 0)
 }
 
 fn startup_dir(hklm: bool) -> Option<PathBuf> {
@@ -181,37 +186,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn approved_flags() {
-        assert_eq!(approved_value(true, 123)[..4], [2, 0, 0, 0]);
-        let d = approved_value(false, 0x0102_0304_0506_0708);
-        assert_eq!(d[0] & 1, 1); // выключено — нечётный байт, как читает approved_enabled
-        assert_eq!(d[4..], 0x0102_0304_0506_0708u64.to_le_bytes());
-    }
+    fn approved_flags_round_trip() {
+        let filetime = 0x0102_0304_0506_0708u64;
+        let disabled = approved_value(false, filetime);
+        assert_eq!(disabled[..4], [3, 0, 0, 0]);
+        assert_eq!(disabled[4..], filetime.to_le_bytes());
+        assert!(!approval_flag_enabled(disabled.first().copied()));
 
-    /// Интеграционный: временное значение в HKCU\Run → отключить → включить → удалить.
-    #[test]
-    fn toggle_roundtrip_on_temp_registry_value() {
-        use winapi::um::winnt::KEY_WRITE;
-        let name = "rtaskmgr_test_dummy";
-        let value: Vec<u16> = "notepad.exe".encode_utf16().chain(Some(0)).collect();
-        let run = open(HKEY_CURRENT_USER, RUN, KEY_WRITE).expect("HKCU Run");
-        unsafe { RegSetValueExW(run, w(name).as_ptr(), 0, REG_SZ, value.as_ptr() as *const u8, (value.len() * 2) as u32) };
-        let find = |on: bool| list().into_iter().any(|i| i.name == name && i.source == 0 && i.enabled == on);
-        let result = std::panic::catch_unwind(|| {
-            assert!(find(true), "новое значение должно быть включено");
-            let it = list().into_iter().find(|i| i.name == name).unwrap();
-            set_enabled(&it, false).unwrap();
-            assert!(find(false), "после set_enabled(false) значение отключено");
-            set_enabled(&it, true).unwrap();
-            assert!(find(true), "после set_enabled(true) значение снова включено");
-        });
-        unsafe { RegDeleteValueW(run, w(name).as_ptr()) };
-        if let Some(k) = open(HKEY_CURRENT_USER, &format!(r"{APPROVED}\Run"), KEY_SET_VALUE) {
-            unsafe { RegDeleteValueW(k, w(name).as_ptr()) };
-            unsafe { RegCloseKey(k) };
-        }
-        unsafe { RegCloseKey(run) };
-        result.unwrap();
+        let enabled = approved_value(true, filetime);
+        assert_eq!(enabled, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(approval_flag_enabled(enabled.first().copied()));
+        assert!(approval_flag_enabled(None)); // нет записи StartupApproved
     }
 
     #[test]
