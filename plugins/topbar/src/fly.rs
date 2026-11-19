@@ -99,6 +99,7 @@ thread_local! {
     static MENU_X: Cell<i32> = const { Cell::new(0) };
     static CONFIRM: Cell<i32> = const { Cell::new(-1) };
     static LAST: Cell<(Option<Kind>, u64)> = const { Cell::new((None, 0)) }; // which flyout closed when
+    static LAST_MX: Cell<(i32, u64)> = const { Cell::new((-1, 0)) }; // x and time of the last closed menu: clicking the same button toggles it closed
     static FIN: Cell<(i32, i32)> = const { Cell::new((0, 0)) }; // where the open flyout rests
     static T0: Cell<u64> = const { Cell::new(0) }; // when it started opening
     static JUST: RefCell<(String, u64)> = const { RefCell::new((String::new(), 0)) }; // the app pinned last and when: its row pulses
@@ -614,16 +615,25 @@ const MROW: i32 = 38;
 const MHEAD_H: i32 = 58;
 
 /// Menu flyout above the bar, centered on screen x `cx`. `pick` gets the index of the chosen item (not called on cancel).
-/// A right click while a menu is open replaces it.
+/// A right click while a menu is open replaces it; clicking the same bar button again closes it.
 pub fn menu(cx: i32, head: Option<(HICON, &'static str, String, String)>, items: Vec<MItem>, pick: impl FnOnce(usize) + 'static) {
+    let mx = cx - sc(MW) / 2;
     if is_open(Kind::Menu) {
+        if MENU_X.get() == mx {
+            return close();
+        }
         close_now();
+    } else {
+        let (lx, at) = LAST_MX.get();
+        if lx == mx && unsafe { now_ms() }.saturating_sub(at) < 400 {
+            return;
+        }
     }
     LAST.set((None, 0)); // always opens, even right after another menu closed
     MITEMS.set(items);
     MHEAD.set(head);
     MPICK.set(Some(Box::new(pick)));
-    MENU_X.set(cx - sc(MW) / 2);
+    MENU_X.set(mx);
     toggle(Kind::Menu);
 }
 
@@ -676,7 +686,11 @@ pub fn context_menu(x: i32) {
 /// Starts the fade-out of the open flyout (it stays as a ghost window until the fade ends).
 pub fn close() {
     if FLY.get().is_some() {
-        LAST.set((FLY.get(), unsafe { now_ms() }));
+        let now = unsafe { now_ms() };
+        LAST.set((FLY.get(), now));
+        if FLY.get() == Some(Kind::Menu) {
+            LAST_MX.set((MENU_X.get(), now));
+        }
     }
     let h = FH.replace(null_mut());
     FLY.set(None);

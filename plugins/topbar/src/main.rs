@@ -32,7 +32,10 @@ use windows_sys::Win32::{
     Foundation::*,
     Globalization::{GetDateFormatW, GetLocaleInfoW, GetTimeFormatW},
     Graphics::{
-        Dwm::DwmGetWindowAttribute,
+        Dwm::{
+            DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE, DWM_THUMBNAIL_PROPERTIES, DwmGetWindowAttribute,
+            DwmQueryThumbnailSourceSize, DwmRegisterThumbnail, DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
+        },
         Gdi::*,
         GdiPlus::{
             FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath, GdipFillPath, GdipSetPixelOffsetMode,
@@ -106,6 +109,7 @@ const ALT_UP: u32 = WM_APP + 12; // posted by the keyboard hook: Alt released wh
 static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab switcher open (the hook thread reads it)
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static DESK_HIDE: AtomicBool = AtomicBool::new(false); // the desktop in front and the pointer away from the bar for 2 s
+static AUTOHIDE: AtomicBool = AtomicBool::new(false); // user toggle: always auto-hide the bar after 2 s away from it
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook thread
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
@@ -178,6 +182,9 @@ thread_local! {
     static SWWND: Cell<HWND> = const { Cell::new(null_mut()) }; // the Alt+Tab switcher
     static SW: RefCell<(Vec<HWND>, usize)> = const { RefCell::new((Vec::new(), 0)) }; // its windows (z-order) and selection
     static TIP: RefCell<String> = const { RefCell::new(String::new()) };
+    static TIP_WINS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // windows previewed in the taskbar tooltip
+    static TIP_THUMBS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) }; // active DWM thumbnails in TIPWND
+    static SW_THUMBS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) }; // active DWM thumbnails in SWWND
     static PINS: RefCell<Vec<Pin>> = const { RefCell::new(Vec::new()) };
     static BTNS: RefCell<Vec<Btn>> = const { RefCell::new(Vec::new()) }; // [0] is always Start (pin None, no wins)
     static TAPPS: RefCell<Vec<TIcon>> = const { RefCell::new(Vec::new()) };
@@ -526,16 +533,44 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     let dc = BeginPaint(hwnd, &mut ps);
     let mut r: RECT = zeroed();
     GetClientRect(hwnd, &mut r);
-    fill(dc, r, pal().line, sc(8));
-    fill(dc, RECT { left: 1, top: 1, right: r.right - 1, bottom: r.bottom - 1 }, pal().bg, sc(8));
+    let (mem, bmp) = (CreateCompatibleDC(dc), CreateCompatibleBitmap(dc, r.right, r.bottom));
+    let ob = SelectObject(mem, bmp);
+    fill(mem, r, pal().line, sc(8));
+    fill(mem, RECT { left: 1, top: 1, right: r.right - 1, bottom: r.bottom - 1 }, pal().bg, sc(8));
     let f = tip_font();
-    let of = SelectObject(dc, f);
-    SetBkMode(dc, TRANSPARENT as i32);
-    SetTextColor(dc, pal().text);
-    let mut tr = RECT { left: sc(8), top: sc(5), right: r.right - sc(8), bottom: r.bottom - sc(5) };
-    TIP.with_borrow(|s| DrawTextW(dc, wide(s).as_ptr(), -1, &mut tr, DT_LEFT | DT_NOPREFIX | DT_WORDBREAK));
-    SelectObject(dc, of);
+    let of = SelectObject(mem, f);
+    SetBkMode(mem, TRANSPARENT as i32);
+    SetTextColor(mem, pal().text);
+    let wins: Vec<HWND> = TIP_WINS.with_borrow(|w| w.clone());
+    if wins.is_empty() {
+        let mut tr = RECT { left: sc(8), top: sc(5), right: r.right - sc(8), bottom: r.bottom - sc(5) };
+        TIP.with_borrow(|s| DrawTextW(mem, wide(s).as_ptr(), -1, &mut tr, DT_LEFT | DT_NOPREFIX | DT_WORDBREAK));
+    } else {
+        let pad = sc(8);
+        let cell = (r.right - 2 * pad) / wins.len().max(1) as i32;
+        let fg = GetForegroundWindow();
+        for (k, &w) in wins.iter().enumerate() {
+            let x = pad + k as i32 * cell;
+            if w == fg {
+                fill(mem, RECT { left: x + sc(1), top: sc(4), right: x + cell - sc(1), bottom: r.bottom - sc(4) }, pal().active, sc(6));
+            }
+            let ic = icon_of(w);
+            if !ic.is_null() {
+                DrawIconEx(mem, x + sc(6), sc(7), ic, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+            }
+            let mut b = [0u16; 256];
+            let n = GetWindowTextW(w, b.as_mut_ptr(), 256).max(0) as usize;
+            text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: x + sc(26), top: sc(5), right: x + cell - sc(6), bottom: sc(25) }, pal().text, DT_LEFT);
+            let tr = RECT { left: x + sc(4), top: sc(27), right: x + cell - sc(4), bottom: r.bottom - sc(6) };
+            fill(mem, tr, mix(pal().bg, 0, 0.35), sc(6));
+        }
+    }
+    BitBlt(dc, 0, 0, r.right, r.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, of);
     DeleteObject(f);
+    SelectObject(mem, ob);
+    DeleteObject(bmp);
+    DeleteDC(mem);
     EndPaint(hwnd, &ps);
     0
 }
@@ -593,9 +628,47 @@ fn vol_tip() -> String {
     }
 }
 
+/// Clears any DWM thumbnails registered in `list`.
+unsafe fn clear_thumbs(list: &'static std::thread::LocalKey<RefCell<Vec<isize>>>) {
+    list.with_borrow_mut(|v| {
+        for t in v.drain(..) {
+            let _ = DwmUnregisterThumbnail(t);
+        }
+    });
+}
+
+/// Registers a live DWM thumbnail of `src` inside `dest`, fitted into `box_rc` while preserving aspect ratio.
+unsafe fn add_thumb(dest: HWND, src: HWND, box_rc: RECT, list: &'static std::thread::LocalKey<RefCell<Vec<isize>>>) {
+    let mut t: isize = 0;
+    if DwmRegisterThumbnail(dest, src, &mut t) != 0 || t == 0 {
+        return;
+    }
+    let mut sz = SIZE { cx: 0, cy: 0 };
+    let rc = if DwmQueryThumbnailSourceSize(t, &mut sz) == 0 && sz.cx > 0 && sz.cy > 0 {
+        let (bw, bh) = ((box_rc.right - box_rc.left).max(1), (box_rc.bottom - box_rc.top).max(1));
+        let (w, h) = if sz.cx * bh > sz.cy * bw { (bw, (sz.cy * bw / sz.cx).max(1)) } else { ((sz.cx * bh / sz.cy).max(1), bh) };
+        let (x, y) = (box_rc.left + (bw - w) / 2, box_rc.top + (bh - h) / 2);
+        RECT { left: x, top: y, right: x + w, bottom: y + h }
+    } else {
+        box_rc
+    };
+    let props = DWM_THUMBNAIL_PROPERTIES {
+        dwFlags: DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY,
+        rcDestination: rc,
+        rcSource: zeroed(),
+        opacity: 255,
+        fVisible: 1,
+        fSourceClientAreaOnly: 0,
+    };
+    let _ = DwmUpdateThumbnailProperties(t, &props);
+    list.with_borrow_mut(|v| v.push(t));
+}
+
 /// Shows `s` in a small rounded popup above the bar, centered on screen x `cx`.
 unsafe fn show_tip(s: String, cx: i32) {
     let tw = TIPWND.get();
+    clear_thumbs(&TIP_THUMBS);
+    TIP_WINS.with_borrow_mut(Vec::clear);
     if s.is_empty() || tw.is_null() {
         return;
     }
@@ -614,11 +687,66 @@ unsafe fn show_tip(s: String, cx: i32) {
     InvalidateRect(tw, null(), 1);
 }
 
-// ---------- Alt+Tab switcher: the open windows' icons, most recently used first, the selected one's title below ----------
+/// Shows a live window preview card (or plain text if not running) above taskbar button `h`.
+unsafe fn show_bar_tip(bar: HWND, h: i32) {
+    let cx = tip_cx(&bar_layout(bar), h);
+    if h >= 1 {
+        let wins: Vec<HWND> = BTNS.with_borrow(|b| b.get(h as usize).map(|b| b.wins.iter().copied().take(4).collect()).unwrap_or_default());
+        if !wins.is_empty() {
+            let tw = TIPWND.get();
+            if tw.is_null() {
+                return;
+            }
+            clear_thumbs(&TIP_THUMBS);
+            let scr = GetSystemMetrics(SM_CXSCREEN);
+            let pad = sc(8);
+            let cell = sc(196).min((scr - sc(32)) / wins.len().max(1) as i32);
+            let (w, th_h) = (wins.len() as i32 * cell + 2 * pad, sc(114));
+            let h_pop = sc(27) + th_h + sc(6);
+            TIP_WINS.set(wins.clone());
+            SetWindowRgn(tw, CreateRoundRectRgn(0, 0, w + 1, h_pop + 1, rr(10), rr(10)), 1);
+            let x = (cx - w / 2).clamp(sc(4), scr - w - sc(4));
+            SetWindowPos(tw, HWND_TOPMOST, x, if at_top() { bar_h() - bar_off() + sc(6) } else { bar_top() + bar_off() - h_pop - sc(6) }, w, h_pop, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            for (k, &win) in wins.iter().enumerate() {
+                let lx = pad + k as i32 * cell;
+                let tr = RECT { left: lx + sc(6), top: sc(29), right: lx + cell - sc(6), bottom: h_pop - sc(8) };
+                add_thumb(tw, win, tr, &TIP_THUMBS);
+            }
+            InvalidateRect(tw, null(), 1);
+            return;
+        }
+    }
+    show_tip(tip_text(h), cx);
+}
 
-const SW_CELL: i32 = 76;
+// ---------- Alt+Tab switcher: the open windows' live previews + icons, most recently used first, the selected one's title below ----------
+
+const SW_CELL: i32 = 168;
+const SW_CELL_H: i32 = 128;
 const SW_PAD: i32 = 14;
 const SW_TITLE: i32 = 30;
+
+unsafe fn sw_thumbs_sync() {
+    let sw = SWWND.get();
+    clear_thumbs(&SW_THUMBS);
+    if sw.is_null() || IsWindowVisible(sw) == 0 {
+        return;
+    }
+    let mut r: RECT = zeroed();
+    GetClientRect(sw, &mut r);
+    let pad = sc(SW_PAD);
+    SW.with_borrow(|(v, _)| {
+        let cell = (r.right - 2 * pad) / v.len().max(1) as i32;
+        let ch = sc(SW_CELL_H);
+        for (k, &w) in v.iter().enumerate() {
+            let x = pad + k as i32 * cell;
+            let tr = RECT { left: x + sc(8), top: pad + sc(26), right: x + cell - sc(8), bottom: pad + ch - sc(12) };
+            if tr.right - tr.left >= sc(36) {
+                add_thumb(sw, w, tr, &SW_THUMBS);
+            }
+        }
+    });
+}
 
 unsafe fn alt_tab(back: bool) {
     let sw = SWWND.get();
@@ -632,9 +760,10 @@ unsafe fn alt_tab(back: bool) {
         SW.set((v, if n == 1 { 0 } else if back { n - 1 } else { 1 }));
         let scr = GetSystemMetrics(SM_CXSCREEN);
         let w = (n as i32 * sc(SW_CELL)).min(scr - sc(80)) + 2 * sc(SW_PAD);
-        let h = sc(SW_PAD) + sc(SW_CELL) + sc(SW_TITLE) + sc(SW_PAD) / 2;
+        let h = sc(SW_PAD) + sc(SW_CELL_H) + sc(SW_TITLE) + sc(SW_PAD) / 2;
         SetWindowRgn(sw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(18), rr(18)), 1);
         SetWindowPos(sw, HWND_TOPMOST, (scr - w) / 2, (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        sw_thumbs_sync();
     } else {
         SW.with_borrow_mut(|(v, i)| *i = if back { (*i + v.len() - 1) % v.len() } else { (*i + 1) % v.len() });
     }
@@ -643,6 +772,7 @@ unsafe fn alt_tab(back: bool) {
 
 /// Alt released: switch to the selected window (restored if minimized). Esc: just close.
 unsafe fn alt_done(cancel: bool) {
+    clear_thumbs(&SW_THUMBS);
     ShowWindow(SWWND.get(), SW_HIDE);
     let (v, i) = SW.take();
     if let Some(&w) = v.get(i).filter(|_| !cancel) {
@@ -666,19 +796,33 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     fill(mem, r, pal().line, sc(18));
     fill(mem, RECT { left: 1, top: 1, right: r.right - 1, bottom: r.bottom - 1 }, pal().bg, sc(18));
     let pad = sc(SW_PAD);
+    let ch = sc(SW_CELL_H);
+    let f_sm = tip_font();
+    let of0 = SelectObject(mem, f_sm);
+    SetBkMode(mem, TRANSPARENT as i32);
     SW.with_borrow(|(v, sel)| {
         let cell = (r.right - 2 * pad) / v.len().max(1) as i32;
-        let isz = sc(36).min(cell - sc(14)).max(sc(12));
+        let show_thumb = cell - sc(16) >= sc(36);
         for (k, &w) in v.iter().enumerate() {
             let x = pad + k as i32 * cell;
+            let c = RECT { left: x + sc(3), top: pad, right: x + cell - sc(3), bottom: pad + ch - sc(6) };
             if k == *sel {
-                let c = RECT { left: x + sc(3), top: pad, right: x + cell - sc(3), bottom: pad + sc(SW_CELL) - sc(6) };
                 fill(mem, c, pal().accent, sc(12)); // accent ring around the selected window
                 fill(mem, RECT { left: c.left + sc(2), top: c.top + sc(2), right: c.right - sc(2), bottom: c.bottom - sc(2) }, pal().active, sc(10));
+            } else {
+                fill(mem, c, mix(pal().bg, pal().hover, 0.45), sc(10));
             }
             let ic = icon_of(w);
-            if !ic.is_null() {
-                DrawIconEx(mem, x + (cell - isz) / 2, pad + (sc(SW_CELL) - sc(6) - isz) / 2, ic, isz, isz, 0, null_mut(), DI_NORMAL);
+            if show_thumb {
+                if !ic.is_null() {
+                    DrawIconEx(mem, x + sc(8), pad + sc(5), ic, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                }
+                let mut b = [0u16; 256];
+                let n = GetWindowTextW(w, b.as_mut_ptr(), 256).max(0) as usize;
+                text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: x + sc(28), top: pad + sc(4), right: x + cell - sc(8), bottom: pad + sc(22) }, if k == *sel { pal().text } else { pal().dim }, DT_LEFT);
+            } else if !ic.is_null() {
+                let isz = sc(32).min(cell - sc(10)).max(sc(12));
+                DrawIconEx(mem, x + (cell - isz) / 2, pad + (ch - sc(6) - isz) / 2, ic, isz, isz, 0, null_mut(), DI_NORMAL);
             }
         }
         if let Some(&w) = v.get(*sel) {
@@ -686,12 +830,13 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let n = GetWindowTextW(w, b.as_mut_ptr(), 256).max(0) as usize;
             let f = CreateFontW(-sc(14), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, wide(ui_face()).as_ptr());
             let of = SelectObject(mem, f);
-            SetBkMode(mem, TRANSPARENT as i32);
-            text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: pad, top: pad + sc(SW_CELL) - sc(4), right: r.right - pad, bottom: pad + sc(SW_CELL) + sc(SW_TITLE) - sc(4) }, pal().text, DT_CENTER);
+            text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: pad, top: pad + ch - sc(4), right: r.right - pad, bottom: pad + ch + sc(SW_TITLE) - sc(4) }, pal().text, DT_CENTER);
             SelectObject(mem, of);
             DeleteObject(f);
         }
     });
+    SelectObject(mem, of0);
+    DeleteObject(f_sm);
     BitBlt(dc, 0, 0, r.right, r.bottom, mem, 0, 0, SRCCOPY);
     SelectObject(mem, ob);
     DeleteObject(bmp);
@@ -702,6 +847,8 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
 unsafe fn hide_tip(bar: HWND) {
     KillTimer(bar, 2);
+    clear_thumbs(&TIP_THUMBS);
+    TIP_WINS.with_borrow_mut(Vec::clear);
     ShowWindow(TIPWND.get(), SW_HIDE);
 }
 
@@ -742,8 +889,8 @@ unsafe fn place(hwnd: HWND) {
     ab.cbSize = size_of::<APPBARDATA>() as u32;
     ab.hWnd = hwnd;
     // the reserved strip: the bar itself plus the dock's gap under it
-    // the dock reserves nothing: maximized windows take the whole screen and the dock slides away over them
-    let strip = if style() == Style::Dock { 0 } else { bar_h() };
+    // the dock and auto-hide reserve nothing: maximized windows take the whole screen and the bar slides away over them
+    let strip = if style() == Style::Dock || AUTOHIDE.load(Relaxed) { 0 } else { bar_h() };
     if at_top() {
         ab.uEdge = ABE_TOP;
         ab.rc = RECT { left: 0, top: 0, right: cx, bottom: strip };
@@ -1390,7 +1537,7 @@ unsafe fn bar_anim(hwnd: HWND) {
 }
 
 unsafe fn bar_step(hwnd: HWND) {
-    let target = if FULLSCREEN.load(Relaxed) { 0.0 } else { 1.0 }; // hides only for a fullscreen game or video: not over the desktop, not in any style
+    let target = if FULLSCREEN.load(Relaxed) || DESK_HIDE.load(Relaxed) { 0.0 } else { 1.0 };
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1402,23 +1549,28 @@ unsafe fn bar_step(hwnd: HWND) {
     SetWindowPos(hwnd, HWND_TOPMOST, bar_x_w().0, bar_y(), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     if p == target {
         KillTimer(hwnd, 5);
-        if p == 0.0 {
+        if p == 0.0 && FULLSCREEN.load(Relaxed) {
             ShowWindow(hwnd, SW_HIDE); // not just moved away: a hidden bar cannot cover a game
         }
     }
 }
 
 /// True when the foreground window covers the whole primary monitor (game, F11 video, presentation).
-/// A maximized window does not: the bar's reserved strip keeps it below the bar.
+/// A maximized window does not: in Normal/Terminal/Tiling with auto-hide off the bar's reserved strip keeps it below the
+/// bar; in Dock or auto-hide mode the work area is full-screen, so a WS_MAXIMIZE or caption-bearing window is excluded.
 unsafe fn fullscreen_now(bar: HWND) -> bool {
     let fg = GetForegroundWindow();
     if fg.is_null() || fg == bar || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
         return false;
     }
+    let st = GetWindowLongW(fg, GWL_STYLE) as u32;
+    if (style() == Style::Dock || AUTOHIDE.load(Relaxed)) && (st & WS_MAXIMIZE != 0 || st & WS_CAPTION == WS_CAPTION) {
+        return false;
+    }
     let mut cls = [0u16; 64];
     let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
-    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
-        return false; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
+    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer" | "ApplicationFrameWindow" | "Windows.UI.Core.CoreWindow") {
+        return false; // the desktop, file manager and Settings (UWP frame) are never "fullscreen" games
     }
     let mut r: RECT = zeroed();
     GetWindowRect(fg, &mut r);
@@ -1429,26 +1581,26 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
     (m.left, m.top) == (0, 0) && r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
 }
 
-/// True when no app window is on screen (none open, or all minimized: Win+D): the user is looking at the desktop.
-unsafe fn desktop_now() -> bool {
-    BTNS.with_borrow(|b| b.iter().flat_map(|b| &b.wins).all(|&w| IsIconic(w) != 0))
-}
-
 unsafe fn fs_update(hwnd: HWND) {
     let fs = fullscreen_now(hwnd);
     // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
     // edges all the time); Win opens Start, which brings the bar with it
     let mut pt = POINT { x: 0, y: 0 };
     GetCursorPos(&mut pt);
-    // desktop in front: the bar leaves 2 s after the pointer does and comes back at the bottom edge (an open flyout keeps it)
+    // auto-hide / floating dock covered: the bar leaves 2 s after the pointer does and comes back at the screen edge (an open flyout keeps it)
     let now = now_ms();
     let sh = GetSystemMetrics(SM_CYSCREEN);
-    let over = if at_top() { pt.y <= 0 || (pt.y < bar_h() && BAR_P.get() > 0.0) } else { pt.y >= sh - 1 || (pt.y >= sh - bar_h() - dock_gap() && BAR_P.get() > 0.0) };
-    if fs || !(desktop_now() || dock_covered()) || fly::any_open() || over {
+    let over = if at_top() { pt.y <= 1 || (pt.y < bar_h() && BAR_P.get() > 0.0) } else { pt.y >= sh - 2 || (pt.y >= sh - bar_h() - dock_gap() && BAR_P.get() > 0.0) };
+    let tray_open = IsWindowVisible(TRAYFLY.get()) != 0;
+    let want_hide = AUTOHIDE.load(Relaxed) || dock_covered();
+    if fs || !want_hide || fly::any_open() || tray_open || over {
         DESK_T.set(now);
     }
-    let desk = !fs && now.saturating_sub(DESK_T.get()) >= 2000;
+    let desk = !fs && want_hide && !fly::any_open() && !tray_open && !over && now.saturating_sub(DESK_T.get()) >= 2000;
     if DESK_HIDE.swap(desk, Relaxed) != desk {
+        if desk {
+            hide_tip(hwnd);
+        }
         bar_anim(hwnd);
     }
     if FULLSCREEN.swap(fs, Relaxed) != fs {
@@ -1805,11 +1957,12 @@ unsafe fn paint(hwnd: HWND) {
     let hot = HOT.get();
     let active_bg = mix(pal().active, pal().accent, 0.12); // the focused app's button: a hint of the accent, not plain grey
 
-    // the gear at the left end: the Style menu
+        // the gear at the left end: the Style menu
     let gr = RECT { left: sc(GEAR_X.0), top, right: sc(GEAR_X.0 + GEAR_X.1), bottom: bot };
-    glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
+    let gear_on = hot == GEAR || fly::is_open(fly::Kind::Menu);
+    glow(dc, GEAR, gear_on, gr, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
-    text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    text(dc, "\u{E713}", gr, if gear_on { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
 
     // search button (left of Start)
     let sb = RECT { left: l.x0, top, right: l.x0 + l.bw, bottom: bot };
@@ -2215,16 +2368,31 @@ unsafe fn open_launcher() -> bool {
     true
 }
 
-/// The gear's menu: the UI style (saved for the other WinRust programs) and putting the windows side by side.
+/// The gear's menu: the UI style (saved for the other WinRust programs), auto-hide and putting the windows side by side.
 unsafe fn style_menu() {
     let bar = BAR.load(Relaxed) as HWND;
     let names = [t!("Обычный", "Normal"), t!("Терминал", "Terminal"), t!("Плавающий док", "Floating dock"), t!("Тайлинг", "Tiling")];
     let mut items: Vec<fly::MItem> = i18n::style::ALL.iter().zip(names).map(|(&s, n)| fly::MItem::new(n).on(s == style())).collect();
+    items.push(fly::MItem::new(t!("Автоматически скрывать панель", "Auto-hide the bar")).on(AUTOHIDE.load(Relaxed)).sep());
     items.push(fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows")).sep());
     let head = (null_mut(), "\u{E713}", t!("Стиль", "Style").to_string(), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs").to_string());
     fly::menu(tip_cx(&bar_layout(bar), GEAR), Some(head), items, move |i| match i18n::style::ALL.get(i) {
         Some(&s) => {
             i18n::style::set_style(s);
+            DESK_T.set(now_ms());
+            if DESK_HIDE.swap(false, Relaxed) {
+                bar_anim(bar);
+            }
+            place(bar);
+        }
+        None if i == i18n::style::ALL.len() => {
+            let on = !AUTOHIDE.load(Relaxed);
+            AUTOHIDE.store(on, Relaxed);
+            let _ = std::fs::write(appdata_file("topbar-autohide.txt"), if on { "1" } else { "0" });
+            DESK_T.set(now_ms());
+            if !on && DESK_HIDE.swap(false, Relaxed) {
+                bar_anim(bar);
+            }
             place(bar);
         }
         None => tile_windows(),
@@ -2388,7 +2556,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             KillTimer(hwnd, 2);
             let h = HOT.get();
             if h != NONE && !fly::any_open() {
-                show_tip(tip_text(h), tip_cx(&bar_layout(hwnd), h));
+                show_bar_tip(hwnd, h);
             }
         }
         WM_TIMER if wp == 6 => hide_tip(hwnd), // the volume readout after a wheel turn
@@ -2539,6 +2707,7 @@ fn main() {
         SCALE.set(GetDeviceCaps(dc, LOGPIXELSX as i32) as f32 / 96.0);
         ReleaseDC(null_mut(), dc);
         SHOWN.set(std::fs::read_to_string(appdata_file("topbar-tray.txt")).ok().map(|s| s.lines().map(str::to_string).collect()));
+        AUTOHIDE.store(std::fs::read_to_string(appdata_file("topbar-autohide.txt")).is_ok_and(|s| s.trim() == "1"), Relaxed);
         load_pins();
         fly::init(GetModuleHandleW(null()));
         thread::spawn(fly::load_apps);
