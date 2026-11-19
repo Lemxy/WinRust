@@ -33,7 +33,7 @@ use windows_sys::Win32::{
     Globalization::{GetDateFormatW, GetLocaleInfoW, GetTimeFormatW},
     Graphics::{
         Dwm::{
-            DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE, DWM_THUMBNAIL_PROPERTIES, DwmGetWindowAttribute,
+            DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE, DWM_THUMBNAIL_PROPERTIES, DwmFlush, DwmGetWindowAttribute,
             DwmQueryThumbnailSourceSize, DwmRegisterThumbnail, DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
         },
         Gdi::*,
@@ -183,6 +183,7 @@ thread_local! {
     static SW: RefCell<(Vec<HWND>, usize)> = const { RefCell::new((Vec::new(), 0)) }; // its windows (z-order) and selection
     static TIP: RefCell<String> = const { RefCell::new(String::new()) };
     static TIP_WINS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // windows previewed in the taskbar tooltip
+    static TIP_HOT: Cell<i32> = const { Cell::new(-1) }; // hovered card in TIPWND (negative - 2 = hovered close button)
     static TIP_THUMBS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) }; // active DWM thumbnails in TIPWND
     static SW_THUMBS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) }; // active DWM thumbnails in SWWND
     static PINS: RefCell<Vec<Pin>> = const { RefCell::new(Vec::new()) };
@@ -525,9 +526,65 @@ unsafe fn tip_font() -> HFONT {
     CreateFontW(-sc(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide(ui_face()).as_ptr())
 }
 
+unsafe fn tip_hit(hwnd: HWND, lp: LPARAM) -> (i32, bool) {
+    let n = TIP_WINS.with_borrow(|w| w.len()) as i32;
+    if n <= 0 {
+        return (-1, false);
+    }
+    let mut r: RECT = zeroed();
+    GetClientRect(hwnd, &mut r);
+    let pad = sc(8);
+    let cell = (r.right - 2 * pad) / n.max(1);
+    let (x, y) = ((lp & 0xffff) as i16 as i32 - pad, ((lp >> 16) & 0xffff) as i16 as i32);
+    if x < 0 || y < 0 || y >= r.bottom || x >= cell * n {
+        return (-1, false);
+    }
+    let k = (x / cell).clamp(0, n - 1);
+    let lx = k * cell;
+    let close = x >= lx + cell - sc(24) && x < lx + cell - sc(2) && y >= sc(4) && y < sc(25);
+    (k, close)
+}
+
 unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if msg != WM_PAINT {
-        return DefWindowProcW(hwnd, msg, wp, lp);
+    match msg {
+        WM_MOUSEMOVE => {
+            let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+            TrackMouseEvent(&mut tme);
+            KillTimer(BAR.load(Relaxed) as HWND, 8);
+            let (k, close) = tip_hit(hwnd, lp);
+            let h = if k < 0 { -1 } else if close { -k - 2 } else { k };
+            if TIP_HOT.replace(h) != h {
+                InvalidateRect(hwnd, null(), 0);
+            }
+            return 0;
+        }
+        WM_MOUSELEAVE => {
+            TIP_HOT.set(-1);
+            InvalidateRect(hwnd, null(), 0);
+            SetTimer(BAR.load(Relaxed) as HWND, 8, 160, None);
+            return 0;
+        }
+        WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN => {
+            let (k, close) = tip_hit(hwnd, lp);
+            let w = TIP_WINS.with_borrow(|v| v.get(k.max(0) as usize).copied());
+            if let (true, Some(w)) = (k >= 0, w) {
+                let bar = BAR.load(Relaxed) as HWND;
+                if close || msg != WM_LBUTTONDOWN {
+                    close_window(w);
+                    hide_tip(bar);
+                } else {
+                    hide_tip(bar);
+                    if IsIconic(w) != 0 {
+                        ShowWindow(w, SW_RESTORE);
+                    }
+                    force_fg(w);
+                }
+                InvalidateRect(bar, null(), 0);
+            }
+            return 0;
+        }
+        WM_PAINT => {}
+        _ => return DefWindowProcW(hwnd, msg, wp, lp),
     }
     let mut ps: PAINTSTRUCT = zeroed();
     let dc = BeginPaint(hwnd, &mut ps);
@@ -549,10 +606,16 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         let pad = sc(8);
         let cell = (r.right - 2 * pad) / wins.len().max(1) as i32;
         let fg = GetForegroundWindow();
+        let th = TIP_HOT.get();
+        let (hot_k, hot_close) = if th <= -2 { (-th - 2, true) } else { (th, false) };
         for (k, &w) in wins.iter().enumerate() {
-            let x = pad + k as i32 * cell;
-            if w == fg {
-                fill(mem, RECT { left: x + sc(1), top: sc(4), right: x + cell - sc(1), bottom: r.bottom - sc(4) }, pal().active, sc(6));
+            let k = k as i32;
+            let x = pad + k * cell;
+            let card = RECT { left: x + sc(1), top: sc(4), right: x + cell - sc(1), bottom: r.bottom - sc(4) };
+            if k == hot_k {
+                fill(mem, card, pal().hover, sc(6));
+            } else if w == fg {
+                fill(mem, card, pal().active, sc(6));
             }
             let ic = icon_of(w);
             if !ic.is_null() {
@@ -560,7 +623,15 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             }
             let mut b = [0u16; 256];
             let n = GetWindowTextW(w, b.as_mut_ptr(), 256).max(0) as usize;
-            text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: x + sc(26), top: sc(5), right: x + cell - sc(6), bottom: sc(25) }, pal().text, DT_LEFT);
+            let right_lim = if k == hot_k { x + cell - sc(24) } else { x + cell - sc(6) };
+            text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: x + sc(26), top: sc(5), right: right_lim, bottom: sc(25) }, pal().text, DT_LEFT);
+            if k == hot_k {
+                let cb = RECT { left: x + cell - sc(22), top: sc(5), right: x + cell - sc(4), bottom: sc(23) };
+                if hot_close {
+                    fill(mem, cb, BAD, sc(4));
+                }
+                text(mem, "×", cb, if hot_close { pal().text } else { pal().dim }, DT_CENTER);
+            }
             let tr = RECT { left: x + sc(4), top: sc(27), right: x + cell - sc(4), bottom: r.bottom - sc(6) };
             fill(mem, tr, mix(pal().bg, 0, 0.35), sc(6));
         }
@@ -719,12 +790,20 @@ unsafe fn show_bar_tip(bar: HWND, h: i32) {
     show_tip(tip_text(h), cx);
 }
 
-// ---------- Alt+Tab switcher: the open windows' live previews + icons, most recently used first, the selected one's title below ----------
+// ---------- Alt+Tab switcher: multi-row grid of live window previews + icons, most recently used first, selected title below ----------
 
-const SW_CELL: i32 = 168;
+const SW_CELL: i32 = 176;
 const SW_CELL_H: i32 = 128;
+const SW_MAX_COLS: usize = 6;
+const SW_MAX_ROWS: usize = 4;
 const SW_PAD: i32 = 14;
 const SW_TITLE: i32 = 30;
+
+fn sw_grid(n: usize) -> (usize, usize) {
+    let cols = n.clamp(1, SW_MAX_COLS);
+    let rows = n.div_ceil(cols).clamp(1, SW_MAX_ROWS);
+    (cols, rows)
+}
 
 unsafe fn sw_thumbs_sync() {
     let sw = SWWND.get();
@@ -736,11 +815,13 @@ unsafe fn sw_thumbs_sync() {
     GetClientRect(sw, &mut r);
     let pad = sc(SW_PAD);
     SW.with_borrow(|(v, _)| {
-        let cell = (r.right - 2 * pad) / v.len().max(1) as i32;
+        let (cols, rows) = sw_grid(v.len());
+        let cell = (r.right - 2 * pad) / cols as i32;
         let ch = sc(SW_CELL_H);
-        for (k, &w) in v.iter().enumerate() {
-            let x = pad + k as i32 * cell;
-            let tr = RECT { left: x + sc(8), top: pad + sc(26), right: x + cell - sc(8), bottom: pad + ch - sc(12) };
+        for (k, &w) in v.iter().take(cols * rows).enumerate() {
+            let (col, row) = ((k % cols) as i32, (k / cols) as i32);
+            let (x, y) = (pad + col * cell, pad + row * ch);
+            let tr = RECT { left: x + sc(8), top: y + sc(26), right: x + cell - sc(8), bottom: y + ch - sc(12) };
             if tr.right - tr.left >= sc(36) {
                 add_thumb(sw, w, tr, &SW_THUMBS);
             }
@@ -753,14 +834,16 @@ unsafe fn alt_tab(back: bool) {
     if IsWindowVisible(sw) == 0 {
         let mut v: Vec<HWND> = Vec::new();
         EnumWindows(Some(collect), &mut v as *mut _ as LPARAM); // z-order: the active window first, then the one before it
+        v.truncate(SW_MAX_COLS * SW_MAX_ROWS);
         let n = v.len();
         if n == 0 {
             return SWITCHING.store(false, Relaxed);
         }
         SW.set((v, if n == 1 { 0 } else if back { n - 1 } else { 1 }));
+        let (cols, rows) = sw_grid(n);
         let scr = GetSystemMetrics(SM_CXSCREEN);
-        let w = (n as i32 * sc(SW_CELL)).min(scr - sc(80)) + 2 * sc(SW_PAD);
-        let h = sc(SW_PAD) + sc(SW_CELL_H) + sc(SW_TITLE) + sc(SW_PAD) / 2;
+        let w = (cols as i32 * sc(SW_CELL)).min(scr - sc(60)) + 2 * sc(SW_PAD);
+        let h = sc(SW_PAD) + rows as i32 * sc(SW_CELL_H) + sc(SW_TITLE) + sc(SW_PAD) / 2;
         SetWindowRgn(sw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(18), rr(18)), 1);
         SetWindowPos(sw, HWND_TOPMOST, (scr - w) / 2, (GetSystemMetrics(SM_CYSCREEN) - h) / 2, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         sw_thumbs_sync();
@@ -784,6 +867,30 @@ unsafe fn alt_done(cancel: bool) {
 }
 
 unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_LBUTTONDOWN {
+        let mut r: RECT = zeroed();
+        GetClientRect(hwnd, &mut r);
+        let pad = sc(SW_PAD);
+        let ch = sc(SW_CELL_H);
+        let (x, y) = ((lp & 0xffff) as i16 as i32 - pad, ((lp >> 16) & 0xffff) as i16 as i32 - pad);
+        let picked = SW.with_borrow_mut(|(v, sel)| {
+            let (cols, rows) = sw_grid(v.len());
+            let cell = (r.right - 2 * pad) / cols.max(1) as i32;
+            if x >= 0 && y >= 0 && x < cols as i32 * cell && y < rows as i32 * ch {
+                let k = (y / ch) as usize * cols + (x / cell) as usize;
+                if k < v.len() {
+                    *sel = k;
+                    return true;
+                }
+            }
+            false
+        });
+        if picked {
+            SWITCHING.store(false, Relaxed);
+            alt_done(false);
+        }
+        return 0;
+    }
     if msg != WM_PAINT {
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
@@ -801,11 +908,13 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     let of0 = SelectObject(mem, f_sm);
     SetBkMode(mem, TRANSPARENT as i32);
     SW.with_borrow(|(v, sel)| {
-        let cell = (r.right - 2 * pad) / v.len().max(1) as i32;
+        let (cols, rows) = sw_grid(v.len());
+        let cell = (r.right - 2 * pad) / cols as i32;
         let show_thumb = cell - sc(16) >= sc(36);
-        for (k, &w) in v.iter().enumerate() {
-            let x = pad + k as i32 * cell;
-            let c = RECT { left: x + sc(3), top: pad, right: x + cell - sc(3), bottom: pad + ch - sc(6) };
+        for (k, &w) in v.iter().take(cols * rows).enumerate() {
+            let (col, row) = ((k % cols) as i32, (k / cols) as i32);
+            let (x, y) = (pad + col * cell, pad + row * ch);
+            let c = RECT { left: x + sc(3), top: y, right: x + cell - sc(3), bottom: y + ch - sc(6) };
             if k == *sel {
                 fill(mem, c, pal().accent, sc(12)); // accent ring around the selected window
                 fill(mem, RECT { left: c.left + sc(2), top: c.top + sc(2), right: c.right - sc(2), bottom: c.bottom - sc(2) }, pal().active, sc(10));
@@ -815,14 +924,14 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let ic = icon_of(w);
             if show_thumb {
                 if !ic.is_null() {
-                    DrawIconEx(mem, x + sc(8), pad + sc(5), ic, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                    DrawIconEx(mem, x + sc(8), y + sc(5), ic, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
                 }
                 let mut b = [0u16; 256];
                 let n = GetWindowTextW(w, b.as_mut_ptr(), 256).max(0) as usize;
-                text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: x + sc(28), top: pad + sc(4), right: x + cell - sc(8), bottom: pad + sc(22) }, if k == *sel { pal().text } else { pal().dim }, DT_LEFT);
+                text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: x + sc(28), top: y + sc(4), right: x + cell - sc(8), bottom: y + sc(22) }, if k == *sel { pal().text } else { pal().dim }, DT_LEFT);
             } else if !ic.is_null() {
                 let isz = sc(32).min(cell - sc(10)).max(sc(12));
-                DrawIconEx(mem, x + (cell - isz) / 2, pad + (ch - sc(6) - isz) / 2, ic, isz, isz, 0, null_mut(), DI_NORMAL);
+                DrawIconEx(mem, x + (cell - isz) / 2, y + (ch - sc(6) - isz) / 2, ic, isz, isz, 0, null_mut(), DI_NORMAL);
             }
         }
         if let Some(&w) = v.get(*sel) {
@@ -830,7 +939,8 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let n = GetWindowTextW(w, b.as_mut_ptr(), 256).max(0) as usize;
             let f = CreateFontW(-sc(14), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, wide(ui_face()).as_ptr());
             let of = SelectObject(mem, f);
-            text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: pad, top: pad + ch - sc(4), right: r.right - pad, bottom: pad + ch + sc(SW_TITLE) - sc(4) }, pal().text, DT_CENTER);
+            let ty = pad + rows as i32 * ch - sc(4);
+            text(mem, &String::from_utf16_lossy(&b[..n]), RECT { left: pad, top: ty, right: r.right - pad, bottom: ty + sc(SW_TITLE) }, pal().text, DT_CENTER);
             SelectObject(mem, of);
             DeleteObject(f);
         }
@@ -847,6 +957,8 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
 unsafe fn hide_tip(bar: HWND) {
     KillTimer(bar, 2);
+    KillTimer(bar, 8);
+    TIP_HOT.set(-1);
     clear_thumbs(&TIP_THUMBS);
     TIP_WINS.with_borrow_mut(Vec::clear);
     ShowWindow(TIPWND.get(), SW_HIDE);
@@ -1591,7 +1703,7 @@ unsafe fn fs_update(hwnd: HWND) {
     let now = now_ms();
     let sh = GetSystemMetrics(SM_CYSCREEN);
     let over = if at_top() { pt.y <= 1 || (pt.y < bar_h() && BAR_P.get() > 0.0) } else { pt.y >= sh - 2 || (pt.y >= sh - bar_h() - dock_gap() && BAR_P.get() > 0.0) };
-    let tray_open = IsWindowVisible(TRAYFLY.get()) != 0;
+    let tray_open = IsWindowVisible(TRAYFLY.get()) != 0 || IsWindowVisible(TIPWND.get()) != 0;
     let want_hide = AUTOHIDE.load(Relaxed) || dock_covered();
     if fs || !want_hide || fly::any_open() || tray_open || over {
         DESK_T.set(now);
@@ -1652,30 +1764,30 @@ unsafe fn force_fg(hw: HWND) {
 unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     if n >= 0 {
         let k = &*(l as *const KBDLLHOOKSTRUCT);
-        if k.flags & LLKHF_INJECTED == 0 {
-            // without explorer nobody opens the screen capture: PrtSc (when Windows is set to snip with it; otherwise it
-            // copies the screen by itself) and Win+Shift+S do it here
+        // Ignore only our own synthetic 0xE8 key taps; allow LLKHF_INJECTED from remote KVM tools like Deskflow/Synergy.
+        if k.vkCode != 0xE8 {
+            let held = |vk: u16| GetAsyncKeyState(vk as i32) < 0;
+            let down = w == WM_KEYDOWN as usize || w == WM_SYSKEYDOWN as usize;
+            let bar = BAR.load(Relaxed) as HWND;
+            // without explorer nobody opens the screen capture: PrtSc and Win+Shift+S do it here
             if !EXPLORER_UP.load(Relaxed) {
-                let held = |vk: u16| GetAsyncKeyState(vk as i32) < 0;
-                let down = w == WM_KEYDOWN as usize || w == WM_SYSKEYDOWN as usize;
                 let snip_key = k.vkCode == VK_SNAPSHOT as u32;
-                let win_shift_s = k.vkCode == b'S' as u32 && down && (held(VK_LWIN) || held(VK_RWIN)) && held(VK_SHIFT);
+                let win_shift_s = k.vkCode == b'S' as u32 && (held(VK_LWIN) || held(VK_RWIN)) && held(VK_SHIFT);
                 if snip_key || win_shift_s {
                     if down {
                         WIN_ALONE.store(false, Relaxed);
-                        PostMessageW(BAR.load(Relaxed) as HWND, SNIP, snip_key as usize, 0); // wp 1: PrtSc, 0: Win+Shift+S
+                        PostMessageW(bar, SNIP, snip_key as usize, 0); // wp 1: PrtSc, 0: Win+Shift+S
                     }
                     return 1;
                 }
             }
-            let down = w == WM_KEYDOWN as usize || w == WM_SYSKEYDOWN as usize;
-            let bar = BAR.load(Relaxed) as HWND;
             // Alt+Tab: our own switcher. Without explorer Windows only flips to the next window blindly, and a fullscreen
-            // game often takes the focus straight back.
-            if k.vkCode == VK_TAB as u32 && k.flags & LLKHF_ALTDOWN != 0 && GetAsyncKeyState(VK_CONTROL as i32) >= 0 {
+            // game often takes the focus straight back. Also check GetAsyncKeyState(VK_MENU) for injected Deskflow keys.
+            let alt_down = k.flags & LLKHF_ALTDOWN != 0 || held(VK_MENU) || held(VK_LMENU) || held(VK_RMENU);
+            if k.vkCode == VK_TAB as u32 && alt_down && !held(VK_CONTROL) {
                 if down {
                     SWITCHING.store(true, Relaxed);
-                    PostMessageW(bar, ALT_TAB, (GetAsyncKeyState(VK_SHIFT as i32) < 0) as usize, 0);
+                    PostMessageW(bar, ALT_TAB, held(VK_SHIFT) as usize, 0);
                 }
                 return 1;
             }
@@ -1696,7 +1808,7 @@ unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
                     WIN_ALONE.store(true, Relaxed);
                 } else if WIN_ALONE.swap(false, Relaxed) {
                     keys(&[0xE8]); // an unassigned key between press and release: Windows no longer opens its own Start
-                    PostMessageW(BAR.load(Relaxed) as HWND, WIN_START, 0, 0);
+                    PostMessageW(bar, WIN_START, 0, 0);
                 }
             } else if down {
                 WIN_ALONE.store(false, Relaxed); // Win+something else: a shortcut, not a Start press
@@ -1785,11 +1897,14 @@ unsafe fn app_window() -> HWND {
 /// The system's own capture overlay (ms-screenclip:) does not come up without explorer as the shell. Returns the file name.
 /// `topbar --shot` does the same from a command line.
 unsafe fn screenshot() -> Option<String> {
+    screenshot_rect(GetSystemMetrics(76), GetSystemMetrics(77), GetSystemMetrics(78), GetSystemMetrics(79)) // virtual screen
+}
+
+unsafe fn screenshot_rect(x: i32, y: i32, w: i32, h: i32) -> Option<String> {
     use windows_sys::Win32::{
         Graphics::GdiPlus::{GdipCreateBitmapFromHBITMAP, GdipDisposeImage, GdipSaveImageToFile, GpBitmap, GpImage},
         System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
     };
-    let (x, y, w, h) = (GetSystemMetrics(76), GetSystemMetrics(77), GetSystemMetrics(78), GetSystemMetrics(79)); // virtual screen
     if w <= 0 || h <= 0 {
         return None;
     }
@@ -1822,6 +1937,117 @@ unsafe fn screenshot() -> Option<String> {
         DeleteObject(bmp);
     }
     (saved || clip).then_some(name)
+}
+
+thread_local! {
+    static SNIP_WND: Cell<HWND> = const { Cell::new(null_mut()) };
+    static SNIP_DRAG: Cell<Option<(i32, i32, i32, i32)>> = const { Cell::new(None) };
+}
+
+/// Interactive Win+Shift+S region capture overlay (works without Explorer as shell).
+/// Drag a rectangle to capture that region; single click without drag captures the whole screen; Esc or right-click cancels.
+unsafe fn start_region_snip() {
+    let w = SNIP_WND.get();
+    if !w.is_null() && IsWindowVisible(w) != 0 {
+        return;
+    }
+    let (vx, vy, vw, vh) = (GetSystemMetrics(76), GetSystemMetrics(77), GetSystemMetrics(78), GetSystemMetrics(79));
+    if w.is_null() {
+        let hi = GetModuleHandleW(null());
+        let cls = wide("topbar_snip");
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(snip_proc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_CROSS), lpszClassName: cls.as_ptr(), ..zeroed() });
+        let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, cls.as_ptr(), null(), WS_POPUP, vx, vy, vw, vh, null_mut(), null_mut(), hi, null());
+        SNIP_WND.set(hw);
+    }
+    let hw = SNIP_WND.get();
+    SNIP_DRAG.set(None);
+    SetLayeredWindowAttributes(hw, 0, 110, LWA_ALPHA);
+    SetWindowPos(hw, HWND_TOPMOST, vx, vy, vw, vh, SWP_SHOWWINDOW);
+    force_fg(hw);
+    InvalidateRect(hw, null(), 1);
+}
+
+unsafe extern "system" fn snip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let (mx, my) = ((lp & 0xffff) as i16 as i32, ((lp >> 16) & 0xffff) as i16 as i32);
+    match msg {
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = zeroed();
+            let dc = BeginPaint(hwnd, &mut ps);
+            let mut r: RECT = zeroed();
+            GetClientRect(hwnd, &mut r);
+            let (mem, bmp) = (CreateCompatibleDC(dc), CreateCompatibleBitmap(dc, r.right, r.bottom));
+            let ob = SelectObject(mem, bmp);
+            fill(mem, r, rgb(10, 14, 22), 0);
+            if let Some((x0, y0, x1, y1)) = SNIP_DRAG.get() {
+                let sr = RECT { left: x0.min(x1), top: y0.min(y1), right: x0.max(x1), bottom: y0.max(y1) };
+                fill(mem, RECT { left: sr.left - 2, top: sr.top - 2, right: sr.right + 2, bottom: sr.bottom + 2 }, pal().accent, 0);
+                fill(mem, sr, rgb(220, 235, 255), 0);
+            } else {
+                let f = CreateFontW(-sc(16), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, wide(ui_face()).as_ptr());
+                let of = SelectObject(mem, f);
+                SetBkMode(mem, TRANSPARENT as i32);
+                let pill = RECT { left: (r.right - sc(420)) / 2, top: sc(24), right: (r.right + sc(420)) / 2, bottom: sc(64) };
+                fill(mem, pill, pal().bg, sc(12));
+                text(mem, t!("Выделите область для снимка (Esc — отмена)", "Drag to snip a region · Click for full screen · Esc to cancel"), pill, pal().text, DT_CENTER);
+                SelectObject(mem, of);
+                DeleteObject(f);
+            }
+            BitBlt(dc, 0, 0, r.right, r.bottom, mem, 0, 0, SRCCOPY);
+            SelectObject(mem, ob);
+            DeleteObject(bmp);
+            DeleteDC(mem);
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_LBUTTONDOWN => {
+            SetCapture(hwnd);
+            SNIP_DRAG.set(Some((mx, my, mx, my)));
+            InvalidateRect(hwnd, null(), 0);
+            0
+        }
+        WM_MOUSEMOVE => {
+            if let Some((x0, y0, _, _)) = SNIP_DRAG.get() {
+                SNIP_DRAG.set(Some((x0, y0, mx, my)));
+                InvalidateRect(hwnd, null(), 0);
+            }
+            0
+        }
+        WM_LBUTTONUP => {
+            ReleaseCapture();
+            let drag = SNIP_DRAG.take();
+            ShowWindow(hwnd, SW_HIDE);
+            DwmFlush();
+            let (vx, vy, vw, vh) = (GetSystemMetrics(76), GetSystemMetrics(77), GetSystemMetrics(78), GetSystemMetrics(79));
+            let (rx, ry, rw, rh) = match drag {
+                Some((x0, y0, x1, y1)) if (x1 - x0).abs() > 6 && (y1 - y0).abs() > 6 => {
+                    (vx + x0.min(x1), vy + y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs())
+                }
+                _ => (vx, vy, vw, vh),
+            };
+            let bar = BAR.load(Relaxed) as HWND;
+            let msg = match screenshot_rect(rx, ry, rw, rh) {
+                Some(n) => tf!("Скриншот сохранён: {n}\nи скопирован в буфер обмена", "Screenshot saved: {n}\nand copied to the clipboard"),
+                None => t!("Не удалось сделать скриншот", "Could not take a screenshot").to_string(),
+            };
+            KillTimer(bar, 2);
+            show_tip(msg, GetSystemMetrics(SM_CXSCREEN) / 2);
+            SetTimer(bar, 6, 2500, None);
+            0
+        }
+        WM_RBUTTONDOWN => {
+            ReleaseCapture();
+            SNIP_DRAG.set(None);
+            ShowWindow(hwnd, SW_HIDE);
+            0
+        }
+        WM_KEYDOWN if wp == VK_ESCAPE as usize => {
+            ReleaseCapture();
+            SNIP_DRAG.set(None);
+            ShowWindow(hwnd, SW_HIDE);
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
 }
 
 /// PrtSc pressed: take the screenshot, then say so above the bar for a moment.
@@ -2559,6 +2785,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 show_bar_tip(hwnd, h);
             }
         }
+        WM_TIMER if wp == 8 => {
+            KillTimer(hwnd, 8);
+            let mut pt = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut pt);
+            let tw = TIPWND.get();
+            let mut tr: RECT = zeroed();
+            let in_tip = !tw.is_null() && IsWindowVisible(tw) != 0 && GetWindowRect(tw, &mut tr) != 0 && pt.x >= tr.left && pt.x < tr.right && pt.y >= tr.top && pt.y < tr.bottom;
+            if !in_tip && HOT.get() == NONE {
+                hide_tip(hwnd);
+            }
+        }
         WM_TIMER if wp == 6 => hide_tip(hwnd), // the volume readout after a wheel turn
         WM_TIMER if wp == 3 => fs_update(hwnd),
         WM_TIMER if wp == 7 => {
@@ -2581,7 +2818,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         ALT_TAB => alt_tab(wp == 1),
         ALT_UP => alt_done(wp == 1),
         SNIP if wp == 1 => screenshot_notice(hwnd),
-        SNIP => open(&wide("ms-screenclip:")),
+        SNIP => start_region_snip(),
         WM_DROPFILES => on_drop(hwnd, wp as HDROP),
         WM_TIMER => {
             hide_taskbar_if_shown();
@@ -2609,8 +2846,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
         }
         WM_MOUSELEAVE => {
-            hide_tip(hwnd);
-            HOT.set(-1);
+            HOT.set(NONE);
+            if TIP_WINS.with_borrow(|w| !w.is_empty()) && IsWindowVisible(TIPWND.get()) != 0 {
+                SetTimer(hwnd, 8, 180, None); // give the pointer time to cross the gap into the preview card
+            } else {
+                hide_tip(hwnd);
+            }
             InvalidateRect(hwnd, null(), 0);
         }
         WM_MOUSEWHEEL => {
@@ -2733,10 +2974,10 @@ fn main() {
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(fly_proc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: fc.as_ptr(), ..zeroed() });
         TRAYFLY.set(CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, fc.as_ptr(), null(), WS_POPUP, 0, 0, 1, 1, null_mut(), null_mut(), hi, null()));
         let tipc = wide("topbar_tip");
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(tip_proc), hInstance: hi, lpszClassName: tipc.as_ptr(), ..zeroed() });
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(tip_proc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: tipc.as_ptr(), ..zeroed() });
         TIPWND.set(CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, tipc.as_ptr(), null(), WS_POPUP, 0, 0, 1, 1, null_mut(), null_mut(), hi, null()));
         let swc = wide("topbar_alttab");
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(sw_proc), hInstance: hi, lpszClassName: swc.as_ptr(), ..zeroed() });
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(sw_proc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: swc.as_ptr(), ..zeroed() });
         SWWND.set(CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, swc.as_ptr(), null(), WS_POPUP, 0, 0, 1, 1, null_mut(), null_mut(), hi, null()));
         let mut ab: APPBARDATA = zeroed();
         ab.cbSize = size_of::<APPBARDATA>() as u32;

@@ -56,8 +56,16 @@ pub(crate) fn bar_install() -> Result<(), String> {
         let rsh = bar_dir().join("reshell.exe"); // Win+1/2/3 desktop hotkeys, no args = hotkeys
         let _ = run("taskkill", &["/f", "/im", "reshell.exe"]);
         put(&d.join("reshell.exe"), &rsh)?;
-        run("reg", &["add", RUN_KEY, "/v", "reshell", "/t", "REG_SZ", "/d", &format!("\"{}\"", rsh.display()), "/f"])?;
-        let _ = Command::new("explorer.exe").arg(&rsh).spawn();
+        let rsh_task = format!("{} Register-ScheduledTask -TaskName reshell -Force -Action (New-ScheduledTaskAction -Execute '{}') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), rsh.display());
+        if run("powershell", &["-NoProfile", "-Command", &rsh_task]).is_ok() && run("schtasks", &["/run", "/tn", "reshell"]).is_ok() {
+            let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);
+        } else {
+            run("reg", &["add", RUN_KEY, "/v", "reshell", "/t", "REG_SZ", "/d", &format!("\"{}\"", rsh.display()), "/f"])?;
+            let _ = Command::new("explorer.exe").arg(&rsh).spawn();
+        }
+        // Also elevate running Deskflow/Barrier/Synergy KVM clients so remote keyboard/mouse works across elevated WinRust windows (UIPI).
+        let kvm = format!("{} Get-Process deskflow,deskflow-core,barrier,barrierc,barriers,synergy,synergyc,synergys -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique | Where-Object {{ $_ -and $_ -notmatch 'deskflow-core' }} | ForEach-Object {{ $p=$_; $n=[IO.Path]::GetFileNameWithoutExtension($p); Register-ScheduledTask -TaskName \"winrust-$n\" -Force -Action (New-ScheduledTaskAction -Execute $p -WorkingDirectory ([IO.Path]::GetDirectoryName($p))) -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null; Stop-Process -Name $n,\"$n-core\" -Force -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName \"winrust-$n\" }}", task_user());
+        let _ = run("powershell", &["-NoProfile", "-Command", &kvm]);
         run(dst.to_str().unwrap(), &["--restore"])?; // clean state in case a killed instance left the taskbar hidden
         // The bar runs elevated (a task with the highest run level starts it at logon without a UAC prompt): that lets it close
         // elevated windows and click elevated apps' tray icons. It starts everything else through explorer, i.e. unelevated.
@@ -78,6 +86,7 @@ pub(crate) fn bar_install() -> Result<(), String> {
 pub(crate) fn bar_uninstall() -> Result<(), String> {
     let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "topbar", "/f"]);
+    let _ = run("schtasks", &["/delete", "/tn", "reshell", "/f"]);
     let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);
     let _ = run("taskkill", &["/f", "/im", "reshell.exe"]);
     let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);
