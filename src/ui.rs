@@ -114,7 +114,10 @@ pub(crate) const ID_CANCEL: usize = 3;
 pub(crate) const ID_SWITCH: usize = 4;
 pub(crate) const ID_GEAR: usize = 5;
 pub(crate) const ID_LANG: usize = 6; // EN / RU switch
+pub(crate) const ID_ROW: usize = 100; // + index in ready(): the install / reinstall button of that row
 pub(crate) const STARTING: usize = usize::MAX - 1; // JOB before install_all picks its first component
+/// The running job is "install / update everything" (the rows below the current one wait in a queue), not a single component.
+pub(crate) static ALL_RUN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Installable components, in install order (topbar comes before rust-explorer, which needs it).
 pub(crate) fn ready() -> impl Iterator<Item = usize> {
@@ -132,6 +135,14 @@ pub(crate) fn gear_box(w: f32) -> Option<(usize, Box4)> {
     let r = row_box(k, w);
     let t = r[1] + (ROW_H - 32.0) / 2.0;
     Some((i, [r[2] - 14.0 - 32.0, t, r[2] - 14.0, t + 32.0]))
+}
+
+/// The install / reinstall button of row `k` (plugin `i`) at the right end of the row; left of the gear on the row that has one.
+pub(crate) fn row_btn_box(k: usize, i: usize, w: f32) -> Box4 {
+    let r = row_box(k, w);
+    let t = r[1] + (ROW_H - 32.0) / 2.0;
+    let right = r[2] - 14.0 - if PLUGINS[i].settings { 32.0 + 8.0 } else { 0.0 };
+    [right - 32.0, t, right, t + 32.0]
 }
 
 pub(crate) fn main_box(w: f32) -> Box4 {
@@ -223,7 +234,8 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         let r = row_box(k, w);
         let installed = INSTALLED[i].load(Relaxed);
         let working = busy && (job == i || (job == n && installed));
-        let queued = busy && !installed && (job == STARTING || pos.is_some_and(|q| k > q));
+        let all_run = ALL_RUN.load(Relaxed);
+        let queued = busy && !installed && all_run && (job == STARTING || pos.is_some_and(|q| k > q));
         if k > 0 {
             ui.shape([r[0] + 12.0, r[1], r[2] - 12.0, r[1] + 1.0 / s], 0.0, argb(BORDER, 255));
         }
@@ -246,7 +258,8 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         } else {
             (t!("Не установлен", "Not installed"), DIM)
         };
-        let pr = r[2] - 14.0 - 32.0 - 10.0;
+        let rbtn = row_btn_box(k, i, w);
+        let pr = rbtn[0] - 10.0;
         let pw = ui.width(pill, 11.5, 600) + 18.0;
         let pb = [pr - pw, r[1] + 21.0, pr, r[1] + 41.0];
         let ptint = lerp(PANEL, pc, 0.16);
@@ -259,6 +272,10 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         let short = desc.split(". ").next().unwrap_or(desc).trim_end_matches('.');
         ui.text(short, [nx, r[1] + 32.0, pb[0] - 10.0, r[3] - 10.0], 12.0, 400, DIM, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+        // install (not installed yet) or reinstall (from this installer, settings kept) just this component
+        let rh = hot(ID_ROW + k) && !busy;
+        ui.round(rbtn, 8.0, if rh { lerp(PANEL, TEXT, 0.08) } else { PANEL }, BORDER);
+        ui.text_in(if installed { "\u{E72C}" } else { "\u{E896}" }, rbtn, 14.0, 400, if busy { DIM } else { TEXT }, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
         if let Some((_, gb)) = gear.filter(|&(gi, _)| gi == i && installed) {
             let h = hot(ID_GEAR) && !busy;
             ui.round(gb, 8.0, if h { lerp(PANEL, TEXT, 0.08) } else { PANEL }, BORDER);
@@ -271,14 +288,18 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     if busy {
         let base = lerp(PANEL, ACCENT, 0.22);
         ui.round(mb, 12.0, base, base);
-        let done = if job == n { 0.0 } else { pos.map_or(0.0, |q| (q as f32 + 0.5) / N_READY as f32) };
+        let done = if job == n || !ALL_RUN.load(Relaxed) { 0.0 } else { pos.map_or(0.0, |q| (q as f32 + 0.5) / N_READY as f32) };
         if done > 0.0 {
             ui.shape([mb[0], mb[1], mb[0] + (mb[2] - mb[0]) * done, mb[3]], 12.0, argb(ACCENT, 255));
         }
         let label = if job == n {
             t!("Удаление WinRust…", "Removing WinRust…").to_string()
         } else {
-            pos.map_or(t!("Подготовка…", "Preparing…").into(), |q| tf!("Устанавливается {}  ({} из {N_READY})", "Installing {}  ({} of {N_READY})", PLUGINS[job].name, q + 1))
+            pos.map_or(t!("Подготовка…", "Preparing…").into(), |q| if ALL_RUN.load(Relaxed) {
+                tf!("Устанавливается {}  ({} из {N_READY})", "Installing {}  ({} of {N_READY})", PLUGINS[job].name, q + 1)
+            } else {
+                tf!("Устанавливается {}…", "Installing {}…", PLUGINS[job].name)
+            })
         };
         ui.text(&label, mb, 15.5, 700, TEXT, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
@@ -378,6 +399,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
 pub(crate) enum Act {
     InstallAll,
     Rollback,
+    One(usize), // install or reinstall this one component
 }
 pub(crate) struct Dialog {
     title: String,
@@ -407,6 +429,9 @@ pub(crate) unsafe fn hit(hwnd: HWND, lp: isize) -> Option<usize> {
     }
     if BUSY.load(Relaxed) {
         return None;
+    }
+    if let Some(k) = ready().enumerate().find(|&(k, i)| inside(row_btn_box(k, i, w))).map(|(k, _)| k) {
+        return Some(ID_ROW + k);
     }
     if gear_box(w).is_some_and(|(i, b)| INSTALLED[i].load(Relaxed) && inside(b)) {
         return Some(ID_GEAR);
@@ -476,7 +501,18 @@ pub(crate) unsafe fn close_dialog(hwnd: HWND, run: bool) {
         Act::Rollback => start(hwnd, PLUGINS.len(), rollback),
         Act::InstallAll => {
             let h = hwnd as isize;
-            start(hwnd, STARTING, move || install_all(h))
+            ALL_RUN.store(true, Relaxed);
+            start(hwnd, STARTING, move || {
+                let r = install_all(h);
+                ALL_RUN.store(false, Relaxed);
+                r
+            })
+        }
+        Act::One(i) => {
+            ALL_RUN.store(false, Relaxed);
+            let name = PLUGINS[i].name;
+            let was = INSTALLED[i].load(Relaxed);
+            start(hwnd, i, move || install_plugin(i).map(|m| format!("{name}: {}{}", if was { t!("переустановлен", "reinstalled") } else { t!("установлен", "installed") }, if m.is_empty() { String::new() } else { format!(" ({m})") })))
         }
     }
 }
@@ -501,6 +537,21 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
         return;
     }
     match id {
+        _ if id >= ID_ROW => {
+            let Some(i) = ready().nth(id - ID_ROW) else { return };
+            let name = PLUGINS[i].name;
+            if INSTALLED[i].load(Relaxed) {
+                ask(hwnd, Dialog {
+                    title: tf!("Переустановить {}?", "Reinstall {}?", name),
+                    text: t!("Компонент будет переустановлен из этой версии установщика. Настройки сохранятся.", "This component will be reinstalled from this version of the installer. Settings are kept.").into(),
+                    ok: t!("Переустановить", "Reinstall").into(),
+                    danger: false,
+                    act: Act::One(i),
+                })
+            } else {
+                ask(hwnd, Dialog { title: tf!("Установить {}?", "Install {}?", name), text: PLUGINS[i].warn.get().into(), ok: t!("Установить", "Install").into(), danger: false, act: Act::One(i) })
+            }
+        }
         ID_LANG => {
             i18n::set_english(!i18n::english());
             HOVER.set(None);
