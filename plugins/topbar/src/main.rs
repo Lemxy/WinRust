@@ -105,6 +105,7 @@ const ALT_TAB: u32 = WM_APP + 11; // posted by the keyboard hook: Alt+Tab (wp 1 
 const ALT_UP: u32 = WM_APP + 12; // posted by the keyboard hook: Alt released while switching (wp 1 = Esc: cancel)
 static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab switcher open (the hook thread reads it)
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
+static AH_HIDE: AtomicBool = AtomicBool::new(false); // auto-hide on and the pointer away from the bar for a moment
 static DESK_HIDE: AtomicBool = AtomicBool::new(false); // the desktop in front and the pointer away from the bar for 2 s
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook thread
@@ -191,6 +192,7 @@ thread_local! {
     static BUSY: Cell<bool> = const { Cell::new(false) }; // a fade is still running: the painter asks for another frame
     static BAR_P: Cell<f32> = const { Cell::new(0.0) }; // bar slide: 0 = off screen, 1 = in place
     static BAR_T: Cell<u64> = const { Cell::new(0) };
+    static AH_T: Cell<u64> = const { Cell::new(0) }; // last moment auto-hide had a reason to keep the bar shown
     static DESK_T: Cell<u64> = const { Cell::new(0) }; // last moment the bar had a reason to stay on the desktop
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
     static OLD_STATE: Cell<usize> = const { Cell::new(ABS_ALWAYSONTOP as usize) };
@@ -743,7 +745,8 @@ unsafe fn place(hwnd: HWND) {
     ab.hWnd = hwnd;
     // the reserved strip: the bar itself plus the dock's gap under it
     // the dock reserves nothing: maximized windows take the whole screen and the dock slides away over them
-    let strip = if style() == Style::Dock { 0 } else { bar_h() };
+    // auto-hide reserves nothing either: windows get the whole screen and the bar slides in over them
+    let strip = if style() == Style::Dock || auto_hide() { 0 } else { bar_h() };
     if at_top() {
         ab.uEdge = ABE_TOP;
         ab.rc = RECT { left: 0, top: 0, right: cx, bottom: strip };
@@ -1390,7 +1393,7 @@ unsafe fn bar_anim(hwnd: HWND) {
 }
 
 unsafe fn bar_step(hwnd: HWND) {
-    let target = if FULLSCREEN.load(Relaxed) { 0.0 } else { 1.0 }; // hides only for a fullscreen game or video: not over the desktop, not in any style
+    let target = if FULLSCREEN.load(Relaxed) || AH_HIDE.load(Relaxed) { 0.0 } else { 1.0 }; // hides only for a fullscreen game or video: not over the desktop, not in any style
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1448,6 +1451,14 @@ unsafe fn fs_update(hwnd: HWND) {
         DESK_T.set(now);
     }
     let desk = !fs && now.saturating_sub(DESK_T.get()) >= 2000;
+    // auto-hide (Windows' "Automatically hide the taskbar"): away 700 ms after the pointer leaves, back at the screen edge
+    if !auto_hide() || over || fly::any_open() {
+        AH_T.set(now);
+    }
+    let ah = auto_hide() && now.saturating_sub(AH_T.get()) >= 700;
+    if AH_HIDE.swap(ah, Relaxed) != ah {
+        bar_anim(hwnd);
+    }
     if DESK_HIDE.swap(desk, Relaxed) != desk {
         bar_anim(hwnd);
     }
@@ -2220,15 +2231,48 @@ unsafe fn style_menu() {
     let bar = BAR.load(Relaxed) as HWND;
     let names = [t!("Обычный", "Normal"), t!("Терминал", "Terminal"), t!("Плавающий док", "Floating dock"), t!("Тайлинг", "Tiling")];
     let mut items: Vec<fly::MItem> = i18n::style::ALL.iter().zip(names).map(|(&s, n)| fly::MItem::new(n).on(s == style())).collect();
-    items.push(fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows")).sep());
+    items.push(fly::MItem::new(t!("Автоматически скрывать панель", "Automatically hide the bar")).on(auto_hide()).sep());
+    items.push(fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows")));
     let head = (null_mut(), "\u{E713}", t!("Стиль", "Style").to_string(), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs").to_string());
     fly::menu(tip_cx(&bar_layout(bar), GEAR), Some(head), items, move |i| match i18n::style::ALL.get(i) {
         Some(&s) => {
             i18n::style::set_style(s);
             place(bar);
         }
+        None if i == i18n::style::ALL.len() => {
+            set_auto_hide(!auto_hide());
+            place(bar);
+            bar_anim(bar);
+        }
         None => tile_windows(),
     });
+}
+
+/// "Automatically hide the bar" (issue #13), kept beside the style in %ProgramData%WinRustutohide.txt ("1" = on).
+fn auto_hide_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("autohide.txt"))
+}
+
+thread_local! {
+    static AUTO_HIDE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+fn auto_hide() -> bool {
+    AUTO_HIDE.get().unwrap_or_else(|| {
+        let on = auto_hide_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|t| t.trim() == "1");
+        AUTO_HIDE.set(Some(on));
+        on
+    })
+}
+
+fn set_auto_hide(on: bool) {
+    AUTO_HIDE.set(Some(on));
+    if let Some(f) = auto_hide_file() {
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(f, if on { "1" } else { "0" });
+    }
 }
 
 /// Puts the open, not minimized windows side by side in the work area.
