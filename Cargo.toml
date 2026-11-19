@@ -32,7 +32,7 @@ members = [
 ]
 # Stay separate projects with their own target\ and Cargo.lock, because they need panic = "unwind" (the profile below is
 # shared by every member): rust-search's service threads must not take the process down, chrome-rs catches panics per page.
-exclude = ["plugins/rust-search", "plugins/chrome-rs"]
+exclude = ["plugins/rust-search", "plugins/chrome-rs", "plugins/rust-settings"]
 
 [profile.release]
 opt-level = "s"
