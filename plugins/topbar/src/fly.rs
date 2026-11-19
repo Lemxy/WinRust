@@ -782,11 +782,12 @@ pub fn toggle(k: Kind) {
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
-        let sw = GetSystemMetrics(SM_CXSCREEN);
+        let (bx, bw) = crate::bar_x_w();
+        let br = bx + bw;
         let x = match k {
-            Kind::Start => (sw - w) / 2,
-            Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
-            _ => sw - w - sc(8),
+            Kind::Start => bx + (bw - w) / 2,
+            Kind::Menu => MENU_X.get().min(br - w - sc(8)).max(bx + sc(8)),
+            _ => (br - w - sc(8)).max(sc(8)),
         };
         let class = wide("topbar_fly");
         let fy = pop_y(h); // above the bar (below it at the top of the screen)

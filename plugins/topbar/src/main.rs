@@ -66,11 +66,15 @@ fn at_top() -> bool {
 fn dock_gap() -> i32 {
     if style() == Style::Dock { sc(8) } else { 0 }
 }
-/// Screen x and width of the bar: the whole screen, or the dock in the middle.
+/// Screen x and width of the bar: the whole screen, or a Windows 11-style centered pill dock fitted to its contents.
 unsafe fn bar_x_w() -> (i32, i32) {
     let cx = GetSystemMetrics(SM_CXSCREEN);
     if style() == Style::Dock {
-        let w = (cx * 3 / 5).max(sc(720)).min(cx);
+        let n = (BTNS.with_borrow(|b| b.len()) as i32 + 1).max(2); // search + Start + pins/windows
+        let center = n * sc(40) + (n - 1) * sc(4);
+        let right = sc(24) * tray_count() as i32 + sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }) + sc(96) + sc(16);
+        let left = sc(GEAR_X.0 + GEAR_X.1 + 12);
+        let w = (left + center + sc(24) + right).clamp(sc(520), (cx - sc(24)).max(sc(520)));
         ((cx - w) / 2, w)
     } else {
         (0, cx)
@@ -1021,8 +1025,8 @@ unsafe fn place(hwnd: HWND) {
         set_work_area(if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } });
     }
     let (x, w) = bar_x_w();
-    // the dock is a pill; the other styles a plain strip
-    SetWindowRgn(hwnd, if style() == Style::Dock { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
+    // the dock is a Windows 11 rounded card; the other styles a plain strip
+    SetWindowRgn(hwnd, if style() == Style::Dock { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, sc(16), sc(16)) } else { null_mut() }, 1);
     SetWindowPos(hwnd, HWND_TOPMOST, x, bar_y(), w, bar_h(), SWP_NOACTIVATE);
     InvalidateRect(hwnd, null(), 0);
 }
@@ -1503,6 +1507,16 @@ fn refresh() {
         });
         // explorer re-raises its own Shell_TrayWnd now and then; ours must stay in front so apps keep finding it first
         SetWindowPos(HOST.get(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if style() == Style::Dock {
+            let (x, w) = bar_x_w();
+            let bar = BAR.load(Relaxed) as HWND;
+            let mut r: RECT = zeroed();
+            GetClientRect(bar, &mut r);
+            if r.right != w {
+                SetWindowRgn(bar, CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, sc(16), sc(16)), 1);
+                SetWindowPos(bar, HWND_TOPMOST, x, bar_y(), w, bar_h(), SWP_NOACTIVATE);
+            }
+        }
     }
 }
 
@@ -1672,8 +1686,14 @@ unsafe fn bar_step(hwnd: HWND) {
 /// bar; in Dock or auto-hide mode the work area is full-screen, so a WS_MAXIMIZE or caption-bearing window is excluded.
 unsafe fn fullscreen_now(bar: HWND) -> bool {
     let fg = GetForegroundWindow();
-    if fg.is_null() || fg == bar || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
+    let snip = SNIP_WND.get();
+    if fg.is_null() || fg == bar || (!snip.is_null() && fg == snip) || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
         return false;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(fg, &mut pid);
+    if pid == std::process::id() {
+        return false; // none of our own popups / overlays count as a fullscreen game
     }
     let st = GetWindowLongW(fg, GWL_STYLE) as u32;
     if (style() == Style::Dock || AUTOHIDE.load(Relaxed)) && (st & WS_MAXIMIZE != 0 || st & WS_CAPTION == WS_CAPTION) {
@@ -1694,6 +1714,11 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
 }
 
 unsafe fn fs_update(hwnd: HWND) {
+    let snip_open = !SNIP_WND.get().is_null() && IsWindowVisible(SNIP_WND.get()) != 0;
+    if snip_open {
+        DESK_T.set(now_ms());
+        return;
+    }
     let fs = fullscreen_now(hwnd);
     // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
     // edges all the time); Win opens Start, which brings the bar with it
@@ -1731,7 +1756,14 @@ unsafe fn dock_covered() -> bool {
         return false;
     }
     let fg = GetForegroundWindow();
-    if fg.is_null() || IsIconic(fg) != 0 || fg == BAR.load(Relaxed) as HWND || fly::any_open() {
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(fg, &mut pid);
+    if fg.is_null() || pid == std::process::id() || IsIconic(fg) != 0 || fly::any_open() {
+        return false;
+    }
+    let mut cls = [0u16; 64];
+    let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
+    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
         return false;
     }
     let mut r: RECT = zeroed();
