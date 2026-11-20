@@ -249,6 +249,13 @@ fn overlay() {
     // fails once the shell is gone. A second copy exits at once (one hook per session).
     let hk = find_exe("reshell.exe");
     if hk.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hk).spawn().map(|_| ()))); }
+    for d in [std::env::var("APPDATA").map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\Startup")), std::env::var("ProgramData").map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\StartUp"))].into_iter().flatten() {
+        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            if !e.file_name().to_string_lossy().eq_ignore_ascii_case("desktop.ini") {
+                let _ = quiet("cmd").raw_arg(format!("/c start \"\" \"{}\"", e.path().display())).creation_flags(NO_WINDOW).spawn();
+            }
+        }
+    }
     let _ = wp.join(); // the BMP conversion (only on a fresh install or a new wallpaper) finishes before the desktop paints it
     let desktop = dir().join("rust-explorer.exe");
     let up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
