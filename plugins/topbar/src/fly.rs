@@ -693,23 +693,25 @@ pub fn context_menu(x: i32) {
         MItem::new(t!("Параметры Windows", "Windows Settings")).hint("Win+I"),
         MItem::new(t!("Персонализация", "Personalization")),
         MItem::new(t!("Диспетчер задач", "Task Manager")).hint("Ctrl+Shift+Esc").sep(),
+        MItem::new(t!("Оптимизировать ОС (очистить ОЗУ)", "Optimize OS (kill junk & free RAM)")),
         MItem::new(t!("Чистильщик диска", "Disk Cleaner")),
         MItem::new(t!("Программы WinRust на English", "WinRust apps in Русский")), // shared with the other WinRust programs
         MItem::new(t!("Закрыть панель", "Close the bar")).danger().sep(),
     ];
     if pu {
-        items.insert(4, MItem::new(t!("Удалить мусор Windows (необратимо)", "Remove Windows junk (irreversible)")).danger());
+        items.insert(5, MItem::new(t!("Удалить мусор Windows (необратимо)", "Remove Windows junk (irreversible)")).danger());
     }
     menu(x, None, items, move |i| unsafe {
-        let i = if pu && i > 4 { i - 1 } else if pu && i == 4 { 99 } else { i };
+        let i = if pu && i > 5 { i - 1 } else if pu && i == 5 { 99 } else { i };
         match i {
             0 => open(&wide("ms-settings:")),
             1 => open(&wide("ms-settings:personalization")),
             // with rtaskmgr-win32 installed this is our task manager; a full path because explorer.exe does not search PATH
             2 => open(&wide(&format!(r"{}\System32\taskmgr.exe", std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())))),
-            3 => open_cleaner(),
+            3 => crate::optimize_os(),
+            4 => open_cleaner(),
             99 => crate::open_purge(),
-            4 => crate::i18n::set_english(!crate::i18n::english()),
+            5 => crate::i18n::set_english(!crate::i18n::english()),
             _ => _ = PostMessageW(FindWindowW(wide("topbar").as_ptr(), null()), WM_CLOSE, 0, 0), // quits the bar, brings the Windows taskbar back
         }
     });
@@ -963,7 +965,7 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             }
             8 => {
                 close();
-                keys(&[VK_LWIN, b'P' as u16]); // project / cast screen
+                crate::optimize_os();
             }
             _ => {
                 let uri = match i {
@@ -1128,7 +1130,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 ("\u{E88A}", t!("Хот‑спот", "Mobile hotspot").into()),
                 ("\u{E7F0}", t!("Субтитры", "Live captions").into()),
                 ("\u{E776}", t!("Спецвозможности", "Accessibility").into()),
-                ("\u{E7F4}", t!("Проекция", "Project").into()),
+                ("\u{E946}", t!("Очистка ОЗУ", "Optimize OS").into()),
             ];
             for (i, (glyph, label)) in tiles.iter().enumerate() {
                 let c = (i % 3) as i32;

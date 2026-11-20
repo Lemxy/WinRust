@@ -117,6 +117,8 @@ static AUTOHIDE: AtomicBool = AtomicBool::new(false); // user toggle: always aut
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook thread
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
+const OPT_DONE: u32 = WM_APP + 14; // posted when OS optimizer finishes freeing background processes and RAM
+static OPT_MSG: Mutex<String> = Mutex::new(String::new());
 static EXPLORER_UP: AtomicBool = AtomicBool::new(true); // explorer's taskbar exists (it handles PrtSc itself then); refreshed by the bar
 
 struct Pin {
@@ -2586,6 +2588,42 @@ unsafe fn open_cleaner() {
     }
 }
 
+/// Kills unused Windows bloat/junk background processes (SearchHost, WidgetService, Edge background, telemetry, orphaned
+/// explorer COM servers, etc.) and trims working sets of idle processes, then shows a summary toast above the bar.
+pub(crate) fn optimize_os() {
+    std::thread::spawn(|| {
+        let ps = r#"
+$targets = @(
+  'SearchHost','SearchIndexer','SearchApp','StartMenuExperienceHost','WidgetService','Widgets',
+  'CrossDeviceService','PhoneExperienceHost','YourPhone','GameBar','GameBarPresenceWriter','GameBarFTServer',
+  'CompPkgSrv','TextInputHost','LockApp','Cortana','CompatTelRunner','DeviceCensus',' diagtrack',
+  'HxTsr','HxOutlook','MapsBroker','OneDrive','OneDriveStandaloneUpdater','MicrosoftEdgeUpdate',
+  'AdobeARM','CCXProcess','Teams','msteams','Clipchamp',' Copilot'
+)
+$before = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory
+$killed = 0
+Get-Process -ErrorAction SilentlyContinue | Where-Object {
+  ($targets -contains $_.ProcessName) -or
+  ($_.ProcessName -eq 'explorer' -and -not (Get-Process SystemSettings -ErrorAction SilentlyContinue)) -or
+  ($_.ProcessName -eq 'msedgewebview2' -and $_.MainWindowHandle -eq 0)
+} | ForEach-Object {
+  try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; $killed++ } catch {}
+}
+Add-Type -Namespace W -Name M -MemberDefinition '[System.Runtime.InteropServices.DllImport("psapi.dll")] public static extern bool EmptyWorkingSet(System.IntPtr h);' -ErrorAction SilentlyContinue
+Get-Process -ErrorAction SilentlyContinue | ForEach-Object { try { [void][W.M]::EmptyWorkingSet($_.Handle) } catch {} }
+Start-Sleep -Milliseconds 250
+$after = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory
+$freed = [math]::Max(0, [math]::Round(($after - $before) / 1024, 0))
+"$killed|$freed"
+"#;
+        let out = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", ps]).creation_flags(NO_WINDOW).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let (k, mb) = out.split_once('|').unwrap_or(("0", "0"));
+        let msg = tf!("Оптимизация ОС: закрыто процессов: {k} · освобождено ОЗУ: ~{mb} МБ", "OS Optimized: {k} junk processes closed · ~{mb} MB RAM freed");
+        *OPT_MSG.lock().unwrap() = msg;
+        unsafe { PostMessageW(BAR.load(Relaxed) as HWND, OPT_DONE, 0, 0) };
+    });
+}
+
 unsafe extern "system" fn find_launcher(h: HWND, lp: LPARAM) -> i32 {
     let mut cls = [0u16; 32];
     let n = GetClassNameW(h, cls.as_mut_ptr(), 32).max(0) as usize;
@@ -2608,13 +2646,14 @@ unsafe fn open_launcher() -> bool {
     true
 }
 
-/// The gear's menu: the UI style (saved for the other WinRust programs), auto-hide and putting the windows side by side.
+/// The gear's menu: the UI style (saved for the other WinRust programs), auto-hide, OS optimizer and putting the windows side by side.
 unsafe fn style_menu() {
     let bar = BAR.load(Relaxed) as HWND;
     let names = [t!("Обычный", "Normal"), t!("Терминал", "Terminal"), t!("Плавающий док", "Floating dock"), t!("Тайлинг", "Tiling")];
     let mut items: Vec<fly::MItem> = i18n::style::ALL.iter().zip(names).map(|(&s, n)| fly::MItem::new(n).on(s == style())).collect();
     items.push(fly::MItem::new(t!("Автоматически скрывать панель", "Auto-hide the bar")).on(AUTOHIDE.load(Relaxed)).sep());
-    items.push(fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows")).sep());
+    items.push(fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows")));
+    items.push(fly::MItem::new(t!("Оптимизировать ОС (очистить ОЗУ)", "Optimize OS (kill junk & free RAM)")).sep());
     let head = (null_mut(), "\u{E713}", t!("Стиль", "Style").to_string(), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs").to_string());
     fly::menu(tip_cx(&bar_layout(bar), GEAR), Some(head), items, move |i| match i18n::style::ALL.get(i) {
         Some(&s) => {
@@ -2635,7 +2674,8 @@ unsafe fn style_menu() {
             }
             place(bar);
         }
-        None => tile_windows(),
+        None if i == i18n::style::ALL.len() + 1 => tile_windows(),
+        None => optimize_os(),
     });
 }
 
@@ -2837,6 +2877,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         ALT_UP => alt_done(wp == 1),
         SNIP if wp == 1 => screenshot_notice(hwnd),
         SNIP => start_region_snip(),
+        OPT_DONE => {
+            let msg = OPT_MSG.lock().unwrap().clone();
+            KillTimer(hwnd, 2);
+            show_tip(msg, GetSystemMetrics(SM_CXSCREEN) / 2);
+            SetTimer(hwnd, 6, 3200, None);
+        }
         WM_DROPFILES => on_drop(hwnd, wp as HDROP),
         WM_TIMER => {
             hide_taskbar_if_shown();
