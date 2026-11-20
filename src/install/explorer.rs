@@ -162,9 +162,9 @@ pub(crate) fn rx_install() -> Result<(), String> {
     }
     // An older installation may already have applied the tweaks without saving the originals.
     let has_snapshot = AUTO_RESTART_SHELL.load(trim_read)?.is_some();
-    let fresh = !rx_dir().join("rust-explorer.exe").is_file() && !has_snapshot;
+    let fresh = !rx_dir().join("rust-explorer.exe").is_file();
     with_payload(&["rust-explorer.exe", "rs-shell.exe"], |d| {
-        if fresh {
+        if fresh && !has_snapshot {
             run("reg", &["add", RX_STATE, "/f"])?;
             AUTO_RESTART_SHELL.capture(trim_read, trim_write)?;
         }
@@ -219,6 +219,11 @@ pub(crate) fn rx_install() -> Result<(), String> {
 }
 
 pub(crate) fn rx_uninstall() -> Result<(), String> {
+    // An install failure before the plugin directory was created never applied any shell changes.
+    let dir = rx_dir();
+    if !dir.try_exists().map_err(|e| format!("{}: {e}", dir.display()))? {
+        return Ok(());
+    }
     restore_service_trim()?;
     // Windows may restart its shell again; our hooks off; then the shell back, unelevated, only if none is running
     if !AUTO_RESTART_SHELL.restore(trim_read, trim_write, remove_dword)? && rx_dir().join("rust-explorer.exe").is_file() {
