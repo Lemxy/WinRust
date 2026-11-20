@@ -22,6 +22,7 @@ enum Act {
     BrightSlide,
     Mute,
     WifiSwitch,
+    WifiBack,
     Tile(u8),
     WifiMore,
     Net(usize),
@@ -35,6 +36,7 @@ enum Act {
     Power(u8),  // 0 lock, 1 sleep, 2 restart, 3 shut down
 }
 
+#[derive(Clone)]
 struct Net {
     ssid: String,
     q: i32,
@@ -44,6 +46,7 @@ struct Net {
     auth: i32,
 }
 
+#[derive(Clone)]
 struct Conn {
     ssid: String,
     auth: i32,
@@ -79,6 +82,9 @@ fn phy_name(t: i32) -> &'static str {
 }
 
 static APPS: Mutex<Vec<(String, Vec<u16>)>> = Mutex::new(Vec::new()); // Start menu shortcuts: (name, .lnk path)
+static NETS_BG: Mutex<(Vec<Net>, Option<Conn>)> = Mutex::new((Vec::new(), None)); // background-scanned Wi-Fi state so opening Quick/Wifi never blocks UI
+static WIFI_BUSY: AtomicBool = AtomicBool::new(false);
+static SAVER: AtomicBool = AtomicBool::new(false); // Energy saver tile state
 static BRIGHT: AtomicI32 = AtomicI32::new(-1); // -1 = no controllable display (desktop PC)
 const ROWS: usize = 11;
 
@@ -388,7 +394,7 @@ unsafe fn with_wlan<T>(f: impl FnOnce(HANDLE, &windows_sys::core::GUID) -> T) ->
     r
 }
 
-unsafe fn read_nets() {
+unsafe fn collect_nets() -> (Vec<Net>, Option<Conn>) {
     let v = with_wlan(|h, g| {
         let mut out: Vec<Net> = Vec::new();
         let mut list: *mut WLAN_AVAILABLE_NETWORK_LIST = null_mut();
@@ -434,8 +440,31 @@ unsafe fn read_nets() {
         (out, conn)
     });
     let (nets, conn) = v.unzip();
-    NETS.set(nets.unwrap_or_default());
-    CONN.set(conn.flatten());
+    (nets.unwrap_or_default(), conn.flatten())
+}
+
+fn pull_nets() {
+    if let Ok(g) = NETS_BG.lock() {
+        NETS.set(g.0.clone());
+        CONN.set(g.1.clone());
+    }
+}
+
+fn refresh_nets_async(scan: bool) {
+    pull_nets();
+    if WIFI_BUSY.swap(true, Relaxed) {
+        return;
+    }
+    std::thread::spawn(move || unsafe {
+        if scan {
+            with_wlan(|h, g| WlanScan(h, g, null(), null(), null()));
+        }
+        let res = collect_nets();
+        if let Ok(mut g) = NETS_BG.lock() {
+            *g = res;
+        }
+        WIFI_BUSY.store(false, Relaxed);
+    });
 }
 
 unsafe fn wifi_connect(profile: &str) {
@@ -541,6 +570,7 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
                 let b = rows[i].1;
                 v.push((r(w - 24 - 116, b - 42, w - 24, b - 12), Act::NetOff));
             }
+            v.push((r(12, 18, 44, 54), Act::WifiBack));
             v.push((r(w - 66, 24, w - 18, 48), Act::WifiSwitch));
             v.push((r(12, h - 48, w - 12, h - 12), Act::Settings("ms-settings:network-wifi")));
             v
@@ -564,6 +594,8 @@ fn act_at(k: Kind, x: i32, y: i32) -> Option<(RECT, Act)> {
 
 pub fn init(hi: HINSTANCE) {
     pinned_load();
+    refresh_nets_async(true);
+    read_brightness();
     unsafe {
         let class = wide("topbar_fly");
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..zeroed() };
@@ -767,13 +799,10 @@ pub fn toggle(k: Kind) {
         GetLocalTime(&mut t);
         CAL.set((t.wYear as i32, t.wMonth as i32));
         match k {
-            Kind::Wifi => {
-                with_wlan(|h, g| WlanScan(h, g, null(), null(), null()));
-                read_nets();
-            }
+            Kind::Wifi => refresh_nets_async(true),
             Kind::Quick => {
                 read_brightness();
-                read_nets();
+                refresh_nets_async(false);
             }
             Kind::Start => {
                 pinned_load(); // the search card (rs-launcher) can add to this list from another process
@@ -812,7 +841,36 @@ pub fn toggle(k: Kind) {
     }
 }
 
-// ---------- actions ----------
+/// Switches the already-open flyout window in place between `Kind::Quick` and `Kind::Wifi` (like the Windows 11 Quick Settings sub-page).
+unsafe fn switch_in_place(k: Kind) {
+    let hw = FH.get();
+    if hw.is_null() {
+        return toggle(k);
+    }
+    HV.with_borrow_mut(|m| m.retain(|k, _| *k < 1_000_000));
+    PASS.set(None);
+    NOTE.set(String::new());
+    OVER.set(None);
+    match k {
+        Kind::Wifi => refresh_nets_async(true),
+        Kind::Quick => {
+            read_brightness();
+            refresh_nets_async(false);
+        }
+        _ => {}
+    }
+    let (w, h) = (sc(size(k).0), sc(size(k).1));
+    let (bx, bw) = crate::bar_x_w();
+    let x = (bx + bw - w - sc(8)).max(sc(8));
+    let y = pop_y(h);
+    FIN.set((x, y));
+    FLY.set(Some(k));
+    KillTimer(hw, 3);
+    SetLayeredWindowAttributes(hw, 0, 255, LWA_ALPHA);
+    SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 1);
+    SetWindowPos(hw, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
+    InvalidateRect(hw, null(), 0);
+}
 
 unsafe fn slide(a: Act, x: i32, rect: RECT) {
     let f = ((x - rect.left - sc(8)) as f32 / (rect.right - rect.left - sc(16)) as f32).clamp(0.0, 1.0);
@@ -881,10 +939,24 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             SetCapture(FH.get());
             slide(a, x, rect);
         }
-        Act::WifiMore => toggle(Kind::Wifi),
-        Act::WifiSwitch => wifi_radio(WIFI.get() < 0 && NETS.with_borrow(|n| n.is_empty())),
+        Act::WifiMore => switch_in_place(Kind::Wifi),
+        Act::WifiBack => switch_in_place(Kind::Quick),
+        Act::WifiSwitch => {
+            let want = WIFI.get() < 0 && NETS.with_borrow(|n| n.is_empty());
+            std::thread::spawn(move || unsafe { wifi_radio(want) });
+        }
         Act::Tile(i) => match i {
-            0 => wifi_radio(WIFI.get() < 0),
+            0 => {
+                let want = WIFI.get() < 0 && NETS.with_borrow(|n| n.is_empty());
+                std::thread::spawn(move || unsafe { wifi_radio(want) });
+            }
+            4 => {
+                let on = !SAVER.load(Relaxed);
+                SAVER.store(on, Relaxed);
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = Command::new(exe.with_file_name("reshell.exe")).args(["saver", if on { "on" } else { "off" }]).creation_flags(NO_WINDOW).spawn();
+                }
+            }
             5 => {
                 close();
                 keys(&[VK_LWIN, VK_CONTROL, b'L' as u16]); // live captions
@@ -917,16 +989,23 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             CAL.set((t.wYear as i32, t.wMonth as i32));
         }
         Act::Net(i) => {
-            let n = NETS.with_borrow(|n| n.get(i).map(|n| (n.connected, n.profile.clone(), n.auth, n.secure, n.ssid.clone())));
-            let Some((connected, profile, auth, secure, ssid)) = n else { return };
-            if connected {
+            let n = NETS.with_borrow(|n| n.get(i).cloned());
+            let Some(net) = n else { return };
+            if net.connected {
                 // the card is information; its Disconnect button is the action
-            } else if let Some(p) = profile {
-                wifi_connect(&p);
-                NOTE.set(tf!("Подключение к {ssid}…", "Connecting to {ssid}…"));
-            } else if !secure {
-                NETS.with_borrow(|l| wifi_join(&l[i], ""));
-            } else if matches!(auth, 4 | 7 | 8 | 9) {
+            } else if let Some(p) = net.profile.clone() {
+                NOTE.set(tf!("Подключение к {}…", "Connecting to {}…", net.ssid));
+                std::thread::spawn(move || unsafe {
+                    wifi_connect(&p);
+                    refresh_nets_async(false);
+                });
+            } else if !net.secure {
+                NOTE.set(tf!("Подключение к {}…", "Connecting to {}…", net.ssid));
+                std::thread::spawn(move || unsafe {
+                    wifi_join(&net, "");
+                    refresh_nets_async(false);
+                });
+            } else if matches!(net.auth, 4 | 7 | 8 | 9) {
                 PASS.set(Some((i, String::new())));
             } else {
                 open(&wide("ms-settings:network-wifi"));
@@ -934,8 +1013,11 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             }
         }
         Act::NetOff => {
-            with_wlan(|h, g| WlanDisconnect(h, g, null()));
             NOTE.set(t!("Отключено", "Disconnected").into());
+            std::thread::spawn(|| unsafe {
+                with_wlan(|h, g| WlanDisconnect(h, g, null()));
+                refresh_nets_async(false);
+            });
         }
         Act::App(i) => {
             if launch(i) {
@@ -1029,7 +1111,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             for (i, (glyph, label)) in tiles.iter().enumerate() {
                 let c = (i % 3) as i32;
                 let (tl, tt) = (16 + 112 * c, 16 + 96 * (i as i32 / 3));
-                let on = i == 0 && WIFI.get() >= 0;
+                let on = (i == 0 && WIFI.get() >= 0) || (i == 4 && SAVER.load(Relaxed));
                 let full = r(tl, tt, tl + 104, tt + 56);
                 fill(dc, full, if on { pal().accent } else { pal().line }, sc(8));
                 fill(dc, RECT { left: full.left + 1, top: full.top + 1, right: full.right - 1, bottom: full.bottom - 1 }, if on { pal().accent } else { mix(pal().bg, pal().line, 0.5) }, sc(8));
@@ -1112,10 +1194,14 @@ unsafe fn paint(hw: HWND, k: Kind) {
         Kind::Wifi => {
             let on = NETS.with_borrow(|n| !n.is_empty()) || WIFI.get() >= 0;
             let state = net();
-            // header: the live network icon, the title and one line of plain status
-            net_icon(dc, sc(34), sc(40), sc(26), f_glyph);
+            let rs = rects(k);
+            // Windows 11-style header: back button (<- to Quick Settings), Wi-Fi icon + title + status, and on/off switch
+            g(Act::WifiBack, r(12, 18, 44, 54), pal().bg, pal().hover, sc(8));
+            SelectObject(dc, f_glyph);
+            text(dc, "\u{E72B}", r(12, 18, 44, 54), pal().text, DT_CENTER);
+            net_icon(dc, sc(60), sc(36), sc(22), f_glyph);
             SelectObject(dc, f_title);
-            text(dc, "Wi‑Fi", r(64, 18, w - 90, 40), pal().text, DT_LEFT);
+            text(dc, "Wi‑Fi", r(84, 16, w - 90, 38), pal().text, DT_LEFT);
             let note = NOTE.with_borrow(|n| n.clone());
             let (sub, sub_col) = if !note.is_empty() {
                 (note, pal().dim)
@@ -1129,7 +1215,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 }
             };
             SelectObject(dc, f_small);
-            text(dc, &sub, r(64, 40, w - 90, 60), sub_col, DT_LEFT);
+            text(dc, &sub, r(84, 38, w - 90, 58), sub_col, DT_LEFT);
             // on/off switch: the knob glides, the track fades to the accent
             let sw = r(w - 66, 24, w - 18, 48);
             let ts = ease(hv(1_500_000, on));
@@ -1137,7 +1223,6 @@ unsafe fn paint(hw: HWND, k: Kind) {
             let kx = sw.left + sc(12) + ((sw.right - sw.left - sc(24)) as f32 * ts) as i32;
             fill(dc, RECT { left: kx - sc(8), top: sw.top + sc(4), right: kx + sc(8), bottom: sw.bottom - sc(4) }, mix(pal().text, pal().bg, ts), sc(16));
             fill(dc, r(16, 68, w - 16, 69), pal().line, 0);
-            let rs = rects(k);
             let pass = PASS.with_borrow(|p| p.clone());
             if let Some((i, p)) = pass {
                 let name = NETS.with_borrow(|n| n.get(i).map(|n| n.ssid.clone()).unwrap_or_default());
@@ -1161,7 +1246,6 @@ unsafe fn paint(hw: HWND, k: Kind) {
             } else {
                 let (_, label, _) = wifi_rows();
                 let conn = CONN.with_borrow(|c| c.as_ref().map(|c| (c.q, c.rx, c.tx, c.phy)));
-                let age = now_ms().saturating_sub(T0.get()) as f32;
                 NETS.with_borrow(|nets| {
                     if nets.is_empty() {
                         SelectObject(dc, f_txt);
@@ -1173,16 +1257,11 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     }
                     for (i, n) in nets.iter().enumerate() {
                         let rc = rs[i].0;
-                        // rows fade in one after another when the panel opens
-                        let t = ease(((age - 45.0 * i as f32) / 240.0).clamp(0.0, 1.0));
-                        if t < 1.0 {
-                            BUSY.set(true);
-                        }
-                        let ink = |c: u32| mix(pal().bg, c, t);
+                        let ink = |c: u32| c;
                         let lit = arcs_lit(n.q);
                         if n.connected {
                             let card = mix(pal().bg, pal().active, 0.85);
-                            fill(dc, rc, mix(pal().bg, card, t), sc(12));
+                            fill(dc, rc, card, sc(12));
                             let online = !matches!(state, Link::NoInternet(_));
                             wifi_glyph(dc, rc.left + sc(30), rc.top + sc(32), sc(26), lit, ink(pal().accent), ink(mix(pal().dim, card, 0.45)), if online { 0 } else { 2 });
                             SelectObject(dc, f_title);
@@ -1416,7 +1495,7 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
         }
         WM_TIMER => {
             if k == Kind::Wifi && PASS.with_borrow(|p| p.is_none()) {
-                read_nets();
+                refresh_nets_async(false);
                 let (w, h) = (sc(size(k).0), sc(size(k).1));
                 // the panel hangs above the bar: keep its bottom edge where it is and grow / shrink upward
                 let (x, _) = FIN.get();
@@ -1424,6 +1503,8 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 FIN.set((x, y));
                 SetWindowPos(hw, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
                 SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 1);
+            } else if k == Kind::Quick {
+                pull_nets();
             }
             InvalidateRect(hw, null(), 0);
         }
@@ -1497,7 +1578,13 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             } else if k == Kind::Wifi && PASS.with_borrow(|p| p.is_some()) {
                 if c == 13 {
                     if let Some((i, p)) = PASS.take() {
-                        NETS.with_borrow(|n| wifi_join(&n[i], &p));
+                        if let Some(net) = NETS.with_borrow(|n| n.get(i).cloned()) {
+                            NOTE.set(tf!("Подключение к {}…", "Connecting to {}…", net.ssid));
+                            std::thread::spawn(move || unsafe {
+                                wifi_join(&net, &p);
+                                refresh_nets_async(false);
+                            });
+                        }
                     }
                 } else if let Some(p) = PASS.with_borrow_mut(|p| p.as_mut().map(|p| &mut p.1 as *mut String)) {
                     let p = &mut *p;
