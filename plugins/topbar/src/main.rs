@@ -2380,8 +2380,10 @@ unsafe fn close_window(w: HWND) {
     }
 }
 
-/// Opens a file, shortcut or URI through explorer, which starts it with the desktop user's normal token: the bar itself
-/// may run elevated (see the launcher), and everything started from it must not inherit that.
+/// Opens a file, shortcut or URI with the desktop user's normal token: the bar itself may run elevated (see the launcher),
+/// and everything started from it must not inherit that. Uses `runas /trustlevel:0x20000 cmd /c start` instead of
+/// `explorer.exe <path>`, because `explorer.exe <path>` spins up persistent `explorer.exe /factory,{75dff2b7...} -Embedding`
+/// COM server instances that stay in memory (~80-300 MB) even when rust-explorer is the file manager.
 unsafe fn open(path: &[u16]) {
     let n = path.iter().position(|&c| c == 0).unwrap_or(path.len());
     let p = String::from_utf16_lossy(&path[..n]);
@@ -2391,11 +2393,12 @@ unsafe fn open(path: &[u16]) {
     if p.to_lowercase().starts_with("ms-settings:") {
         return winrust_common::settings::open(&p); // needs Explorer as shell: it is started for the time Settings is open
     }
-    // Always through explorer.exe: it starts the target with the desktop user's normal token. ShellExecuteW from here would
-    // inherit this bar's admin rights, and an elevated app cannot receive files dragged in from normal windows (UIPI), and
-    // PrtSc / Win+Shift+S (ms-screenclip:) do not work when started elevated. With an argument and no explorer shell
-    // running, explorer.exe hands the target to its COM host and does not become a shell or raise a taskbar.
-    if Command::new("explorer.exe").arg(&p).spawn().is_err() {
+    if p.starts_with("shell:") {
+        let _ = Command::new("explorer.exe").arg(&p).spawn();
+        return;
+    }
+    let q = format!("cmd.exe /c start \"\" \"{}\"", p.replace('"', ""));
+    if Command::new("runas.exe").args(["/trustlevel:0x20000", &q]).creation_flags(NO_WINDOW).spawn().is_err() {
         ShellExecuteW(null_mut(), wide("open").as_ptr(), wide(&p).as_ptr(), null(), null(), SW_SHOWNORMAL);
     }
 }

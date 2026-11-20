@@ -208,10 +208,10 @@ fn replace_on() -> bool {
     reg(&["query", r"HKCU\Software\rs-shell", "/v", "ReplaceExplorer"]).is_some_and(|o| o.contains("0x1"))
 }
 
-/// Ends the Explorer that runs as the shell (started without arguments). Folder windows (started with a path) and the COM
-/// host (`/factory ... -Embedding`) are other explorer.exe processes and keep running.
+/// Ends the Explorer that runs as the shell and any lingering `/factory ... -Embedding` COM host processes so no
+/// background `Windows Explorer` processes sit in Task Manager after Explorer is replaced.
 fn kill_shell_explorer() {
-    let script = r#"Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?\s*$' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"#;
+    let script = r#"Get-Process explorer,SearchHost,StartMenuExperienceHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"#;
     let r = quiet("powershell").args(["-NoProfile", "-NonInteractive", "-Command", script]).creation_flags(NO_WINDOW).status();
     log(&format!("explorer shell stopped -> {:?}", r.map(|s| s.success())));
 }
@@ -272,7 +272,7 @@ fn overlay() {
 /// Keeps topbar and the desktop alive. With `replace` it also ends the shell Explorer once both are up, and gives it back
 /// (so the user is never left without a shell) if the bar will not stay up.
 fn overlay_watch(replace: bool, desktop: PathBuf, up: impl Fn() -> bool) {
-    let (mut starts, mut misses, mut dmiss, mut stable, mut killed) = (0, 0, 0, 0, false);
+    let (mut starts, mut misses, mut dmiss, mut stable, mut killed, mut sweep) = (0, 0, 0, 0, false, 0u32);
     let began = Instant::now();
     loop {
         thread::sleep(Duration::from_secs(3));
@@ -283,6 +283,13 @@ fn overlay_watch(replace: bool, desktop: PathBuf, up: impl Fn() -> bool) {
                 log(&format!("autostart done (markers: {}, after {} s)", startup_run(), began.elapsed().as_secs()));
                 kill_shell_explorer();
                 killed = true;
+            }
+        } else if replace && killed {
+            sweep = sweep.wrapping_add(1);
+            if sweep % 5 == 0 {
+                // Periodically reap orphaned explorer.exe /factory -Embedding COM servers when Settings is not open.
+                let clean = r#"if(-not (Get-Process SystemSettings -ErrorAction SilentlyContinue)){ Get-Process explorer,SearchHost,StartMenuExperienceHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }"#;
+                let _ = quiet("powershell").args(["-NoProfile", "-NonInteractive", "-Command", clean]).creation_flags(NO_WINDOW).spawn();
             }
         }
         dmiss = if desktop.exists() && !up() { dmiss + 1 } else { 0 };

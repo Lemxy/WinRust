@@ -42,7 +42,7 @@ if($started){
   $bad=0
   while($bad -lt 5 -and (Get-Process SystemSettings -ErrorAction SilentlyContinue)){ Start-Sleep -Seconds 2; if(Get-Process SystemSettings -ErrorAction SilentlyContinue | Where-Object { -not $_.Responding }){ $bad++ } else { $bad=0 } }
   KillStale
-  Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?\s*$' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+  Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   $rx="$env:ProgramFiles\rust-explorer\rust-explorer.exe"
   if((Test-Path $rx) -and -not (Get-CimInstance Win32_Process -Filter "Name='rust-explorer.exe'" | Where-Object { $_.CommandLine -match '--desktop' })){ Start-Process $rx -ArgumentList '--desktop' }
 }
