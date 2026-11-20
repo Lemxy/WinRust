@@ -124,9 +124,13 @@ pub(crate) fn rx_folders_bak(i: usize) -> PathBuf {
     rx_dir().join(format!("folders-{i}.reg"))
 }
 
+fn folder_subkey(sid: &str, verb: &str) -> String {
+    format!(r"{sid}\{}", verb.strip_prefix("HKCU\\").expect("per-user folder binding"))
+}
+
 fn folder_verb_exists(sid: &str, verb: &str) -> Result<bool, String> {
     use windows_sys::Win32::System::Registry::HKEY_USERS;
-    let subkey = format!(r"{sid}\{}", verb.strip_prefix("HKCU\\").expect("per-user folder binding"));
+    let subkey = folder_subkey(sid, verb);
     let mut handle = null_mut();
     let code = unsafe { RegOpenKeyExW(HKEY_USERS, wide(&subkey).as_ptr(), 0, KEY_QUERY_VALUE, &mut handle) };
     match code {
@@ -139,12 +143,29 @@ fn folder_verb_exists(sid: &str, verb: &str) -> Result<bool, String> {
     }
 }
 
-fn our_folder_binding(verb: &str) -> bool {
-    let exe = rx_dir().join("rust-explorer.exe");
-    let expected = format!("\"{}\" \"%1\"", exe.display());
-    out("reg", &["query", &format!(r"{verb}\command"), "/ve"]).ok().is_some_and(|output| {
-        i18n::reg::value(&output).is_some_and(|(ty, command)| ty == "REG_SZ" && command.eq_ignore_ascii_case(&expected))
-    })
+fn our_folder_binding(sid: &str, verb: &str) -> Result<bool, String> {
+    use windows_sys::Win32::System::Registry::{HKEY_USERS, RRF_RT_REG_SZ};
+    let subkey = format!(r"{}\command", folder_subkey(sid, verb));
+    let expected = format!("\"{}\" \"%1\"", rx_dir().join("rust-explorer.exe").display());
+    // An ownership check needs only enough space for an exact match.
+    let mut actual = vec![0u16; expected.encode_utf16().count() + 1];
+    let mut bytes = (actual.len() * size_of::<u16>()) as u32;
+    let code = unsafe {
+        RegGetValueW(HKEY_USERS, wide(&subkey).as_ptr(), null(), RRF_RT_REG_SZ, null_mut(),
+            actual.as_mut_ptr().cast(), &mut bytes)
+    };
+    let key = format!(r"HKU\{subkey}");
+    match code {
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_MORE_DATA | ERROR_UNSUPPORTED_TYPE => return Ok(false),
+        ERROR_SUCCESS => {}
+        _ => return Err(trim_registry_error(&key, "(Default)", code)),
+    }
+    let count = bytes as usize / size_of::<u16>();
+    if !bytes.is_multiple_of(size_of::<u16>() as u32) || count == 0 || count > actual.len() || actual[count - 1] != 0 {
+        return Err(trim_registry_error(&key, "(Default)", ERROR_INVALID_DATA));
+    }
+    let command = String::from_utf16(&actual[..count - 1]).map_err(|e| format!("{key}: {e}"))?;
+    Ok(command.eq_ignore_ascii_case(&expected))
 }
 
 fn clear_folder_binding(sid: &str, verb: &str) -> Result<(), String> {
@@ -188,8 +209,7 @@ fn restore_folder_binding(sid: &str, verb: &str, backup: &Path) -> Result<(), St
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Older installs had no export when the verb originally did not exist.
             // With no snapshot, only remove a binding that still points to our executable.
-            let key = i18n::reg::for_user(verb, sid);
-            return if our_folder_binding(&key) { clear_folder_binding(sid, verb) } else { Ok(()) };
+            return if our_folder_binding(sid, verb)? { clear_folder_binding(sid, verb) } else { Ok(()) };
         }
         Err(e) => return Err(format!("{}: {e}", backup.display())),
     };
@@ -253,13 +273,14 @@ pub(crate) fn rx_install() -> Result<(), String> {
         for (i, k) in RX_FOLDERS.iter().enumerate() {
             let bak = rx_folders_bak(i);
             if !bak.try_exists().map_err(|e| format!("{}: {e}", bak.display()))?
-                && folder_verb_exists(sid, k)? && !our_folder_binding(k)
+                && folder_verb_exists(sid, k)? && !our_folder_binding(sid, k)?
             {
-                export_folder_binding(k, &bak)?;
+                export_folder_binding(&i18n::reg::for_user(k, sid), &bak)?;
             }
         }
         for k in RX_FOLDERS {
-            let c = format!(r"{k}\command");
+            let key = i18n::reg::for_user(k, sid);
+            let c = format!(r"{key}\command");
             run("reg", &["add", &c, "/ve", "/t", "REG_SZ", "/d", &format!("\"{}\" \"%1\"", fm.display()), "/f"])?;
             run("reg", &["add", &c, "/v", "DelegateExecute", "/t", "REG_SZ", "/d", "", "/f"])?;
         }
