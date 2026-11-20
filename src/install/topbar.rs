@@ -48,6 +48,7 @@ pub(crate) fn shells_run(script: &str) -> Result<(), String> {
 pub(crate) fn bar_install() -> Result<(), String> {
     with_payload(&["topbar.exe", "rs-du.exe", "reshell.exe"], |d| {
         let dst = bar_dir().join("topbar.exe");
+        let fast_update = dst.is_file();
         let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);
         fs::create_dir_all(bar_dir()).map_err(|e| e.to_string())?;
         put(&d.join("topbar.exe"), &dst)?;
@@ -56,13 +57,31 @@ pub(crate) fn bar_install() -> Result<(), String> {
         let rsh = bar_dir().join("reshell.exe"); // Win+1/2/3 desktop hotkeys, no args = hotkeys
         let _ = run("taskkill", &["/f", "/im", "reshell.exe"]);
         put(&d.join("reshell.exe"), &rsh)?;
-        run("reg", &["add", RUN_KEY, "/v", "reshell", "/t", "REG_SZ", "/d", &format!("\"{}\"", rsh.display()), "/f"])?;
-        let _ = Command::new("explorer.exe").arg(&rsh).spawn();
+        if fast_update && run("schtasks", &["/query", "/tn", "topbar"]).is_ok() && run("schtasks", &["/query", "/tn", "reshell"]).is_ok() && run("schtasks", &["/query", "/tn", "winrust-update-topbar"]).is_ok() {
+            let _ = run("schtasks", &["/run", "/tn", "reshell"]);
+            let _ = run("schtasks", &["/run", "/tn", "topbar"]);
+            return Ok(());
+        }
+        let rsh_task = format!("{} Register-ScheduledTask -TaskName reshell -Force -Action (New-ScheduledTaskAction -Execute '{}') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), rsh.display());
+        if run("powershell", &["-NoProfile", "-Command", &rsh_task]).is_ok() && run("schtasks", &["/run", "/tn", "reshell"]).is_ok() {
+            let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);
+        } else {
+            run("reg", &["add", RUN_KEY, "/v", "reshell", "/t", "REG_SZ", "/d", &format!("\"{}\"", rsh.display()), "/f"])?;
+            let _ = Command::new("explorer.exe").arg(&rsh).spawn();
+        }
+        // Also elevate running Deskflow/Barrier/Synergy KVM clients so remote keyboard/mouse works across elevated WinRust windows (UIPI).
+        let kvm = format!("{} Get-Process deskflow,deskflow-core,barrier,barrierc,barriers,synergy,synergyc,synergys -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -Unique | Where-Object {{ $_ -and $_ -notmatch 'deskflow-core' }} | ForEach-Object {{ $p=$_; $n=[IO.Path]::GetFileNameWithoutExtension($p); Register-ScheduledTask -TaskName \"winrust-$n\" -Force -Action (New-ScheduledTaskAction -Execute $p -WorkingDirectory ([IO.Path]::GetDirectoryName($p))) -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null; Stop-Process -Name $n,\"$n-core\" -Force -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName \"winrust-$n\" }}", task_user());
+        let _ = run("powershell", &["-NoProfile", "-Command", &kvm]);
         run(dst.to_str().unwrap(), &["--restore"])?; // clean state in case a killed instance left the taskbar hidden
         // The bar runs elevated (a task with the highest run level starts it at logon without a UAC prompt): that lets it close
         // elevated windows and click elevated apps' tray icons. It starts everything else through explorer, i.e. unelevated.
         // Fallback when the task cannot be made: the plain Run key and a normal-rights bar.
         let task = format!("{} Register-ScheduledTask -TaskName topbar -Force -Action (New-ScheduledTaskAction -Execute '{}') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), dst.display());
+        // Also register an on-demand updater task (Highest run level) so future `plugin-launcher update topbar` or `dev-update` can hot-swap topbar without a UAC prompt.
+        if let Ok(me) = env::current_exe() {
+            let upd = format!("{} Register-ScheduledTask -TaskName winrust-update-topbar -Force -Action (New-ScheduledTaskAction -Execute '{}' -Argument 'update topbar' -WorkingDirectory '{}') -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), me.display(), me.parent().unwrap_or(Path::new(".")).display());
+            let _ = run("powershell", &["-NoProfile", "-Command", &upd]);
+        }
         if run("powershell", &["-NoProfile", "-Command", &task]).is_ok() && run("schtasks", &["/run", "/tn", "topbar"]).is_ok() {
             let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
         } else {
@@ -78,6 +97,8 @@ pub(crate) fn bar_install() -> Result<(), String> {
 pub(crate) fn bar_uninstall() -> Result<(), String> {
     let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "topbar", "/f"]);
+    let _ = run("schtasks", &["/delete", "/tn", "winrust-update-topbar", "/f"]);
+    let _ = run("schtasks", &["/delete", "/tn", "reshell", "/f"]);
     let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);
     let _ = run("taskkill", &["/f", "/im", "reshell.exe"]);
     let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);

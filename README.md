@@ -57,7 +57,7 @@ The gear at the left end of the bar opens **Style**. The choice applies at once 
 | **Floating dock** | A pill-shaped bar in the middle; maximized windows get the whole screen, the dock slides away over them and comes back at the bottom edge |
 | **Tiling** | A thin bar at the top, amber accent, square corners; "Tile the windows" puts the open windows side by side |
 
-The choice is stored in `%ProgramData%\WinRust\style.txt`.
+The choice is stored in `%ProgramData%\WinRust\style.txt`. The same menu also toggles **Auto-hide the bar** (in every style, the bar slides away after 2 s when the pointer leaves it and comes back at the screen edge). Hovering a running app on the bar or pressing Alt+Tab shows live DWM window thumbnails.
 
 ## Benchmark
 

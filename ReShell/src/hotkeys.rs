@@ -80,7 +80,7 @@ unsafe extern "system" fn hook(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
         if (w == WM_KEYUP as usize || w == WM_SYSKEYUP as usize) && HELD.load(Relaxed) == k.vkCode {
             HELD.store(0, Relaxed); // also when Win was let go first
         }
-        if let (Some(act), true) = (win_action(k.vkCode), win && k.flags & LLKHF_INJECTED == 0) {
+        if let (Some(act), true) = (win_action(k.vkCode), win) {
             // swallow it so Explorer's own handler (if it still answers) does not act as well
             if w == WM_KEYDOWN as usize && HELD.swap(k.vkCode, Relaxed) != k.vkCode {
                 send(&[tap(0xE8, false), tap(0xE8, true)]); // Win release must not open Start
@@ -89,8 +89,8 @@ unsafe extern "system" fn hook(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             return 1;
         }
         let id = match k.vkCode { 0x31..=0x33 => Some(k.vkCode as usize - 0x31), 0xC0 => Some(usize::MAX), _ => None };
-        if let (Some(id), true, false) = (id, win, k.flags & LLKHF_INJECTED != 0) {
-            if w == WM_KEYDOWN as usize {
+        if let (Some(id), true) = (id, win && k.vkCode != 0xE8) {
+            if w == WM_KEYDOWN as usize && HELD.swap(k.vkCode, Relaxed) != k.vkCode {
                 // unassigned key tap stops Win release from opening Start; switching runs off the hook thread
                 send(&[tap(0xE8, false), tap(0xE8, true)]);
                 std::thread::spawn(move || go(if id == usize::MAX { PREV.load(Relaxed) } else { id }));
