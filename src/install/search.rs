@@ -60,16 +60,16 @@ pub(crate) fn install() -> Result<(), String> {
 }
 
 pub(crate) fn uninstall() -> Result<(), String> {
+    // Restore Windows Search before removing the launcher. An error leaves the plugin available for a retry.
+    journal()?.undo()?;
     let _ = run("taskkill", &["/f", "/im", "rs-launcher.exe"]);
     let _ = run("reg", &["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "rs-launcher", "/f"]);
-    // Windows Search back first: a failure removing our files below must not leave it switched off
-    let r = journal().and_then(|j| j.undo());
     let k = svc_key("WSearch");
-    if r.is_ok() && svc_mode(reg_dword(&k, "Start"), reg_dword(&k, "DelayedAutostart")).is_some_and(|m| m.ends_with("auto")) {
+    if svc_mode(reg_dword(&k, "Start"), reg_dword(&k, "DelayedAutostart")).is_some_and(|m| m.ends_with("auto")) {
         let _ = run("sc.exe", &["start", "WSearch"]);
     }
     // run the unpacked copy: an exe cannot delete itself, so the installed one would leave its folder behind
     let files = with_payload(&["rs.exe"], |src| run(src.join("rs.exe").to_str().unwrap(), &["--uninstall"]));
     let _ = fs::remove_dir_all(prog_dir());
-    r.and(files)
+    files
 }

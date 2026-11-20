@@ -133,8 +133,12 @@ pub(crate) fn install_plugin(i: usize) -> Result<String, String> {
         if was {
             return Err(e);
         }
-        let back = uninst().err().map_or(String::new(), |u| tf!("; откат: {u}", "; rollback: {u}"));
-        return Err(tf!("{e} (установка отменена, изменения возвращены{back})", "{e} (installation cancelled, changes reverted{back})"));
+        let rollback = match uninst() {
+            Ok(()) => t!("автоматический откат завершён", "automatic rollback completed").to_string(),
+            Err(u) => tf!("ошибка автоматического отката: {u}", "automatic rollback failed: {u}"),
+        };
+        log(&format!("{}: {rollback}", p.name));
+        return Err(format!("{e} ({rollback})"));
     }
     let w = WARN.lock().unwrap().clone();
     log(&format!("{}: {} {}", p.name, if was { t!("обновлён", "updated") } else { t!("установлен", "installed") }, w.join(" | ")));

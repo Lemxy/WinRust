@@ -55,9 +55,12 @@ impl Entry {
     }
 }
 
-/// Every readable line, oldest first; unknown lines are skipped.
-pub fn parse_all(text: &str) -> Vec<Entry> {
-    text.lines().filter_map(Entry::parse).collect()
+/// Every entry, oldest first. Returns the one-based line number if a record is malformed or incomplete.
+pub fn parse_all(text: &str) -> Result<Vec<Entry>, usize> {
+    text.split_inclusive('\n')
+        .enumerate()
+        .map(|(i, line)| line.strip_suffix('\n').and_then(Entry::parse).ok_or(i + 1))
+        .collect()
 }
 
 /// `sc config` start mode from a service's Start and DelayedAutostart values. None = boot/system driver or unknown: never touched.
@@ -84,7 +87,22 @@ mod tests {
         for e in [reg(None), reg(Some(("REG_SZ", r#""C:\a|b.exe" /x"#))), reg(Some(("REG_DWORD", "26"))), Entry::Svc { name: "WSearch".into(), mode: "delayed-auto".into() }] {
             assert_eq!(Entry::parse(&e.line().unwrap()), Some(e));
         }
-        assert_eq!(parse_all("reg|K|V|-\r\ngarbage\nsvc|S|auto\n").len(), 2);
+    }
+
+    #[test]
+    fn reads_empty_journal_and_crlf_records_in_order() {
+        assert_eq!(parse_all(""), Ok(vec![]));
+        assert_eq!(parse_all("reg|K|V|REG_SZ|a|b\r\nsvc|S|auto\r\n").unwrap(), vec![
+            Entry::Reg { key: "K".into(), name: "V".into(), old: Some(("REG_SZ".into(), "a|b".into())) },
+            Entry::Svc { name: "S".into(), mode: "auto".into() },
+        ]);
+    }
+
+    #[test]
+    fn rejects_the_entire_journal_when_a_record_is_invalid_or_incomplete() {
+        assert_eq!(parse_all("reg|K|V|-\r\ngarbage\nsvc|S|auto\n"), Err(2));
+        assert_eq!(parse_all("svc|S|boot\n"), Err(1));
+        assert_eq!(parse_all("svc|S|auto\nreg|K|V|REG_SZ|partial"), Err(2));
     }
 
     #[test]

@@ -21,21 +21,33 @@ impl Journal {
     /// Opens `plugin`'s journal. A missing one starts with `legacy()`: what a launcher from before the journal changed.
     pub(crate) fn open(plugin: &str, legacy: impl FnOnce() -> Vec<Entry>) -> Result<Journal, String> {
         let j = Journal(program_files().join(r"WinRust\journal").join(format!("{plugin}.txt")));
-        if !j.0.is_file() {
-            fs::create_dir_all(j.0.parent().unwrap()).map_err(|e| e.to_string())?;
-            let text: String = legacy().iter().filter_map(Entry::line).map(|l| l + "\n").collect();
-            fs::write(&j.0, text).map_err(|e| format!("{}: {e}", j.0.display()))?;
+        match fs::metadata(&j.0) {
+            Ok(_) => {
+                j.entries()?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(j.0.parent().unwrap()).map_err(|e| e.to_string())?;
+                let text: String = legacy().iter().filter_map(Entry::line).map(|l| l + "\n").collect();
+                let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&j.0)
+                    .map_err(|e| format!("{}: {e}", j.0.display()))?;
+                f.write_all(text.as_bytes()).and_then(|_| f.sync_all())
+                    .map_err(|e| format!("{}: {e}", j.0.display()))?;
+            }
+            Err(e) => return Err(format!("{}: {e}", j.0.display())),
         }
         Ok(j)
     }
 
-    fn entries(&self) -> Vec<Entry> {
-        fs::read_to_string(&self.0).map(|t| i18n::journal::parse_all(&t)).unwrap_or_default()
+    fn entries(&self) -> Result<Vec<Entry>, String> {
+        let path = self.0.display();
+        let text = fs::read_to_string(&self.0).map_err(|e| format!("{path}: {e}"))?;
+        i18n::journal::parse_all(&text)
+            .map_err(|line| tf!("{path}: повреждена строка журнала {line}", "{path}: invalid journal record on line {line}"))
     }
 
     /// Writes `e` down before the change it describes; a value already in the journal keeps its original.
     fn record(&self, e: Entry) -> Result<(), String> {
-        if self.entries().iter().any(|x| x.same(&e)) {
+        if self.entries()?.iter().any(|x| x.same(&e)) {
             return Ok(());
         }
         let line = e.line().ok_or(tf!("не могу сохранить старое значение: {e:?}", "cannot save the old value: {e:?}"))?;
@@ -57,7 +69,7 @@ impl Journal {
 
     /// Puts everything back, newest first. The journal is deleted only when every entry was restored, so a retry can finish.
     pub(crate) fn undo(&self) -> Result<(), String> {
-        let errs: Vec<String> = self.entries().iter().rev().filter_map(|e| restore(e).err()).collect();
+        let errs: Vec<String> = self.entries()?.iter().rev().filter_map(|e| restore(e).err()).collect();
         if !errs.is_empty() {
             return Err(errs.join("; "));
         }
