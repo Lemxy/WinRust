@@ -151,12 +151,22 @@ pub(crate) fn uninstall_plugin(i: usize) -> Result<String, String> {
     let w = WARN.lock().unwrap().clone();
     log(&format!("{}: {} {}", p.name, t!("удалён", "removed"), w.join(" | ")));
     let note = if w.is_empty() { String::new() } else { tf!(" Предупреждений: {} (см. %ProgramData%\\plugin-launcher\\install.log).", " Warnings: {} (see %ProgramData%\\plugin-launcher\\install.log).", w.len()) };
-    Ok(tf!("{} удалён, система восстановлена.{note}", "{} removed, system restored.{note}", p.name))
+    Ok(tf!("{} удалён.{note}", "{} removed.{note}", p.name))
 }
 
 pub(crate) fn rollback() -> Result<String, String> {
+    WARN.lock().unwrap().clear();
     init_soft();
     // reverse install order: rust-explorer (which switched Explorer off) goes before topbar, else the session is left with no panel and no shell
     let errs: Vec<String> = PLUGINS.iter().rev().filter(|p| (p.installed)()).filter_map(|p| p.actions.and_then(|a| a.1().err().map(|e| format!("{}: {e}", p.name)))).collect();
-    if errs.is_empty() { Ok(t!("Все плагины удалены, система восстановлена.", "All plugins removed, system restored.").into()) } else { Err(errs.join("; ")) }
+    let warnings = WARN.lock().unwrap().join(" | ");
+    let note = if warnings.is_empty() { "" } else {
+        log(&format!("rollback: {warnings}"));
+        t!(" Есть предупреждения (см. %ProgramData%\\plugin-launcher\\install.log).", " See warnings in %ProgramData%\\plugin-launcher\\install.log.")
+    };
+    if errs.is_empty() {
+        Ok(tf!("Все плагины удалены.{note}", "All plugins removed.{note}"))
+    } else {
+        Err(format!("{}{note}", errs.join("; ")))
+    }
 }

@@ -1,5 +1,12 @@
 //! rust-explorer: the file manager that replaces Explorer as folder handler and (with rs-shell) as the shell.
 use crate::*;
+use windows_sys::Win32::System::Registry::{
+    HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD, RRF_RT_REG_DWORD,
+    RegCloseKey, RegFlushKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+};
+
+mod dword_snapshot;
+use dword_snapshot::{Dword, backup_and_set, restore};
 
 pub(crate) fn rx_dir() -> PathBuf {
     program_files().join("rust-explorer")
@@ -16,28 +23,98 @@ pub(crate) const WINLOGON_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\Curre
 pub(crate) const RX_SWITCH: &str = r"HKCU\Software\rs-shell";
 pub(crate) const RX_FOLDERS: [&str; 3] = [r"HKCU\Software\Classes\Directory\shell\open", r"HKCU\Software\Classes\Folder\shell\open", r"HKCU\Software\Classes\Drive\shell\open"];
 
-// svchost RAM trim, done with rust-explorer: (service, Start we set, Windows default). Uninstall puts back the Windows defaults,
-// not the values found at install: they may already be our own (the same tweak was first run by hand).
-// DoSvc's key is ACL-protected on some builds, so every step is soft: a refused one is only a warning.
-// DiagTrack (telemetry) is debloat's job: two plugins switching it would turn it back on when either one is removed.
-pub(crate) const RX_SVCS: [(&str, u32, u32); 5] = [("PcaSvc", 4, 2), ("InventorySvc", 4, 2), ("lfsvc", 4, 3), ("cbdhsvc", 4, 2), ("DoSvc", 3, 2)];
-pub(crate) const SPLIT_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control";
-pub(crate) const SPLIT_DEFAULT: u32 = 3670016; // 3.5 GB: above it Windows gives every service its own svchost
+// The original DWORDs are saved in the installer's HKLM state key before changing them.
+const RX_SVCS: [(&str, u32); 5] = [("PcaSvc", 4), ("InventorySvc", 4), ("lfsvc", 4), ("cbdhsvc", 4), ("DoSvc", 3)];
+const SPLIT_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control";
+const SPLIT_VALUE: &str = "SvcHostSplitThresholdInKB";
 
-pub(crate) fn rx_trim(on: bool) {
-    for (s, off, def) in RX_SVCS {
-        let v = if on { off } else { def };
-        soft(&tf!("служба {s}", "service {s}"), run("reg", &["add", &format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{s}"), "/v", "Start", "/t", "REG_DWORD", "/d", &v.to_string(), "/f"]));
-        if on && off == 4 {
-            let _ = run("sc.exe", &["stop", s]); // the per-user cbdhsvc_xxxx instance stops at the next sign-in
+fn trim_settings() -> impl Iterator<Item = (&'static str, String, &'static str, u32)> {
+    RX_SVCS.into_iter()
+        .map(|(service, start)| (service, svc_key(service), "Start", start))
+        .chain(std::iter::once((SPLIT_VALUE, SPLIT_KEY.into(), SPLIT_VALUE, 0x4000000)))
+}
+
+fn trim_subkey(key: &str) -> Vec<u16> {
+    wide(key.strip_prefix(r"HKLM\").expect("service settings live under HKLM"))
+}
+
+fn trim_registry_error(key: &str, name: &str, code: u32) -> String {
+    format!(r"{key}\{name}: {}", std::io::Error::from_raw_os_error(code as i32))
+}
+
+fn trim_read((key, name): Dword<'_>) -> Result<Option<u32>, String> {
+    let subkey = trim_subkey(key);
+    let value_name = wide(name);
+    let mut value = 0u32;
+    let mut len = size_of::<u32>() as u32;
+    let code = unsafe {
+        RegGetValueW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), value_name.as_ptr(), RRF_RT_REG_DWORD,
+            null_mut(), (&mut value as *mut u32).cast(), &mut len)
+    };
+    match code {
+        ERROR_SUCCESS if len == size_of::<u32>() as u32 => Ok(Some(value)),
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Ok(None),
+        ERROR_SUCCESS => Err(trim_registry_error(key, name, ERROR_INVALID_DATA)),
+        _ => Err(trim_registry_error(key, name, code)),
+    }
+}
+
+fn trim_write((key, name): Dword<'_>, value: u32) -> Result<(), String> {
+    let subkey = trim_subkey(key);
+    let value_name = wide(name);
+    let mut handle = null_mut();
+    // Open an existing key so a removed service is not recreated during uninstall.
+    let code = unsafe {
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &mut handle)
+    };
+    if code != ERROR_SUCCESS {
+        return Err(trim_registry_error(key, name, code));
+    }
+    let bytes = value.to_le_bytes();
+    let mut code = unsafe { RegSetValueExW(handle, value_name.as_ptr(), 0, REG_DWORD, bytes.as_ptr(), bytes.len() as u32) };
+    if code == ERROR_SUCCESS && key == RX_STATE {
+        // The backup and the service setting are in different hives. Persist the backup first.
+        code = unsafe { RegFlushKey(handle) };
+    }
+    unsafe { RegCloseKey(handle) };
+    if code != ERROR_SUCCESS {
+        return Err(trim_registry_error(key, name, code));
+    }
+    if trim_read((key, name))? != Some(value) {
+        return Err(tf!("{key}: не удалось подтвердить запись {name}", "{key}: could not verify the write to {name}"));
+    }
+    Ok(())
+}
+
+fn apply_service_trim() {
+    for (backup, key, value, new) in trim_settings() {
+        let result = backup_and_set((&key, value), (RX_STATE, backup), new, trim_read, trim_write);
+        if matches!(&result, Ok(true)) && value == "Start" && new == 4 {
+            let _ = run("sc.exe", &["stop", backup]);
+        }
+        soft(backup, result.map(|_| ()));
+    }
+}
+
+fn restore_service_trim() -> Result<(), String> {
+    let mut restored = false;
+    let mut errors = Vec::new();
+    for (backup, key, value, _) in trim_settings() {
+        match restore((&key, value), (RX_STATE, backup), trim_read, trim_write) {
+            Ok(saved) => restored |= saved,
+            Err(e) => errors.push(e),
         }
     }
-    // launchers up to v0.2.1 disabled DiagTrack here: put it back, unless debloat is the one keeping it off
-    if !on && !db_dir().join("debloat.exe").is_file() {
-        soft("DiagTrack", run("reg", &["add", r"HKLM\SYSTEM\CurrentControlSet\Services\DiagTrack", "/v", "Start", "/t", "REG_DWORD", "/d", "2", "/f"]));
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
     }
-    let t = if on { 0x4000000 } else { SPLIT_DEFAULT };
-    soft("SvcHostSplitThresholdInKB", run("reg", &["add", SPLIT_KEY, "/v", "SvcHostSplitThresholdInKB", "/t", "REG_DWORD", "/d", &t.to_string(), "/f"]));
+    if !restored && rx_dir().join("rust-explorer.exe").is_file() {
+        WARN.lock().unwrap().push(t!(
+            "исходные настройки служб не сохранены; текущие значения оставлены как есть",
+            "no service settings were backed up; the current values were left in place"
+        ).into());
+    }
+    Ok(())
 }
 
 /// In our Program Files folder (admin-only): a .reg a user could plant would be imported by the elevated uninstall.
@@ -53,6 +130,9 @@ pub(crate) fn rx_install() -> Result<(), String> {
     if !bar_dir().join("topbar.exe").is_file() {
         return Err(t!("сначала установите topbar: без него после отключения Explorer не будет панели", "install topbar first: without it there will be no bar after Explorer is disabled").into());
     }
+    // An older installation may already have applied the tweaks without saving the originals.
+    let fresh = !rx_dir().join("rust-explorer.exe").is_file()
+        && trim_read((RX_STATE, "AutoRestartShell"))?.is_none();
     with_payload(&["rust-explorer.exe", "rs-shell.exe"], |d| {
         for n in ["rs-shell.exe", "rust-explorer.exe"] {
             let _ = run("taskkill", &["/f", "/im", n]); // an update: a running exe cannot be overwritten
@@ -91,7 +171,9 @@ pub(crate) fn rx_install() -> Result<(), String> {
         }
         run("reg", &["add", RX_SWITCH, "/v", "ReplaceExplorer", "/t", "REG_DWORD", "/d", "1", "/f"])?;
         run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", "0", "/f"])?;
-        rx_trim(true);
+        if fresh {
+            apply_service_trim();
+        }
         // the bar's Start panel and the search list Start Menu shortcuts only: without one rust-explorer has no entry (and no icon) there
         soft(t!("ярлык «Rust Explorer» в меню Пуск не создан", "Start menu shortcut 'Rust Explorer' was not created"), shortcut(&start_lnk("Rust Explorer"), &fm, ""));
         // Start it now, with the user's normal token: explorer.exe opens a shortcut unelevated, and the shortcut carries --overlay.
@@ -104,13 +186,13 @@ pub(crate) fn rx_install() -> Result<(), String> {
 }
 
 pub(crate) fn rx_uninstall() -> Result<(), String> {
+    restore_service_trim()?;
     // Windows may restart its shell again; our hooks off; then the shell back, unelevated, only if none is running
     let back = reg_dword(RX_STATE, "AutoRestartShell").unwrap_or(1);
     let r = run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &back.to_string(), "/f"]);
     let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "rs-overlay", "/f"]);
     let _ = run("reg", &["delete", RX_SWITCH, "/f"]);
-    rx_trim(false);
     for (i, k) in RX_FOLDERS.iter().enumerate() {
         let _ = run("reg", &["delete", k, "/f"]); // only our HKCU override; the system's verbs under HKLM stay
         let bak = rx_folders_bak(i);
