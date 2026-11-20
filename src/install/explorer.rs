@@ -6,7 +6,11 @@ use windows_sys::Win32::System::Registry::{
 };
 
 mod dword_snapshot;
+mod service_control;
+mod service_state;
 use dword_snapshot::{Dword, backup_and_set, restore};
+use service_control::{change_start, current_state, ensure_state};
+use service_state::{ServiceState, restore_start_and_state};
 
 pub(crate) fn rx_dir() -> PathBuf {
     program_files().join("rust-explorer")
@@ -27,12 +31,6 @@ pub(crate) const RX_FOLDERS: [&str; 3] = [r"HKCU\Software\Classes\Directory\shel
 const RX_SVCS: [(&str, u32); 5] = [("PcaSvc", 4), ("InventorySvc", 4), ("lfsvc", 4), ("cbdhsvc", 4), ("DoSvc", 3)];
 const SPLIT_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control";
 const SPLIT_VALUE: &str = "SvcHostSplitThresholdInKB";
-
-fn trim_settings() -> impl Iterator<Item = (&'static str, String, &'static str, u32)> {
-    RX_SVCS.into_iter()
-        .map(|(service, start)| (service, svc_key(service), "Start", start))
-        .chain(std::iter::once((SPLIT_VALUE, SPLIT_KEY.into(), SPLIT_VALUE, 0x4000000)))
-}
 
 fn trim_subkey(key: &str) -> Vec<u16> {
     wide(key.strip_prefix(r"HKLM\").expect("service settings live under HKLM"))
@@ -86,21 +84,68 @@ fn trim_write((key, name): Dword<'_>, value: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_service_trim() {
-    for (backup, key, value, new) in trim_settings() {
-        let result = backup_and_set((&key, value), (RX_STATE, backup), new, trim_read, trim_write);
-        if matches!(&result, Ok(true)) && value == "Start" && new == 4 {
-            let _ = run("sc.exe", &["stop", backup]);
-        }
-        soft(backup, result.map(|_| ()));
+fn saved_service_state(name: &str) -> Result<Option<ServiceState>, String> {
+    let Some(value) = trim_read((RX_STATE, &format!("{name}State")))? else { return Ok(None) };
+    ServiceState::from_status(value).map(Some).ok_or_else(|| tf!("{name}: неверное сохранённое состояние {value}",
+        "{name}: invalid saved service state {value}"))
+}
+
+fn write_service_start(name: &str, start: u32) -> Result<(), String> {
+    change_start(name, start)?;
+    if trim_read((&svc_key(name), "Start"))? != Some(start) {
+        return Err(tf!("{name}: не удалось подтвердить тип запуска", "{name}: could not verify the startup mode"));
     }
+    Ok(())
+}
+
+fn apply_service_setting(name: &str, start: u32) -> Result<(), String> {
+    let key = svc_key(name);
+    let changed = backup_and_set((&key, "Start"), (RX_STATE, name), start, trim_read, |address, value| {
+        if address.0 == RX_STATE {
+            return trim_write(address, value);
+        }
+        if saved_service_state(name)?.is_none() {
+            let original = current_state(name)?;
+            trim_write((RX_STATE, &format!("{name}State")), original as u32)?;
+        }
+        write_service_start(name, value)
+    })?;
+    if changed && start == 4 {
+        ensure_state(name, ServiceState::Stopped)?;
+    }
+    Ok(())
+}
+
+fn restore_service_setting(name: &str) -> Result<bool, String> {
+    let Some(start) = trim_read((RX_STATE, name))? else { return Ok(false) };
+    let key = svc_key(name);
+    let Some(state) = saved_service_state(name)? else {
+        return restore((&key, "Start"), (RX_STATE, name), trim_read, trim_write);
+    };
+    restore_start_and_state(start, state, |start| {
+        if trim_read((&key, "Start"))? != Some(start) {
+            write_service_start(name, start)?;
+        }
+        Ok(())
+    }, |state| ensure_state(name, state))?;
+    Ok(true)
+}
+
+fn apply_service_trim() {
+    for (name, start) in RX_SVCS {
+        soft(name, apply_service_setting(name, start));
+    }
+    soft(SPLIT_VALUE, backup_and_set((SPLIT_KEY, SPLIT_VALUE), (RX_STATE, SPLIT_VALUE),
+        0x4000000, trim_read, trim_write).map(|_| ()));
 }
 
 fn restore_service_trim() -> Result<(), String> {
     let mut restored = false;
     let mut errors = Vec::new();
-    for (backup, key, value, _) in trim_settings() {
-        match restore((&key, value), (RX_STATE, backup), trim_read, trim_write) {
+    for result in RX_SVCS.into_iter().map(|(name, _)| restore_service_setting(name))
+        .chain(std::iter::once_with(|| restore((SPLIT_KEY, SPLIT_VALUE), (RX_STATE, SPLIT_VALUE), trim_read, trim_write)))
+    {
+        match result {
             Ok(saved) => restored |= saved,
             Err(e) => errors.push(e),
         }
