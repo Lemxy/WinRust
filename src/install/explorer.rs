@@ -9,7 +9,7 @@ mod dword_snapshot;
 mod service_control;
 mod service_state;
 use dword_snapshot::{Dword, backup_and_set, restore};
-use service_control::{change_start, current_state, ensure_state};
+use service_control::{change_start, current_state, ensure_state, is_stopped};
 use service_state::{ServiceState, restore_start_and_state};
 
 pub(crate) fn rx_dir() -> PathBuf {
@@ -122,7 +122,13 @@ fn restore_service_setting(name: &str) -> Result<bool, String> {
     let Some(state) = saved_service_state(name)? else {
         return restore((&key, "Start"), (RX_STATE, name), trim_read, trim_write);
     };
-    restore_start_and_state(start, state, |start| {
+    let needs_temporary_enable = || {
+        if trim_read((&key, "Start"))? == Some(4) {
+            return is_stopped(name);
+        }
+        Ok(false)
+    };
+    restore_start_and_state(start, state, needs_temporary_enable, |start| {
         if trim_read((&key, "Start"))? != Some(start) {
             write_service_start(name, start)?;
         }

@@ -19,7 +19,8 @@ impl ServiceState {
 pub(crate) fn restore_start_and_state(
     start: u32,
     state: ServiceState,
-    set_start: impl FnOnce(u32) -> Result<(), String>,
+    needs_temporary_enable: impl FnOnce() -> Result<bool, String>,
+    set_start: impl Fn(u32) -> Result<(), String>,
     set_state: impl FnOnce(ServiceState) -> Result<(), String>,
 ) -> Result<(), String> {
     // Changing a running service to disabled does not stop it, but a disabled
@@ -27,7 +28,16 @@ pub(crate) fn restore_start_and_state(
     // without stopping it before installing rust-explorer.
     const DISABLED: u32 = 4;
     if start == DISABLED && state == ServiceState::Running {
-        set_state(ServiceState::Running)?;
+        if needs_temporary_enable()? {
+            const MANUAL: u32 = 3;
+            let started = set_start(MANUAL).and_then(|_| set_state(state));
+            let disabled = set_start(DISABLED);
+            return match (started, disabled) {
+                (Err(start), Err(mode)) => Err(format!("{start}; {mode}")),
+                (result, mode) => result.and(mode),
+            };
+        }
+        set_state(state)?;
         return set_start(start);
     }
 
@@ -38,11 +48,11 @@ pub(crate) fn restore_start_and_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     fn restore_steps(start: u32, state: ServiceState) -> Vec<String> {
         let steps = RefCell::new(Vec::new());
-        restore_start_and_state(start, state, |m| {
+        restore_start_and_state(start, state, || Ok(false), |m| {
             steps.borrow_mut().push(format!("start mode {m}"));
             Ok(())
         }, |s| {
@@ -65,12 +75,40 @@ mod tests {
 
     #[test]
     fn takes_no_follow_up_action_when_a_step_fails() {
-        let failed = restore_start_and_state(3, ServiceState::Running,
+        let failed = restore_start_and_state(3, ServiceState::Running, || Ok(false),
             |_| Err("cannot restore startup mode".into()), |_| panic!("service state changed"));
         assert_eq!(failed, Err("cannot restore startup mode".into()));
-        let failed = restore_start_and_state(4, ServiceState::Running,
+        let failed = restore_start_and_state(4, ServiceState::Running, || Ok(false),
             |_| panic!("disabled service after start failure"), |_| Err("cannot start service".into()));
         assert_eq!(failed, Err("cannot start service".into()));
+    }
+
+    #[test]
+    fn enables_a_disabled_stopped_service_until_it_is_running() {
+        let start = Cell::new(4);
+        let state = Cell::new(ServiceState::Stopped);
+        restore_start_and_state(4, ServiceState::Running, || Ok(true),
+            |mode| { start.set(mode); Ok(()) },
+            |service_state| {
+                assert_eq!(start.get(), 3);
+                state.set(service_state);
+                Ok(())
+            }).unwrap();
+        assert_eq!(start.get(), 4);
+        assert_eq!(state.get(), ServiceState::Running);
+    }
+
+    #[test]
+    fn restores_the_disabled_mode_even_if_start_fails() {
+        let start = Cell::new(4);
+        let result = restore_start_and_state(4, ServiceState::Running, || Ok(true),
+            |mode| { start.set(mode); Ok(()) },
+            |_| {
+                assert_eq!(start.get(), 3);
+                Err("cannot start service".into())
+            });
+        assert_eq!(result, Err("cannot start service".into()));
+        assert_eq!(start.get(), 4);
     }
 
     #[test]

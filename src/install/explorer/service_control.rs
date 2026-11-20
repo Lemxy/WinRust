@@ -63,9 +63,16 @@ fn is_settled(status: u32) -> bool {
     !matches!(status, SERVICE_START_PENDING | SERVICE_STOP_PENDING | SERVICE_CONTINUE_PENDING | SERVICE_PAUSE_PENDING)
 }
 
+fn settled_status(name: &str) -> Result<u32, String> {
+    Handle::open(name, SERVICE_QUERY_STATUS)?.wait_for(name, is_settled)
+}
+
+pub(super) fn is_stopped(name: &str) -> Result<bool, String> {
+    Ok(settled_status(name)? == ServiceState::Stopped as u32)
+}
+
 pub(super) fn current_state(name: &str) -> Result<ServiceState, String> {
-    let handle = Handle::open(name, SERVICE_QUERY_STATUS)?;
-    let status = handle.wait_for(name, is_settled)?;
+    let status = settled_status(name)?;
     ServiceState::from_status(status).ok_or_else(|| tf!("{name}: нельзя сохранить состояние службы (код {status})",
         "{name}: cannot save the service state (status {status})"))
 }
