@@ -1007,9 +1007,8 @@ unsafe fn place(hwnd: HWND) {
     let mut ab: APPBARDATA = zeroed();
     ab.cbSize = size_of::<APPBARDATA>() as u32;
     ab.hWnd = hwnd;
-    // the reserved strip: the bar itself plus the dock's gap under it
-    // the dock and auto-hide reserve nothing: maximized windows take the whole screen and the bar slides away over them
-    let strip = if style() == Style::Dock || AUTOHIDE.load(Relaxed) { 0 } else { bar_h() };
+    // the reserved strip: the bar itself plus the dock's gap under it (0 only when Auto-hide is explicitly turned on)
+    let strip = if AUTOHIDE.load(Relaxed) { 0 } else { bar_h() + dock_gap() };
     if at_top() {
         ab.uEdge = ABE_TOP;
         ab.rc = RECT { left: 0, top: 0, right: cx, bottom: strip };
@@ -1699,7 +1698,7 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
         return false; // none of our own popups / overlays count as a fullscreen game
     }
     let st = GetWindowLongW(fg, GWL_STYLE) as u32;
-    if (style() == Style::Dock || AUTOHIDE.load(Relaxed)) && (st & WS_MAXIMIZE != 0 || st & WS_CAPTION == WS_CAPTION) {
+    if st & WS_MAXIMIZE != 0 || st & WS_CAPTION == WS_CAPTION || st & WS_THICKFRAME != 0 {
         return false;
     }
     let mut cls = [0u16; 64];
@@ -1732,7 +1731,7 @@ unsafe fn fs_update(hwnd: HWND) {
     let sh = GetSystemMetrics(SM_CYSCREEN);
     let over = if at_top() { pt.y <= 1 || (pt.y < bar_h() && BAR_P.get() > 0.0) } else { pt.y >= sh - 2 || (pt.y >= sh - bar_h() - dock_gap() && BAR_P.get() > 0.0) };
     let tray_open = IsWindowVisible(TRAYFLY.get()) != 0 || IsWindowVisible(TIPWND.get()) != 0;
-    let want_hide = AUTOHIDE.load(Relaxed) || dock_covered();
+    let want_hide = AUTOHIDE.load(Relaxed);
     if fs || !want_hide || fly::any_open() || tray_open || over {
         DESK_T.set(now);
     }
@@ -1750,30 +1749,6 @@ unsafe fn fs_update(hwnd: HWND) {
         }
         bar_anim(hwnd);
     }
-}
-
-/// The dock is in the way of the window in front (a maximized one, or one dragged down under it): it hides like over the
-/// desktop and comes back when the pointer touches the bottom edge.
-unsafe fn dock_covered() -> bool {
-    if style() != Style::Dock {
-        return false;
-    }
-    let fg = GetForegroundWindow();
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(fg, &mut pid);
-    if fg.is_null() || pid == std::process::id() || IsIconic(fg) != 0 || fly::any_open() {
-        return false;
-    }
-    let mut cls = [0u16; 64];
-    let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
-    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
-        return false;
-    }
-    let mut r: RECT = zeroed();
-    GetWindowRect(fg, &mut r);
-    let (x, w) = bar_x_w();
-    let top = GetSystemMetrics(SM_CYSCREEN) - bar_h() - dock_gap();
-    r.bottom > top && r.right > x && r.left < x + w
 }
 
 /// SetForegroundWindow that also works when the request comes from a keyboard hook (we have not "received input" then):
@@ -1996,6 +1971,7 @@ unsafe fn start_region_snip() {
     }
     let hw = SNIP_WND.get();
     SNIP_DRAG.set(None);
+    ShowWindow(hw, SW_SHOWNOACTIVATE);
     SetLayeredWindowAttributes(hw, 0, 110, LWA_ALPHA);
     SetWindowPos(hw, HWND_TOPMOST, vx, vy, vw, vh, SWP_SHOWWINDOW);
     force_fg(hw);

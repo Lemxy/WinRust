@@ -509,7 +509,7 @@ unsafe fn wifi_join(n: &Net, pass: &str) {
 
 fn size(k: Kind) -> (i32, i32) {
     match k {
-        Kind::Quick => (360, 196 + if BRIGHT.load(Relaxed) >= 0 { 96 } else { 48 } + 64),
+        Kind::Quick => (360, 292 + if BRIGHT.load(Relaxed) >= 0 { 96 } else { 48 } + 64),
         Kind::Cal => (330, 340),
         Kind::Wifi => (360, wifi_rows().2),
         Kind::Start => (560, 640),
@@ -548,11 +548,11 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
     match k {
         Kind::Quick => {
             let mut v = vec![(r(16, 16, 16 + 104 - 36, 72), Act::Tile(0)), (r(16 + 104 - 36, 16, 16 + 104, 72), Act::WifiMore)];
-            v.extend((1..6u8).map(|i| {
+            v.extend((1..9u8).map(|i| {
                 let (c, rw) = (i as i32 % 3, i as i32 / 3);
                 (r(16 + 112 * c, 16 + 96 * rw, 16 + 112 * c + 104, 72 + 96 * rw), Act::Tile(i))
             }));
-            let mut y = 196;
+            let mut y = 292;
             if BRIGHT.load(Relaxed) >= 0 {
                 v.push((r(60, y, w - 16, y + 40), Act::BrightSlide));
                 y += 48;
@@ -950,19 +950,31 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
                 let want = WIFI.get() < 0 && NETS.with_borrow(|n| n.is_empty());
                 std::thread::spawn(move || unsafe { wifi_radio(want) });
             }
-            4 => {
+            3 => {
                 let on = !SAVER.load(Relaxed);
                 SAVER.store(on, Relaxed);
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = Command::new(exe.with_file_name("reshell.exe")).args(["saver", if on { "on" } else { "off" }]).creation_flags(NO_WINDOW).spawn();
                 }
             }
-            5 => {
+            6 => {
                 close();
                 keys(&[VK_LWIN, VK_CONTROL, b'L' as u16]); // live captions
             }
+            8 => {
+                close();
+                keys(&[VK_LWIN, b'P' as u16]); // project / cast screen
+            }
             _ => {
-                open(&wide(["", "ms-settings:bluetooth", "ms-settings:network-airplanemode", "ms-settings:easeofaccess", "ms-settings:batterysaver"][i as usize]));
+                let uri = match i {
+                    1 => "ms-settings:bluetooth",
+                    2 => "ms-settings:network-airplanemode",
+                    4 => "ms-settings:nightlight",
+                    5 => "ms-settings:network-mobilehotspot",
+                    7 => "ms-settings:easeofaccess",
+                    _ => "ms-settings:",
+                };
+                open(&wide(uri));
                 close();
             }
         },
@@ -1107,11 +1119,21 @@ unsafe fn paint(hw: HWND, k: Kind) {
         Kind::Quick => {
             let rs = rects(k);
             let ssid = NETS.with_borrow(|n| n.iter().find(|n| n.connected).map(|n| n.ssid.clone()));
-            let tiles = [("\u{E701}", ssid.unwrap_or("Wi‑Fi".into())), ("\u{E702}", "Bluetooth".into()), ("\u{E709}", "Airplane mode".into()), ("\u{E776}", "Accessibility".into()), ("\u{E945}", "Energy saver".into()), ("\u{E7F0}", "Live captions".into())];
+            let tiles = [
+                ("\u{E701}", ssid.unwrap_or("Wi‑Fi".into())),
+                ("\u{E702}", "Bluetooth".into()),
+                ("\u{E709}", t!("Режим полёта", "Airplane mode").into()),
+                ("\u{E945}", t!("Экономия заряда", "Energy saver").into()),
+                ("\u{E708}", t!("Ночной свет", "Night light").into()),
+                ("\u{E88A}", t!("Хот‑спот", "Mobile hotspot").into()),
+                ("\u{E7F0}", t!("Субтитры", "Live captions").into()),
+                ("\u{E776}", t!("Спецвозможности", "Accessibility").into()),
+                ("\u{E7F4}", t!("Проекция", "Project").into()),
+            ];
             for (i, (glyph, label)) in tiles.iter().enumerate() {
                 let c = (i % 3) as i32;
                 let (tl, tt) = (16 + 112 * c, 16 + 96 * (i as i32 / 3));
-                let on = (i == 0 && WIFI.get() >= 0) || (i == 4 && SAVER.load(Relaxed));
+                let on = (i == 0 && WIFI.get() >= 0) || (i == 3 && SAVER.load(Relaxed));
                 let full = r(tl, tt, tl + 104, tt + 56);
                 fill(dc, full, if on { pal().accent } else { pal().line }, sc(8));
                 fill(dc, RECT { left: full.left + 1, top: full.top + 1, right: full.right - 1, bottom: full.bottom - 1 }, if on { pal().accent } else { mix(pal().bg, pal().line, 0.5) }, sc(8));
@@ -1135,7 +1157,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 SelectObject(dc, f_small);
                 text(dc, label, r(tl, tt + 60, tl + 104, tt + 82), pal().text, DT_CENTER);
             }
-            let mut y = 196;
+            let mut y = 292;
             let b = BRIGHT.load(Relaxed);
             if b >= 0 {
                 SelectObject(dc, f_glyph);
@@ -1473,6 +1495,11 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
         WM_PAINT => paint(hw, k),
         WM_ERASEBKGND => return 1,
         WM_ACTIVATE if wp & 0xffff == 0 => {
+            // Keep the open flyout visible while taking a screenshot (Win+Shift+S / PrtSc) so the user can capture the panel itself.
+            let snip = crate::SNIP_WND.get();
+            if !snip.is_null() && (IsWindowVisible(snip) != 0 || lp as HWND == snip) {
+                return 0;
+            }
             // A file drag that began elsewhere (desktop icon, folder window) deactivates this panel with the button still
             // down: keep Start open so the drop can land on it, and close once the button is up (timer 6).
             if k == Kind::Start && GetAsyncKeyState(VK_LBUTTON as i32) < 0 {
