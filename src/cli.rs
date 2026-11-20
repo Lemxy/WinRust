@@ -4,7 +4,7 @@ use crate::*;
 // ---------- command line ----------
 //
 //   plugin-launcher list
-//   plugin-launcher install <plugin>... --yes   (several names, or `all`; without --yes it only prints the warnings: nothing is changed)
+//   plugin-launcher install <plugin>... --yes   (several names, or `all` for the defaults; without --yes it only prints warnings)
 //   plugin-launcher uninstall <plugin>
 //   plugin-launcher rollback --yes
 // Exit code 0 = done, 1 = failed, 2 = bad arguments or --yes missing. Run it from an elevated terminal: the manifest
@@ -35,11 +35,11 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             return 0;
         }
         ["install", names @ ..] if !names.is_empty() => {
-            // several names, or `all` (what the window installs); order of the table, so topbar comes before rust-explorer
+            // Order of the table, so topbar comes before rust-explorer if both are requested.
             let mut idx = Vec::new();
             for n in names {
                 match *n {
-                    "all" => idx.extend(ready()),
+                    "all" => idx.extend(ready().filter(|&i| selected_by_default(PLUGINS[i].name, false))),
                     n => match find(n) {
                         Some(i) => idx.push(i),
                         None => return { say(&format!("unknown plugin: {n}")); 2 },

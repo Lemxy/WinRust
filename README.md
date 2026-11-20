@@ -14,13 +14,13 @@ English | [Русский](README.ru.md)
 
 1. Download `WinRust.exe` from the [latest release](https://github.com/Lemxy/WinRust/releases/latest) (Windows 10/11, x64).
 2. Run it as administrator.
-3. Tick the components you want (all are ticked by default) and press **Install WinRust**. They are installed in the right order; one that fails or is skipped does not stop the others, the window lists what went wrong.
+3. Tick the components you want and press **Install selected**. On a fresh install, `rust-explorer` is unchecked. Tick it to replace the Windows Explorer shell. They are installed in the right order; one that fails or is skipped does not stop the others, the window lists what went wrong.
 
 Windows Search is optional: on a stripped Windows (for example a debloated LTSC image without the Windows Search service) that step is skipped with a warning instead of failing the install.
 
 If UAC asks for **another administrator's** password, the per-user settings (startup entries, scheduled tasks, PowerShell profile, search permissions) still go to the user who is signed in, not to the administrator you typed. If the installer cannot tell who that is, it stops before changing anything.
 
-**Update:** download the new `WinRust.exe` from the releases page, run it as administrator and press **Update WinRust**. Installed plugins are updated, missing ones installed; your settings and the saved original Windows values stay.
+**Update:** download the new `WinRust.exe` from the releases page, run it as administrator and press **Update WinRust**. Selected plugins are updated or installed. An existing `rust-explorer` stays selected by default for updates. Your settings and the saved original Windows values stay.
 
 The installer is in English. The **Русский** button in its corner (or "WinRust apps in Русский" in the bar's right-click menu) switches every WinRust program to Russian.
 
@@ -136,11 +136,13 @@ Result: `target\release\plugin-launcher.exe`, with every plugin inside. Close a 
 From a terminal **with administrator rights**:
 ```
 plugin-launcher list
-plugin-launcher install <plugin>... --yes (one or more names, or `all` for what the window installs; without --yes it only prints the warnings and changes nothing)
+plugin-launcher install <plugin>... --yes (one or more names, or `all` for the default components; without --yes it only prints warnings)
 plugin-launcher update <plugin>          (reinstall from payload\ next to the exe)
 plugin-launcher uninstall <plugin>
 plugin-launcher rollback --yes           (remove everything)
 ```
+
+To include `rust-explorer` in a fresh bulk install, run `plugin-launcher install all rust-explorer --yes`. If `topbar` is already installed, you can install `rust-explorer` on its own.
 Several plugins in one command are installed in the table's order (topbar before rust-explorer); one that fails does not stop the rest. Exit codes: 0 success, 1 error (at least one plugin failed), 2 bad arguments or no `--yes`. With no arguments the window opens. Install log: `%ProgramData%\plugin-launcher\install.log`.
 
 ### Adding a plugin

@@ -557,18 +557,25 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
         }),
         ID_MAIN if chosen().all(|i| INSTALLED[i].load(Relaxed)) => ask(hwnd, Dialog {
             title: t!("Обновить WinRust?", "Update WinRust?").into(),
-            text: t!("Все компоненты будут переустановлены из этой версии установщика. Настройки сохранятся.", "All components will be reinstalled from this version of the installer. Settings are kept.").into(),
+            text: t!("Выбранные компоненты будут переустановлены из этой версии установщика. Настройки сохранятся.", "The selected components will be reinstalled from this version of the installer. Settings are kept.").into(),
             ok: t!("Обновить", "Update").into(),
             danger: false,
             act: Act::InstallAll,
         }),
-        ID_MAIN if chosen().count() < N_READY => ask(hwnd, Dialog {
-            title: t!("Установить выбранное?", "Install the selected?").into(),
-            text: tf!("Будет установлено или обновлено: {}.\n\nКомпоненты меняют систему (подробности в описании каждого). Создаётся точка восстановления, «Удалить всё» вернёт систему.", "To be installed or updated: {}.\n\nThe components change the system (see each one's description). A restore point is created, 'Remove all' restores the system.", chosen().map(|i| PLUGINS[i].name).collect::<Vec<_>>().join(", ")).into(),
-            ok: t!("Установить", "Install").into(),
-            danger: false,
-            act: Act::InstallAll,
-        }),
+        ID_MAIN if chosen().count() < N_READY => {
+            let mut text = tf!("Будет установлено или обновлено: {}.\n\nКомпоненты меняют систему (подробности в описании каждого). Создаётся точка восстановления, «Удалить всё» вернёт систему.", "To be installed or updated: {}.\n\nThe components change the system (see each one's description). A restore point is created, 'Remove all' restores the system.", chosen().map(|i| PLUGINS[i].name).collect::<Vec<_>>().join(", "));
+            if let Some(i) = chosen().find(|&i| PLUGINS[i].name == RUST_EXPLORER && !INSTALLED[i].load(Relaxed)) {
+                text.push_str("\n\n");
+                text.push_str(PLUGINS[i].warn.get());
+            }
+            ask(hwnd, Dialog {
+                title: t!("Установить выбранное?", "Install the selected?").into(),
+                text,
+                ok: t!("Установить", "Install").into(),
+                danger: false,
+                act: Act::InstallAll,
+            });
+        },
         ID_MAIN => ask(hwnd, Dialog {
             title: t!("Установить WinRust?", "Install WinRust?").into(),
             text: t!("Компоненты Windows будут заменены:\n\u{2022} поиск Windows отключается, вместо него rust-search (Alt+Space);\n\u{2022} диспетчер задач заменяется на rtaskmgr;\n\u{2022} панель задач заменяется на topbar (внизу экрана);\n\u{2022} Проводник как оболочка отключается: папки и рабочий стол открывает rust-explorer, отключаются службы телеметрии.\n\nСоздаётся точка восстановления, «Удалить всё» вернёт систему. Если экран останется пустым: Ctrl+Alt+Del \u{2192} Диспетчер задач \u{2192} Запустить explorer.exe.", "Windows components will be replaced:\n\u{2022} Windows Search is disabled, rust-search (Alt+Space) takes its place;\n\u{2022} Task Manager is replaced by rtaskmgr;\n\u{2022} the taskbar is replaced by topbar (at the bottom of the screen);\n\u{2022} Explorer as the shell is disabled: rust-explorer opens folders and the desktop, telemetry services are disabled.\n\nA restore point is created, 'Remove all' restores the system. If the screen stays empty: Ctrl+Alt+Del \u{2192} Task Manager \u{2192} Run explorer.exe.").into(),

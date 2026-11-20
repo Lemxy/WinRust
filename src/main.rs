@@ -10,8 +10,9 @@ extern crate winrust_common;
 use winrust_common as i18n;
 mod cli;
 mod install;
+mod selection;
 mod ui;
-use {cli::*, install::*, ui::*};
+use {cli::*, install::*, selection::*, ui::*};
 use std::{
     cell::Cell,
     env, fs,
@@ -72,7 +73,7 @@ struct Plugin {
     installed: fn() -> bool,
     actions: Option<(fn() -> Result<(), String>, fn() -> Result<(), String>)>, // (install, uninstall); None = stub
     settings: bool, // shows a gear button that opens the plugin's settings panel
-    bulk: bool, // part of the one-click "install everything" (the window lists only these); false = command line only
+    bulk: bool, // visible in the window and eligible for bulk install; false = command line only
     glyph: &'static str, // Segoe MDL2 Assets icon
 }
 const PLUGINS: &[Plugin] = &[
@@ -107,7 +108,7 @@ const PLUGINS: &[Plugin] = &[
         glyph: "\u{E700}", // menu
     },
     Plugin {
-        name: "rust-explorer",
+        name: RUST_EXPLORER,
         desc: Tr("Файловый менеджер на Rust вместо Проводника: папки и диски открываются в нём (Win+E тоже), рабочий стол рисует он сам. Обычный explorer.exe как оболочка ОТКЛЮЧАЕТСЯ. Нужен topbar.", "A Rust file manager instead of Explorer: folders and drives open in it (Win+E too), and it draws the desktop itself. The regular explorer.exe as the shell is DISABLED. Requires topbar."),
         warn: Tr("ОБЫЧНЫЙ Explorer будет ОТКЛЮЧЁН: после установки панель задач, рабочий стол и окна папок дают topbar и rust-explorer. Сначала установите topbar, без него не будет панели. Ещё для экономии RAM отключаются службы PcaSvc, InventorySvc, lfsvc (геолокация), cbdhsvc (журнал буфера Win+V), DoSvc ставится вручную, службы svchost объединяются (полностью после перезагрузки); удаление плагина вернёт их. Если что-то пойдёт не так: Ctrl+Alt+Del, Диспетчер задач, Запустить новую задачу, explorer.exe; затем удалите плагин.", "The REGULAR Explorer will be DISABLED: after install, topbar and rust-explorer provide the taskbar, the desktop and folder windows. Install topbar first, without it there will be no bar. To save RAM the services PcaSvc, InventorySvc, lfsvc (geolocation) and cbdhsvc (Win+V clipboard history) are also disabled, DoSvc is set to manual, and svchost services are merged (fully after a reboot); uninstalling the plugin restores them. If something goes wrong: Ctrl+Alt+Del, Task Manager, Run new task, explorer.exe; then uninstall the plugin."),
         installed: || rx_dir().join("rust-explorer.exe").is_file(),
@@ -177,8 +178,8 @@ fn refresh() {
         f.store((p.installed)(), Relaxed);
     }
 }
-// which components the window's checkboxes have ticked (all by default); the one button installs / updates only these
-static SELECTED: [AtomicBool; PLUGINS.len()] = [const { AtomicBool::new(true) }; PLUGINS.len()];
+// Initialized when the window opens. Refreshing installed state preserves the user's checkbox choices.
+static SELECTED: [AtomicBool; PLUGINS.len()] = [const { AtomicBool::new(false) }; PLUGINS.len()];
 static MSG: Mutex<(String, bool)> = Mutex::new((String::new(), true));
 thread_local! { static SETTINGS: Cell<Option<usize>> = const { Cell::new(None) }; } // plugin whose settings panel is open
 thread_local! { static HOVER: Cell<Option<usize>> = const { Cell::new(None) }; }
@@ -188,8 +189,11 @@ fn main() {
     if !args.is_empty() {
         std::process::exit(cli(&args));
     }
+    refresh();
+    for i in ready() {
+        SELECTED[i].store(selected_by_default(PLUGINS[i].name, INSTALLED[i].load(Relaxed)), Relaxed);
+    }
     unsafe {
-        refresh();
         let (mut token, mut input): (usize, GdiplusStartupInput) = (0, zeroed());
         input.GdiplusVersion = 1;
         GdiplusStartup(&mut token, &input, null_mut());
