@@ -908,14 +908,15 @@ pub fn toggle(k: Kind) {
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
-        let sw = GetSystemMetrics(SM_CXSCREEN);
+        let b = monitors::bounds();
+        let sw = b.width();
         let x = if vert() { side_x(w) } else { match k {
-            Kind::Start => (sw - w) / 2,
-            Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
-            _ => sw - w - sc(8),
+            Kind::Start => b.left + (sw - w) / 2,
+            Kind::Menu => MENU_X.get().clamp(b.left + sc(8), (b.right - w - sc(8)).max(b.left + sc(8))),
+            _ => b.right - w - sc(8),
         } };
         let class = wide("topbar_fly");
-        let fy = if vert() && k == Kind::Menu { (MENU_X.get() - h / 2).clamp(sc(8), GetSystemMetrics(SM_CYSCREEN) - h - sc(8)) } else { pop_y(h) }; // above the bar (below it at the top of the screen)
+        let fy = if vert() && k == Kind::Menu { (MENU_X.get() - h / 2).clamp(b.top + sc(8), (b.bottom - h - sc(8)).max(b.top + sc(8))) } else { pop_y(h) }; // above the bar (below it at the top of the screen)
         let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, class.as_ptr(), null(), WS_POPUP, x, fy + sc(14), w, h, null_mut(), null_mut(), GetModuleHandleW(null()), null());
         SetLayeredWindowAttributes(hw, 0, 0, LWA_ALPHA); // starts invisible, anim_step fades it in
         if k == Kind::Start {
