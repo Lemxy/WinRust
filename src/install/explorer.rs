@@ -156,18 +156,20 @@ fn remove_dword((key, name): Dword<'_>) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn rx_installed() -> bool {
+    // An interrupted or damaged installation can still have registry changes to undo.
+    rx_dir().join("rust-explorer.exe").is_file()
+        || !matches!(AUTO_RESTART_SHELL.load(trim_read), Ok(None))
+}
+
 pub(crate) fn rx_install() -> Result<(), String> {
     if !bar_dir().join("topbar.exe").is_file() {
         return Err(t!("сначала установите topbar: без него после отключения Explorer не будет панели", "install topbar first: without it there will be no bar after Explorer is disabled").into());
     }
     // An older installation may already have applied the tweaks without saving the originals.
     let has_snapshot = AUTO_RESTART_SHELL.load(trim_read)?.is_some();
-    let fresh = !rx_dir().join("rust-explorer.exe").is_file();
+    let first_setup = !rx_dir().join("rust-explorer.exe").is_file() && !has_snapshot;
     with_payload(&["rust-explorer.exe", "rs-shell.exe"], |d| {
-        if fresh && !has_snapshot {
-            run("reg", &["add", RX_STATE, "/f"])?;
-            AUTO_RESTART_SHELL.capture(trim_read, trim_write)?;
-        }
         for n in ["rs-shell.exe", "rust-explorer.exe"] {
             let _ = run("taskkill", &["/f", "/im", n]); // an update: a running exe cannot be overwritten
         }
@@ -184,6 +186,11 @@ pub(crate) fn rx_install() -> Result<(), String> {
                 run("reg", &["export", k, &bak.display().to_string(), "/y"])?;
             }
         }
+        // Save the baseline after staging the files, immediately before the first shell change.
+        if first_setup {
+            run("reg", &["add", RX_STATE, "/f"])?;
+            AUTO_RESTART_SHELL.capture(trim_read, trim_write)?;
+        }
         for k in RX_FOLDERS {
             let c = format!(r"{k}\command");
             run("reg", &["add", &c, "/ve", "/t", "REG_SZ", "/d", &format!("\"{}\" \"%1\"", fm.display()), "/f"])?;
@@ -199,12 +206,12 @@ pub(crate) fn rx_install() -> Result<(), String> {
             run("reg", &["add", RUN_KEY, "/v", "rs-overlay", "/t", "REG_SZ", "/d", &format!("\"{}\" --overlay", sh.display()), "/f"])?;
         }
         run("reg", &["add", RX_SWITCH, "/v", "ReplaceExplorer", "/t", "REG_DWORD", "/d", "1", "/f"])?;
-        if fresh || has_snapshot {
+        if first_setup || has_snapshot {
             trim_write(AUTO_RESTART_SHELL.target, 0)?;
         } else {
             WARN.lock().unwrap().push(MISSING_AUTO_RESTART_BACKUP.get().into());
         }
-        if fresh {
+        if first_setup {
             apply_service_trim();
         }
         // the bar's Start panel and the search list Start Menu shortcuts only: without one rust-explorer has no entry (and no icon) there
@@ -219,9 +226,8 @@ pub(crate) fn rx_install() -> Result<(), String> {
 }
 
 pub(crate) fn rx_uninstall() -> Result<(), String> {
-    // An install failure before the plugin directory was created never applied any shell changes.
-    let dir = rx_dir();
-    if !dir.try_exists().map_err(|e| format!("{}: {e}", dir.display()))? {
+    let has_snapshot = AUTO_RESTART_SHELL.load(trim_read)?.is_some();
+    if !has_snapshot && !rx_dir().join("rust-explorer.exe").is_file() {
         return Ok(());
     }
     restore_service_trim()?;
@@ -245,7 +251,10 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
     let _ = run("powershell", &["-NoProfile", "-Command", r#"if (-not (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?(\s+/NoUACCheck)?\s*$' })) { runas /trustlevel:0x20000 C:\Windows\explorer.exe }"#]);
     let _ = fs::remove_file(rx_lnk());
     let _ = fs::remove_file(start_lnk("Rust Explorer"));
+    let remove_snapshot = run("reg", &["delete", RX_STATE, "/f"]);
+    if has_snapshot {
+        remove_snapshot?;
+    }
     let _ = fs::remove_dir_all(rx_dir());
-    let _ = run("reg", &["delete", RX_STATE, "/f"]);
     Ok(())
 }
