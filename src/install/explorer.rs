@@ -146,9 +146,9 @@ fn folder_verb_exists(sid: &str, verb: &str) -> Result<bool, String> {
 fn our_folder_binding(sid: &str, verb: &str) -> Result<bool, String> {
     use windows_sys::Win32::System::Registry::{HKEY_USERS, RRF_RT_REG_SZ};
     let subkey = format!(r"{}\command", folder_subkey(sid, verb));
-    let expected = format!("\"{}\" \"%1\"", rx_dir().join("rust-explorer.exe").display());
-    // An ownership check needs only enough space for an exact match.
-    let mut actual = vec![0u16; expected.encode_utf16().count() + 1];
+    let executable = rx_dir().join("rust-explorer.exe");
+    // Read the whole command, up to the Windows process command-line limit (including NUL).
+    let mut actual = vec![0u16; 32_767];
     let mut bytes = (actual.len() * size_of::<u16>()) as u32;
     let code = unsafe {
         RegGetValueW(HKEY_USERS, wide(&subkey).as_ptr(), null(), RRF_RT_REG_SZ, null_mut(),
@@ -156,7 +156,7 @@ fn our_folder_binding(sid: &str, verb: &str) -> Result<bool, String> {
     };
     let key = format!(r"HKU\{subkey}");
     match code {
-        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_MORE_DATA | ERROR_UNSUPPORTED_TYPE => return Ok(false),
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_UNSUPPORTED_TYPE => return Ok(false),
         ERROR_SUCCESS => {}
         _ => return Err(trim_registry_error(&key, "(Default)", code)),
     }
@@ -165,7 +165,7 @@ fn our_folder_binding(sid: &str, verb: &str) -> Result<bool, String> {
         return Err(trim_registry_error(&key, "(Default)", ERROR_INVALID_DATA));
     }
     let command = String::from_utf16(&actual[..count - 1]).map_err(|e| format!("{key}: {e}"))?;
-    Ok(command.eq_ignore_ascii_case(&expected))
+    Ok(folder_backup::uses_executable(&command, &executable.to_string_lossy()))
 }
 
 fn clear_folder_binding(sid: &str, verb: &str) -> Result<(), String> {

@@ -39,6 +39,20 @@ fn retarget(data: &[u8], user: &str, verb: &str) -> Result<Vec<u8>, String> {
     Ok([0xff, 0xfe].into_iter().chain(output.encode_utf16().flat_map(u16::to_le_bytes)).collect())
 }
 
+pub(crate) fn uses_executable(command: &str, executable: &str) -> bool {
+    let command = command.trim_start_matches([' ', '\t']);
+    let path = if let Some(quoted) = command.strip_prefix('"') {
+        let Some((path, rest)) = quoted.split_once('"') else { return false };
+        if !rest.is_empty() && !rest.starts_with([' ', '\t']) {
+            return false;
+        }
+        path
+    } else {
+        command.split([' ', '\t']).next().unwrap_or_default()
+    };
+    path.eq_ignore_ascii_case(executable)
+}
+
 pub(crate) fn restore_export<P>(
     data: &[u8],
     user: &str,
@@ -65,6 +79,17 @@ mod tests {
         [0xff, 0xfe].into_iter()
             .chain(format!("{HEADER}\r\n\r\n{sections}\r\n").encode_utf16().flat_map(u16::to_le_bytes))
             .collect()
+    }
+
+    #[test]
+    fn matches_the_executable_even_with_argument_spacing() {
+        let exe = r"C:\Program Files\rust-explorer\rust-explorer.exe";
+        assert!(uses_executable(&format!(" \t\"{exe}\"  \t\"%1\""), exe));
+        assert!(uses_executable(&format!("\"{}\" --open \"%1\"", exe.to_uppercase()), exe));
+        assert!(!uses_executable(&format!("\"{exe}.old\" \"%1\""), exe));
+        assert!(!uses_executable(&format!("other.exe \"{exe}\""), exe));
+        assert!(!uses_executable(&format!("\"{exe}\".old \"%1\""), exe));
+        assert!(uses_executable(r"C:\WinRust\rust-explorer.exe  %1", r"C:\WinRust\rust-explorer.exe"));
     }
 
     #[test]
