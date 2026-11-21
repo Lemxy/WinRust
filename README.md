@@ -66,6 +66,15 @@ The gear menu also sets the bar position (bottom, left or right: a side bar show
 
 The choice is stored in `%ProgramData%\WinRust\style.txt`.
 
+## Shell and Explorer improvements
+
+- A taskbar on each connected monitor, with monitor-local work areas and popups. Fullscreen video hides the bar only on its monitor; ordinary maximized windows keep the reserved strip.
+- Hover grouped taskbar buttons for live window previews, selection and close buttons. Tray overflow stays open while an application's context menu owns focus.
+- Folder loading, search and shell icons run in bounded background workers; filesystem notifications refresh visible folders. Resizing reuses drawing resources, and sorting preserves selection.
+- The desktop spans the virtual screen, paints each monitor's wallpaper and keeps complete icon labels inside monitor work areas.
+- Open the native Recycle Bin view from Explorer's sidebar or with `rust-explorer --recycle-bin`. A shortcut with this argument can also be added to the desktop or Start menu. Restore and delete use Windows Shell APIs.
+- ReShell handles Win+Space when Explorer is not running.
+
 ## Benchmark
 
 One-off measurements on one machine (Windows 11 IoT Enterprise 10.0.26300, RTX 4060 Laptop, NTFS). Treat them as orders of magnitude, not lab numbers.
