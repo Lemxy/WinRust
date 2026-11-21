@@ -30,7 +30,7 @@ The installer is in English. The **Русский** button in its corner (or "Wi
 - One plugin at a time: `plugin-launcher uninstall <plugin>` (see [Command line](#command-line)).
 - **If the screen is left without a taskbar or desktop:** press Ctrl+Alt+Del → Task Manager → Run new task → `explorer.exe`, then run the installer and press Remove all.
 
-On uninstall, `rust-explorer` restores the service startup values and the svchost grouping threshold saved before installation. Older installs without those backups keep their current values and report a warning.
+On uninstall, `rust-explorer` restores the service startup values and the svchost grouping threshold saved before installation. Services whose startup settings were changed also return to the running or stopped state recorded before the change. Older installs can only restore the values they saved.
 
 ## What gets installed
 
