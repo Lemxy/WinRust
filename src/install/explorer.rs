@@ -117,9 +117,129 @@ fn restore_service_trim() -> Result<(), String> {
     Ok(())
 }
 
+mod folder_backup;
+
 /// In our Program Files folder (admin-only): a .reg a user could plant would be imported by the elevated uninstall.
 pub(crate) fn rx_folders_bak(i: usize) -> PathBuf {
     rx_dir().join(format!("folders-{i}.reg"))
+}
+
+fn folder_subkey(sid: &str, verb: &str) -> String {
+    format!(r"{sid}\{}", verb.strip_prefix("HKCU\\").expect("per-user folder binding"))
+}
+
+fn folder_verb_exists(sid: &str, verb: &str) -> Result<bool, String> {
+    use windows_sys::Win32::System::Registry::HKEY_USERS;
+    let subkey = folder_subkey(sid, verb);
+    let mut handle = null_mut();
+    let code = unsafe { RegOpenKeyExW(HKEY_USERS, wide(&subkey).as_ptr(), 0, KEY_QUERY_VALUE, &mut handle) };
+    match code {
+        ERROR_SUCCESS => {
+            unsafe { RegCloseKey(handle) };
+            Ok(true)
+        }
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Ok(false),
+        _ => Err(format!(r"HKU\{subkey}: {}", std::io::Error::from_raw_os_error(code as i32))),
+    }
+}
+
+fn our_folder_binding(sid: &str, verb: &str) -> Result<bool, String> {
+    use windows_sys::Win32::System::Registry::{HKEY_USERS, RRF_RT_REG_SZ};
+    let subkey = format!(r"{}\command", folder_subkey(sid, verb));
+    let executable = rx_dir().join("rust-explorer.exe");
+    // Read the whole command, up to the Windows process command-line limit (including NUL).
+    let mut actual = vec![0u16; 32_767];
+    let mut bytes = (actual.len() * size_of::<u16>()) as u32;
+    let code = unsafe {
+        RegGetValueW(HKEY_USERS, wide(&subkey).as_ptr(), null(), RRF_RT_REG_SZ, null_mut(),
+            actual.as_mut_ptr().cast(), &mut bytes)
+    };
+    let key = format!(r"HKU\{subkey}");
+    match code {
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_UNSUPPORTED_TYPE => return Ok(false),
+        ERROR_SUCCESS => {}
+        _ => return Err(trim_registry_error(&key, "(Default)", code)),
+    }
+    let count = bytes as usize / size_of::<u16>();
+    if !bytes.is_multiple_of(size_of::<u16>() as u32) || count == 0 || count > actual.len() || actual[count - 1] != 0 {
+        return Err(trim_registry_error(&key, "(Default)", ERROR_INVALID_DATA));
+    }
+    let command = String::from_utf16(&actual[..count - 1]).map_err(|e| format!("{key}: {e}"))?;
+    Ok(folder_backup::uses_executable(&command, &executable.to_string_lossy()))
+}
+
+fn clear_folder_binding(sid: &str, verb: &str) -> Result<(), String> {
+    if !folder_verb_exists(sid, verb)? {
+        return Ok(());
+    }
+    let key = i18n::reg::for_user(verb, sid);
+    run("reg", &["delete", &key, "/f"])?;
+    if folder_verb_exists(sid, verb)? {
+        return Err(tf!("{key}: не удалось удалить текущую привязку", "{key}: could not remove the current binding"));
+    }
+    Ok(())
+}
+
+fn staged_folder_backup(backup: &Path) -> Result<PathBuf, String> {
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    Ok(backup.with_extension(format!("stage-{}-{timestamp}.reg", std::process::id())))
+}
+
+fn export_folder_binding(verb: &str, backup: &Path) -> Result<(), String> {
+    let staging = staged_folder_backup(backup)?;
+    let result = (|| {
+        run("reg", &["export", verb, &staging.display().to_string(), "/y"])?;
+        fs::OpenOptions::new().write(true).open(&staging)
+            .and_then(|file| file.sync_all()).map_err(|e| e.to_string())?;
+        // Publish a complete export and never overwrite the first copy.
+        match fs::hard_link(&staging, backup) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    })();
+    let _ = fs::remove_file(&staging);
+    result.map_err(|e| format!("{}: {e}", backup.display()))
+}
+
+fn restore_folder_binding(sid: &str, verb: &str, backup: &Path) -> Result<(), String> {
+    let source = match fs::read(backup) {
+        Ok(source) => source,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Older installs had no export when the verb originally did not exist.
+            // With no snapshot, only remove a binding that still points to our executable.
+            return if our_folder_binding(sid, verb)? { clear_folder_binding(sid, verb) } else { Ok(()) };
+        }
+        Err(e) => return Err(format!("{}: {e}", backup.display())),
+    };
+    let staging = staged_folder_backup(backup)?;
+    let result = folder_backup::restore_export(
+        &source,
+        sid,
+        verb.strip_prefix("HKCU\\").expect("per-user folder binding"),
+        |data| {
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&staging).map_err(|e| e.to_string())?;
+            f.write_all(&data).map_err(|e| e.to_string())
+        },
+        || clear_folder_binding(sid, verb),
+        |()| {
+            run("reg", &["import", &staging.display().to_string()])?;
+            if !folder_verb_exists(sid, verb)? {
+                return Err(tf!("{verb}: привязка не найдена после импорта", "{verb}: binding missing after import"));
+            }
+            Ok(())
+        },
+    );
+    let _ = fs::remove_file(&staging);
+    result.map_err(|e| format!("{}: {e}", backup.display()))
+}
+
+fn restore_folder_bindings() -> Result<(), String> {
+    let sid = &init()?.sid;
+    let errors: Vec<_> = RX_FOLDERS.iter().enumerate()
+        .filter_map(|(i, verb)| restore_folder_binding(sid, verb, &rx_folders_bak(i)).err()).collect();
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
 
 pub(crate) fn rx_lnk() -> PathBuf {
@@ -149,14 +269,18 @@ pub(crate) fn rx_install() -> Result<(), String> {
         // folders and drives opened by other programs, the desktop, Win+R: rust-explorer. DelegateExecute is emptied on purpose:
         // while it is set, Windows ignores the command and uses Explorer's built-in handler.
         // Another file manager's verbs (Directory Opus, Total Commander) are exported first, once, and imported back on uninstall.
+        let sid = &init()?.sid;
         for (i, k) in RX_FOLDERS.iter().enumerate() {
-            let (bak, ours) = (rx_folders_bak(i), out("reg", &["query", &format!(r"{k}\command"), "/ve"]).is_ok_and(|c| c.to_lowercase().contains("rust-explorer")));
-            if !bak.is_file() && !ours && run("reg", &["query", k]).is_ok() {
-                run("reg", &["export", k, &bak.display().to_string(), "/y"])?;
+            let bak = rx_folders_bak(i);
+            if !bak.try_exists().map_err(|e| format!("{}: {e}", bak.display()))?
+                && folder_verb_exists(sid, k)? && !our_folder_binding(sid, k)?
+            {
+                export_folder_binding(&i18n::reg::for_user(k, sid), &bak)?;
             }
         }
         for k in RX_FOLDERS {
-            let c = format!(r"{k}\command");
+            let key = i18n::reg::for_user(k, sid);
+            let c = format!(r"{key}\command");
             run("reg", &["add", &c, "/ve", "/t", "REG_SZ", "/d", &format!("\"{}\" \"%1\"", fm.display()), "/f"])?;
             run("reg", &["add", &c, "/v", "DelegateExecute", "/t", "REG_SZ", "/d", "", "/f"])?;
         }
@@ -193,17 +317,13 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
     let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "rs-overlay", "/f"]);
     let _ = run("reg", &["delete", RX_SWITCH, "/f"]);
-    for (i, k) in RX_FOLDERS.iter().enumerate() {
-        let _ = run("reg", &["delete", k, "/f"]); // only our HKCU override; the system's verbs under HKLM stay
-        let bak = rx_folders_bak(i);
-        if bak.is_file() {
-            soft(&tf!("привязка папок {k} не возвращена", "folder verbs {k} were not restored"), run("reg", &["import", &bak.display().to_string()]));
-        }
-    }
+    let folder_restore = restore_folder_bindings();
     for n in ["rs-shell.exe", "rust-explorer.exe"] {
         let _ = run("taskkill", &["/f", "/im", n]);
     }
     let _ = run("powershell", &["-NoProfile", "-Command", r#"if (-not (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?(\s+/NoUACCheck)?\s*$' })) { runas /trustlevel:0x20000 C:\Windows\explorer.exe }"#]);
+    // Hand back the shell even on a failed import. Keep the executable and every export for retry.
+    folder_restore?;
     let _ = fs::remove_file(rx_lnk());
     let _ = fs::remove_file(start_lnk("Rust Explorer"));
     let _ = fs::remove_dir_all(rx_dir());
