@@ -4,7 +4,7 @@
 
 **A Windows shell written in Rust: faster and lighter than the stock one.** Small native programs (no .NET, no Electron) that replace parts of Windows: the taskbar, File Explorer, file search, Task Manager, plus a disk cleaner, a disk map and a photo viewer. One installer puts them in, one button takes them all out.
 
-English | [Русский](README.ru.md)
+English | [Русский](README.ru.md) | [日本語](README.ja.md)
 
 <p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
 
