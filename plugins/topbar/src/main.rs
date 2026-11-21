@@ -208,6 +208,7 @@ thread_local! {
     static TIP: RefCell<String> = const { RefCell::new(String::new()) };
     static PINS: RefCell<Vec<Pin>> = const { RefCell::new(Vec::new()) };
     static BTNS: RefCell<Vec<Btn>> = const { RefCell::new(Vec::new()) }; // [0] is always Start (pin None, no wins)
+    static BUTTON_ORDER: RefCell<Vec<DragButton>> = const { RefCell::new(Vec::new()) };
     static TAPPS: RefCell<Vec<TIcon>> = const { RefCell::new(Vec::new()) };
     static SHOWN: RefCell<Option<Vec<String>>> = const { RefCell::new(None) }; // tray icons kept on the bar (by exe); None = none: every tray icon lives in the chevron flyout
     static TRAYFLY: Cell<HWND> = const { Cell::new(null_mut()) };
@@ -1113,6 +1114,12 @@ fn refresh_buttons() {
         o.extend(loose.iter().filter(|w| !o.contains(w)).copied().collect::<Vec<_>>());
         btns.extend(o.iter().map(|&w| Btn { pin: None, wins: vec![w], icon: unsafe { win_icon(w) } }));
     });
+    let keys: Vec<DragButton> = btns.iter().skip(1).filter_map(key_for_button).collect();
+    BUTTON_ORDER.with_borrow_mut(|order| {
+        order.retain(|key| keys.contains(key));
+        for key in &keys { if !order.contains(key) { order.push(key.clone()); } }
+        btns[1..].sort_by_key(|b| key_for_button(b).and_then(|key| order.iter().position(|x| *x == key)).unwrap_or(usize::MAX));
+    });
     BTNS.set(btns);
 }
 
@@ -1373,6 +1380,66 @@ struct Layout {
     apps: (i32, i32),
     sys: (i32, i32),
     clock: (i32, i32),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum DragButton { Pin(Vec<u16>), Window(isize) }
+struct ButtonDrag { button: DragButton, start_x: i32, start_y: i32, moved: bool }
+thread_local! { static BUTTON_DRAG: RefCell<Option<ButtonDrag>> = const { RefCell::new(None) }; }
+
+fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from >= items.len() || to >= items.len() || from == to { return false; }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
+}
+
+fn button_key(index: i32) -> Option<DragButton> {
+    if index < 1 { return None; }
+    BTNS.with_borrow(|b| b.get(index as usize).and_then(key_for_button))
+}
+
+fn key_for_button(button: &Btn) -> Option<DragButton> {
+    match button.pin {
+        Some(i) => PINS.with_borrow(|pins| pins.get(i).map(|p| DragButton::Pin(p.lnk.clone()))),
+        None => button.wins.first().map(|w| DragButton::Window(*w as isize)),
+    }
+}
+
+fn save_button_order() {
+    BUTTON_ORDER.with_borrow(|order| {
+        let pins = order.iter().filter_map(|key| match key { DragButton::Pin(path) => Some(std::path::Path::new(&wstr_of(path)).file_name().unwrap_or_default().to_string_lossy().into_owned()), _ => None }).collect::<Vec<_>>().join("\n");
+        let _ = std::fs::write(appdata_file("topbar-pin-order.txt"), pins);
+    });
+}
+
+fn reorder_buttons(from: DragButton, to: DragButton) {
+    let changed = BUTTON_ORDER.with_borrow_mut(|order| {
+        if let (Some(from), Some(to)) = (order.iter().position(|x| *x == from), order.iter().position(|x| *x == to)) {
+            move_item(order, from, to)
+        } else {
+            false
+        }
+    });
+    if changed {
+        let pins: Vec<Vec<u16>> = BUTTON_ORDER.with_borrow(|order| order.iter().filter_map(|key| match key { DragButton::Pin(path) => Some(path.clone()), _ => None }).collect());
+        PINS.with_borrow_mut(|items| items.sort_by_key(|item| pins.iter().position(|p| *p == item.lnk).unwrap_or(usize::MAX)));
+        refresh_buttons();
+    }
+}
+
+unsafe fn drag_target(hwnd: HWND, x: i32, y: i32) -> Option<DragButton> {
+    let mut rect: RECT = zeroed();
+    GetClientRect(hwnd, &mut rect);
+    let (axis, length) = if vert() { (y, rect.bottom) } else { (x, rect.right) };
+    let layout = layout(length);
+    let count = BTNS.with_borrow(|b| b.len()) as i32;
+    drag_slot(axis, layout.x0, layout.bw, layout.gap, count, layout.apps.0).and_then(button_key)
+}
+
+fn drag_slot(axis: i32, x0: i32, bw: i32, gap: i32, count: i32, apps_left: i32) -> Option<i32> {
+    if count <= 1 || bw <= 0 || gap < 0 || axis < x0 || axis >= apps_left { return None; }
+    Some(((axis - x0 + gap / 2) / (bw + gap) - 1).clamp(1, count - 1))
 }
 
 fn layout(w: i32) -> Layout {
@@ -2465,6 +2532,11 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
                 if let Some(p) = PINS.with_borrow(|p| p.iter().position(|x| wstr_of(&x.lnk) == lnk)) {
                     let to = if matches!(a, A::Left) { p.wrapping_sub(1) } else { p + 1 };
                     if PINS.with_borrow_mut(|v| (to < v.len()).then(|| v.swap(p, to))).is_some() {
+                        let pins: Vec<DragButton> = PINS.with_borrow(|v| v.iter().map(|p| DragButton::Pin(p.lnk.clone())).collect());
+                        BUTTON_ORDER.with_borrow_mut(|order| {
+                            let mut pins = pins.into_iter();
+                            for entry in order.iter_mut() { if matches!(entry, DragButton::Pin(_)) { if let Some(pin) = pins.next() { *entry = pin; } } }
+                        });
                         save_pin_order();
                         refresh_buttons();
                     }
@@ -3147,6 +3219,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
         }
         WM_MOUSEMOVE => {
+            let x = (lp & 0xffff) as i16 as i32;
+            let y = (lp >> 16) as i16 as i32;
+            BUTTON_DRAG.with_borrow_mut(|d| if let Some(d) = d { if (x - d.start_x).abs() >= sc(4) || (y - d.start_y).abs() >= sc(4) { d.moved = true; } });
+            let moving = BUTTON_DRAG.with_borrow(|d| d.as_ref().filter(|d| d.moved).map(|d| d.button.clone()));
+            if let Some(from) = moving {
+                if let Some(to) = drag_target(hwnd, x, y) { reorder_buttons(from, to); }
+                hide_tip(hwnd);
+                InvalidateRect(hwnd, null(), 0);
+                return 0;
+            }
             let h = hit(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
@@ -3175,7 +3257,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
             let x = (lp & 0xffff) as i16 as i32;
-            let h = hit(hwnd, x, (lp >> 16) as i16 as i32);
+            let y = (lp >> 16) as i16 as i32;
+            let h = hit(hwnd, x, y);
+            if msg == WM_LBUTTONDOWN {
+                if let Some(button) = button_key(h) {
+                    BUTTON_DRAG.set(Some(ButtonDrag { button, start_x: x, start_y: y, moved: false }));
+                    SetCapture(hwnd);
+                    hide_tip(hwnd);
+                    press(h);
+                    InvalidateRect(hwnd, null(), 0);
+                    return 0;
+                }
+            }
             let x = if vert() { (lp >> 16) as i16 as i32 } else { x }; // position along the bar
             hide_tip(hwnd);
             if h != NONE {
@@ -3190,6 +3283,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             InvalidateRect(hwnd, null(), 0);
         }
+        WM_LBUTTONUP => {
+            let drag = BUTTON_DRAG.take();
+            if let Some(drag) = drag {
+                ReleaseCapture();
+                let target = hit(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
+                if drag.moved {
+                    if let Some(to) = drag_target(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32) { reorder_buttons(drag.button, to); }
+                    save_button_order();
+                } else if button_key(target).as_ref() == Some(&drag.button) {
+                    click(target, true, false);
+                }
+                InvalidateRect(hwnd, null(), 0);
+            }
+        }
+        WM_CAPTURECHANGED => { if BUTTON_DRAG.take().is_some_and(|d| d.moved) { save_button_order(); } }
         CALLBACK => {
             if wp == ABN_FULLSCREENAPP as usize {
                 fs_update(hwnd);
@@ -3343,6 +3451,22 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pinned_and_running_items_can_be_reordered_together() {
+        use super::DragButton::{Pin, Window};
+        let mut items = vec![Pin(vec![1]), Window(42), Pin(vec![2])];
+        assert!(super::move_item(&mut items, 0, 1));
+        assert!(matches!(items.as_slice(), [Window(42), Pin(_), Pin(_)]));
+        assert!(super::move_item(&mut items, 2, 0));
+        assert!(matches!(items.as_slice(), [Pin(_), Window(42), Pin(_)]));
+    }
+    #[test]
+    fn drag_accepts_gaps_and_edges_without_targeting_start() {
+        assert_eq!(super::drag_slot(208, 100, 40, 4, 5, 400), Some(1));
+        assert_eq!(super::drag_slot(232, 100, 40, 4, 5, 400), Some(2));
+        assert_eq!(super::drag_slot(399, 100, 40, 4, 5, 400), Some(4));
+        assert_eq!(super::drag_slot(400, 100, 40, 4, 5, 400), None);
+    }
     #[test]
     fn network_icon_state() {
         use super::{INET, Link, WIFI, arcs_lit, net};
