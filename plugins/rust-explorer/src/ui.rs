@@ -18,6 +18,15 @@ pub const STATUS_H: i32 = 26;
 pub const WM_UI: u32 = WM_APP + 4; // chrome -> window: wp = action (see Hit), lp = tab index
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported under the enabled features
 
+#[cfg(test)]
+thread_local! { pub static PAINT_STATS: RefCell<[(u32, std::time::Duration); 4]> = const { RefCell::new([(0, std::time::Duration::ZERO); 4]) }; }
+#[cfg(test)]
+struct PaintProbe(usize, std::time::Instant);
+#[cfg(test)]
+impl PaintProbe { fn new(i: usize) -> Self { Self(i, std::time::Instant::now()) } }
+#[cfg(test)]
+impl Drop for PaintProbe { fn drop(&mut self) { PAINT_STATS.with_borrow_mut(|s| { s[self.0].0 += 1; s[self.0].1 += self.1.elapsed(); }); } }
+
 // what the pointer is over / what a click does
 const NONE: i32 = -1;
 const BACK: i32 = 1;
@@ -40,6 +49,12 @@ thread_local! {
 
 /// The list shows search hits for `q` (None: a folder again); the pill says so instead of showing the path.
 pub fn set_search(q: Option<String>) { SEARCHING.set(q); }
+thread_local! {static ACTIVITY:RefCell<Option<String>>=const{RefCell::new(None)};}
+pub fn activity(text:Option<String>){ACTIVITY.set(text);}
+pub fn headers(list:HWND,bin:bool){unsafe{
+    let names=if bin{["Имя","Дата удаления","Исходное расположение","Размер"]}else{["Name","Date modified","Type","Size"]};
+    for(i,title)in names.into_iter().enumerate(){let mut text=w(title);let column=LVCOLUMNW{mask:LVCF_TEXT,pszText:text.as_mut_ptr(),..std::mem::zeroed()};SendMessageW(list,LVM_SETCOLUMNW,i,&column as *const _ as isize);}
+}}
 
 /// Folder of the path part `i` of the address pill.
 pub fn crumb_path(i: usize) -> Option<PathBuf> { CRUMBS.with_borrow(|c| c.get(i).map(|x| x.1.clone())) }
@@ -66,7 +81,48 @@ thread_local! {
     static HOT: Cell<i32> = const { Cell::new(NONE) };
     static PRESS: Cell<(i32, u64)> = const { Cell::new((i32::MIN, 0)) };
     static BRUSH: Cell<isize> = const { Cell::new(0) }; // address box background
+    static CHROME_BUFFER: RefCell<Option<PaintBuffer>> = const { RefCell::new(None) };
+    static NAV_BUFFER: RefCell<Option<PaintBuffer>> = const { RefCell::new(None) };
+    static PAINT_FONTS: RefCell<HashMap<(i32, i32, String), isize>> = RefCell::new(HashMap::new());
+    static LIST_OWN_FONT:Cell<isize>=const{Cell::new(0)};
+    static EDIT_OWN_FONT:Cell<isize>=const{Cell::new(0)};
 }
+
+/// Retain the backing surface across frames and small resize steps. Returning
+/// the selected bitmap/DC to GDI on every hover was unnecessary allocation work.
+struct PaintBuffer { dc: HDC, bitmap: HBITMAP, original: HGDIOBJ, width: i32, height: i32 }
+impl Drop for PaintBuffer { fn drop(&mut self) { unsafe {
+    SelectObject(self.dc, self.original);
+    DeleteObject(self.bitmap);
+    DeleteDC(self.dc);
+}}}
+
+unsafe fn paint_buffer(cache: &'static std::thread::LocalKey<RefCell<Option<PaintBuffer>>>, target: HDC, width: i32, height: i32) -> HDC {
+    cache.with_borrow_mut(|slot| {
+        let w = width.max(1); let h = height.max(1);
+        if let Some(buffer) = slot.as_ref() {
+            if buffer.width >= w && buffer.height >= h { return buffer.dc; }
+        }
+        let dc = CreateCompatibleDC(target);
+        let bitmap = CreateCompatibleBitmap(target, w.max(slot.as_ref().map_or(0, |b| b.width)), h.max(slot.as_ref().map_or(0, |b| b.height)));
+        if dc.is_null() || bitmap.is_null() {
+            if !dc.is_null() { DeleteDC(dc); }
+            if !bitmap.is_null() { DeleteObject(bitmap); }
+            return ptr::null_mut();
+        }
+        let original = SelectObject(dc, bitmap);
+        let width = w.max(slot.as_ref().map_or(0, |b| b.width));
+        let height = h.max(slot.as_ref().map_or(0, |b| b.height));
+        *slot = Some(PaintBuffer { dc, bitmap, original, width, height });
+        dc
+    })
+}
+
+unsafe fn paint_font(px: i32, weight: i32, face: &str) -> HFONT {
+    PAINT_FONTS.with_borrow_mut(|fonts| *fonts.entry((px, weight, face.into())).or_insert_with(|| font(px, weight, face)) as HFONT)
+}
+
+fn clear_paint_fonts() { PAINT_FONTS.with_borrow_mut(|fonts| { for (_, f) in fonts.drain() { unsafe { DeleteObject(f as HGDIOBJ); } } }); }
 
 pub fn init_scale() {
     unsafe {
@@ -77,6 +133,19 @@ pub fn init_scale() {
 }
 
 pub fn sc(v: i32) -> i32 { (v as f32 * SCALE.get()).round() as i32 }
+pub fn set_dpi(dpi:u32){SCALE.set(dpi.max(96)as f32/96.0);}
+pub unsafe fn edit_font(edit:HWND){unsafe{let f=font(14,400,ui_face());SendMessageW(edit,WM_SETFONT,f as usize,1);let old=EDIT_OWN_FONT.replace(f);if old!=0{DeleteObject(old as _);}}}
+pub unsafe fn change_dpi(h:HWND,dpi:u32){unsafe{
+    let old_scale=SCALE.get();set_dpi(dpi);let ratio=SCALE.get()/old_scale;
+    CHROME_BUFFER.set(None);NAV_BUFFER.set(None);clear_paint_fonts();
+    let(a,b)=FONTS.replace((0,0));for f in [a,b]{if f!=0{DeleteObject(f as _);}}
+    let(list,edit)=ST.with_borrow(|s|(s.list,s.edit));
+    for i in 0..4{let width=SendMessageW(list,LVM_GETCOLUMNWIDTH,i,0);SendMessageW(list,LVM_SETCOLUMNWIDTH,i,(width as f32*ratio).round()as isize);}
+    style_list(list);row_height(list,!ST.with_borrow(|s|s.thumbs));resize_thumbnails();edit_font(edit);
+    place_edit(ST.with_borrow(|s|s.tab));
+    RedrawWindow(h,ptr::null(),ptr::null_mut(),RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_FRAME);
+}}
+pub fn cleanup_fonts(){clear_paint_fonts();let(a,b)=FONTS.replace((0,0));for f in [a,b,LIST_OWN_FONT.replace(0),EDIT_OWN_FONT.replace(0)]{if f!=0{unsafe{DeleteObject(f as _);}}}}
 
 fn now() -> u64 { unsafe { GetTickCount64() } }
 
@@ -114,6 +183,106 @@ fn press_t(key: i32) -> f32 {
     (1.0 - t) * (1.0 - t)
 }
 
+unsafe fn drawable(h: HWND) -> bool {
+    let mut r: RECT = std::mem::zeroed();
+    IsWindowVisible(h) != 0 && IsIconic(GetAncestor(h, GA_ROOT)) == 0
+        && GetClientRect(h, &mut r) != 0 && r.right > 0 && r.bottom > 0
+}
+
+unsafe fn schedule_animation(h: HWND, busy: bool) {
+    if busy && drawable(h) { SetTimer(h, 4, 16, None); } else { KillTimer(h, 4); }
+}
+
+unsafe fn animation_tick(h: HWND) {
+    // One-shot: only a completed paint may request another frame. A minimized
+    // child may never receive WM_PAINT, so a repeating timer would run forever.
+    KillTimer(h, 4);
+    if drawable(h) { InvalidateRect(h, ptr::null(), 0); }
+}
+
+#[cfg(test)]
+mod rendering_tests {
+    use super::*;
+
+    thread_local! { static LIST_PAINTS: Cell<u32> = const { Cell::new(0) }; }
+    #[test]
+    fn layout_defers_list_paint_and_preserves_hidden_state() {
+        unsafe extern "system" fn parent(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+            if m == WM_NOTIFY && unsafe { (*(lp as *const NMHDR)).code } == NM_CUSTOMDRAW {
+                LIST_PAINTS.set(LIST_PAINTS.get() + 1);
+            }
+            unsafe { DefWindowProcW(h, m, wp, lp) }
+        }
+        unsafe {
+            InitCommonControlsEx(&INITCOMMONCONTROLSEX { dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_LISTVIEW_CLASSES });
+            let hi = GetModuleHandleW(ptr::null());
+            let cls = w("RxDeferredLayoutTest");
+            RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(parent), hInstance: hi, lpszClassName: cls.as_ptr(), ..std::mem::zeroed() });
+            let root = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, cls.as_ptr(), ptr::null(), WS_POPUP | WS_CLIPCHILDREN, 30, 30, 800, 500, ptr::null_mut(), ptr::null_mut(), hi, ptr::null());
+            let chrome = CreateWindowExW(0, w("STATIC").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE, 0, 0, 800, 88, root, ptr::null_mut(), hi, ptr::null());
+            let nav = CreateWindowExW(0, w("STATIC").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE, 0, 88, 232, 386, root, ptr::null_mut(), hi, ptr::null());
+            let list = CreateWindowExW(0, w("SysListView32").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_OWNERDATA, 232, 88, 568, 386, root, ptr::null_mut(), hi, ptr::null());
+            assert!(!list.is_null());
+            ST.with_borrow_mut(|s| { s.list = list; s.tab = chrome; });
+            NAVWND.set(nav as isize);
+            for i in 0..4 { col(list, i, "Column", 100, false); }
+            put(list, LVM_SETITEMCOUNT, 20, 0);
+            ShowWindow(root, SW_SHOWNOACTIVATE);
+            RedrawWindow(root, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            assert!(LIST_PAINTS.get() > 0);
+            LIST_PAINTS.set(0);
+            layout_children(1000, 600);
+            assert_eq!(LIST_PAINTS.get(), 0, "layout must not synchronously paint intermediate rows");
+            assert_ne!(GetUpdateRect(list, ptr::null_mut(), 0), 0, "the final frame must be queued");
+            ShowWindow(list, SW_HIDE);
+            layout_children(700, 400);
+            assert_eq!(IsWindowVisible(list), 0, "layout must not unhide a caller-hidden list");
+            DestroyWindow(root);
+            ST.with_borrow_mut(|s| { s.list = ptr::null_mut(); s.tab = ptr::null_mut(); });
+            NAVWND.set(0);
+        }
+    }
+
+    #[test]
+    fn backing_surfaces_and_fonts_are_reused_and_released() {
+        unsafe {
+            let screen = GetDC(ptr::null_mut());
+            let first = paint_buffer(&CHROME_BUFFER, screen, 200, 100);
+            assert!(!first.is_null());
+            let bitmap = CHROME_BUFFER.with_borrow(|b| b.as_ref().unwrap().bitmap);
+            assert_eq!(paint_buffer(&CHROME_BUFFER, screen, 190, 80), first);
+            assert_eq!(CHROME_BUFFER.with_borrow(|b| b.as_ref().unwrap().bitmap), bitmap);
+            let font = paint_font(13, 400, ui_face());
+            assert_eq!(font, paint_font(13, 400, ui_face()));
+            CHROME_BUFFER.set(None);
+            let mut info: BITMAP = std::mem::zeroed();
+            assert_eq!(GetObjectW(bitmap, size_of::<BITMAP>() as i32, &mut info as *mut _ as _), 0);
+            clear_paint_fonts();
+            ReleaseDC(ptr::null_mut(), screen);
+        }
+    }
+
+    #[test]
+    fn hidden_windows_do_not_keep_an_animation_timer_alive() {
+        unsafe {
+            let hi = GetModuleHandleW(ptr::null());
+            let h = CreateWindowExW(WS_EX_TOOLWINDOW, w("STATIC").as_ptr(), w("Animation timer test").as_ptr(), WS_POPUP,
+                0, 0, 100, 100, ptr::null_mut(), ptr::null_mut(), hi, ptr::null());
+            assert!(!h.is_null());
+            // Simulate an animation whose window became hidden before paint.
+            SetTimer(h, 4, 16, None);
+            animation_tick(h);
+            std::thread::sleep(std::time::Duration::from_millis(70));
+            let mut msg: MSG = std::mem::zeroed();
+            assert_eq!(PeekMessageW(&mut msg, h, WM_TIMER, WM_TIMER, PM_REMOVE), 0);
+            schedule_animation(h, true);
+            std::thread::sleep(std::time::Duration::from_millis(70));
+            assert_eq!(PeekMessageW(&mut msg, h, WM_TIMER, WM_TIMER, PM_REMOVE), 0);
+            DestroyWindow(h);
+        }
+    }
+}
+
 pub fn font(px: i32, weight: i32, face: &str) -> isize {
     unsafe { CreateFontW(-sc(px), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, w(face).as_ptr()) as isize }
 }
@@ -144,6 +313,7 @@ pub fn dark_mode() {
 
 /// The WinRust style changed (the topbar's broadcast): the lists take the new colours and font, everything repaints.
 pub unsafe fn restyle(h: HWND) {
+    clear_paint_fonts();
     unsafe extern "system" fn each(c: HWND, _: LPARAM) -> i32 {
         let mut cls = [0u16; 32];
         let n = GetClassNameW(c, cls.as_mut_ptr(), 32).max(0) as usize;
@@ -172,7 +342,8 @@ pub fn style_list(list: HWND) {
         let hdr = SendMessageW(list, LVM_GETHEADER, 0, 0) as HWND;
         SetWindowTheme(hdr, w("DarkMode_ItemsView").as_ptr(), ptr::null());
         for (m, c) in [(LVM_SETBKCOLOR, listbg()), (LVM_SETTEXTBKCOLOR, listbg()), (LVM_SETTEXTCOLOR, pal().text)] { SendMessageW(list, m, 0, c as isize); }
-        SendMessageW(list, WM_SETFONT, font(14, 400, ui_face()) as usize, 1);
+        let f=font(14,400,ui_face());SendMessageW(list,WM_SETFONT,f as usize,1);
+        let old=LIST_OWN_FONT.replace(f);if old!=0{DeleteObject(old as _);}
         row_height(list, true);
         SetWindowSubclass(list, Some(list_sub), 1, 0); // paints the column header (the theme alone leaves it dim)
     }
@@ -193,25 +364,25 @@ pub fn row_height(list: HWND, on: bool) {
 thread_local! {
     static ROWHOT: Cell<isize> = const { Cell::new(-1) }; // list row under the pointer
     static FONTS: Cell<(isize, isize)> = const { Cell::new((0, 0)) }; // (name, details) fonts of the list rows
+    static ROW_COLUMNS: Cell<[i32; 4]> = const { Cell::new([0; 4]) };
+    static ROW_ICONS: Cell<(isize, i32, i32)> = const { Cell::new((0, 0, 0)) };
+    static ROW_DAYS: RefCell<(String, String)> = const { RefCell::new((String::new(), String::new())) };
 }
 
 /// "Today, 09:48" / "Yesterday, 21:50" for recent files, the plain date otherwise.
 fn friendly_date(ft: u64) -> String {
     let s = date_text(ft);
-    let mut now: windows_sys::Win32::Foundation::FILETIME = unsafe { std::mem::zeroed() };
-    unsafe { windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(&mut now) };
-    let now = (now.dwHighDateTime as u64) << 32 | now.dwLowDateTime as u64;
-    let (today, yest) = (date_text(now), date_text(now.saturating_sub(864_000_000_000))); // 24 h in 100 ns ticks
-    match s.get(..10) {
+    ROW_DAYS.with_borrow(|(today, yest)| match s.get(..10) {
         Some(d) if s.len() >= 16 && today.get(..10) == Some(d) => format!("Today, {}", &s[11..]),
         Some(d) if s.len() >= 16 && yest.get(..10) == Some(d) => format!("Yesterday, {}", &s[11..]),
         _ => s,
-    }
+    })
 }
 
 /// The details rows, painted by hand (NM_CUSTOMDRAW of the list): a rounded accent pill with a marker for the selection,
 /// a soft one under the pointer, the name bright and the rest dimmed. The thumbnail view keeps the list's own drawing.
 pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
+    #[cfg(test)] let _probe = PaintProbe::new(2);
     let cd = &*(lp as *const NMLVCUSTOMDRAW);
     let list = cd.nmcd.hdr.hwndFrom;
     if ST.with(|c| c.try_borrow().map_or(true, |s| s.thumbs)) { return CDRF_DODEFAULT as isize; }
@@ -219,7 +390,20 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
     let mut cr: RECT = std::mem::zeroed();
     GetClientRect(list, &mut cr);
     match cd.nmcd.dwDrawStage {
-        CDDS_PREPAINT => (CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT) as isize,
+        CDDS_PREPAINT => {
+            // Shared by every row in this paint: do not query the header and
+            // convert today's date again for each visible file while resizing.
+            ROW_COLUMNS.set(std::array::from_fn(|k| SendMessageW(list, LVM_GETCOLUMNWIDTH, k, 0) as i32));
+            let himl = SendMessageW(list, LVM_GETIMAGELIST, LVSIL_SMALL as usize, 0);
+            let (mut iw, mut ih) = (0, 0);
+            ImageList_GetIconSize(himl as _, &mut iw, &mut ih);
+            ROW_ICONS.set((himl, iw, ih));
+            let mut now: windows_sys::Win32::Foundation::FILETIME = std::mem::zeroed();
+            windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(&mut now);
+            let now = (now.dwHighDateTime as u64) << 32 | now.dwLowDateTime as u64;
+            ROW_DAYS.set((date_text(now), date_text(now.saturating_sub(864_000_000_000))));
+            (CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT) as isize
+        }
         CDDS_POSTPAINT => {
             if SendMessageW(list, LVM_GETITEMCOUNT, 0, 0) == 0 {
                 // an empty folder says so instead of showing a blank list
@@ -229,7 +413,7 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
                 let of = SelectObject(dc, f_big);
                 text(dc, "\u{E8B7}", rc(0, mid - sc(40), cr.right, mid + sc(10)), mix(listbg(), pal().dim, 0.5), DT_CENTER);
                 SelectObject(dc, f_txt);
-                let msg = if SEARCHING.with_borrow(|s| s.is_some()) { "Nothing found" } else { "This folder is empty" };
+                let msg = if SEARCHING.with_borrow(|s| s.is_some()) { "Nothing found" } else if recycle::current(){"Корзина пуста"}else { "This folder is empty" };
                 text(dc, msg, rc(0, mid + sc(14), cr.right, mid + sc(40)), pal().dim, DT_CENTER);
                 SelectObject(dc, of);
                 DeleteObject(f_big);
@@ -238,15 +422,16 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
             CDRF_DODEFAULT as isize
         }
         CDDS_ITEMPREPAINT => {
+            if RectVisible(dc, &cd.nmcd.rc) == 0 { return CDRF_SKIPDEFAULT as isize; }
             let i = cd.nmcd.dwItemSpec;
             let row = ST.with(|c| {
                 let mut st = c.try_borrow_mut().ok()?;
                 let State { dir, rows, .. } = &mut *st;
                 let r = rows.get_mut(i)?;
-                if r.icon < 0 && !r.hdr { r.icon = icon_of(&dir.join(&r.name), r.dir); }
-                Some((r.name.clone(), r.dir, r.time, r.size, r.icon, r.hdr))
+                queue_icon(list,i,dir,r);
+                Some((r.display_name().to_string(), r.dir, r.time, r.size, r.icon, r.recycled.as_ref().map(|e|e.original_dir.clone()), r.hdr))
             });
-            let Some((name, is_dir, time, size, icon, hdr)) = row else { return CDRF_DODEFAULT as isize };
+            let Some((name, is_dir, time, size, icon, original, hdr)) = row else { return CDRF_DODEFAULT as isize };
             let mut r = RECT { left: LVIR_BOUNDS as i32, ..std::mem::zeroed() };
             SendMessageW(list, LVM_GETITEMRECT, i, &mut r as *mut _ as isize);
             let row_r = rc(0, r.top, cr.right, r.bottom);
@@ -277,12 +462,10 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
             if bg != listbg() { fill(dc, pill, bg, sc(10)); }
             if sel { fill(dc, rc(pill.left, pill.top + sc(8), pill.left + sc(3), pill.bottom - sc(8)), if focus { pal().accent } else { pal().dim }, sc(3)); }
             // columns from the header widths (left of the row = minus the horizontal scroll)
-            let cw: Vec<i32> = (0..4).map(|k| SendMessageW(list, LVM_GETCOLUMNWIDTH, k, 0) as i32).collect();
-            let x: Vec<i32> = (0..4).map(|k| r.left + cw[..k].iter().sum::<i32>()).collect();
-            let himl = SendMessageW(list, LVM_GETIMAGELIST, LVSIL_SMALL as usize, 0);
-            let (mut iw, mut ih) = (0, 0);
-            ImageList_GetIconSize(himl as _, &mut iw, &mut ih);
-            if icon >= 0 { ImageList_Draw(himl as _, icon, dc, x[0] + sc(16), (r.top + r.bottom - ih) / 2, ILD_TRANSPARENT); }
+            let cw = ROW_COLUMNS.get();
+            let x: [i32; 4] = std::array::from_fn(|k| r.left + cw[..k].iter().sum::<i32>());
+            let (himl, _, _) = ROW_ICONS.get();let iw=sc(16);
+            if icon >= 0 { ImageList_DrawEx(himl as _, icon, dc, x[0] + sc(16), (r.top + r.bottom - sc(16)) / 2,sc(16),sc(16),CLR_NONE as u32,CLR_NONE as u32,ILD_TRANSPARENT|ILD_SCALE); }
             if FONTS.get().0 == 0 { FONTS.set((font(14, 400, ui_face()), font(13, 400, ui_face()))); }
             let (f_name, f_det) = FONTS.get();
             SetBkMode(dc, TRANSPARENT as i32);
@@ -294,7 +477,7 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
             SelectObject(dc, f_det as HFONT);
             let dim = if sel { mix(pal().dim, pal().text, 0.45) } else { pal().dim };
             text(dc, &friendly_date(time), rc(x[1] + sc(10), r.top, x[2] - sc(8), r.bottom), dim, DT_LEFT);
-            let kind = if hit_of_search { p.parent().map_or(String::new(), |d| d.to_string_lossy().into_owned()) } else { type_text(&name, is_dir) };
+            let kind = original.unwrap_or_else(||if hit_of_search { p.parent().map_or(String::new(), |d| d.to_string_lossy().into_owned()) } else { type_text(&name, is_dir) });
             text(dc, &kind, rc(x[2] + sc(10), r.top, x[3] - sc(8), r.bottom), dim, DT_LEFT | DT_PATH_ELLIPSIS);
             if !is_dir { text(dc, &size_text(size), rc(x[3], r.top, x[3] + cw[3] - sc(14), r.bottom), dim, DT_RIGHT); }
             SelectObject(dc, of);
@@ -309,7 +492,10 @@ pub unsafe fn fit_columns(list: HWND) {
     let mut cr: RECT = std::mem::zeroed();
     GetClientRect(list, &mut cr);
     let rest: i32 = (1..4).map(|k| SendMessageW(list, LVM_GETCOLUMNWIDTH, k, 0) as i32).sum();
-    SendMessageW(list, LVM_SETCOLUMNWIDTH, 0, (cr.right - rest).max(sc(200)) as isize);
+    let desired = (cr.right - rest).max(sc(200));
+    if SendMessageW(list, LVM_GETCOLUMNWIDTH, 0, 0) != desired as isize {
+        SendMessageW(list, LVM_SETCOLUMNWIDTH, 0, desired as isize);
+    }
 }
 
 /// Repaints one row (hover moved on or off it).
@@ -368,13 +554,12 @@ unsafe extern "system" fn list_sub(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id:
                     SendMessageW(hdr, HDM_GETITEMW, i, &mut it as *mut _ as isize);
                     let sorted = SORT_COL.load(Relaxed) == i;
                     let arrow = if !sorted { "" } else if SORT_ASC.load(Relaxed) { "  \u{2191}" } else { "  \u{2193}" };
-                    let f = font(13, if sorted { 600 } else { 400 }, ui_face()) as HFONT;
+                    let f = paint_font(13, if sorted { 600 } else { 400 }, ui_face());
                     let of = SelectObject(dc, f);
                     SetBkMode(dc, TRANSPARENT as i32);
                     let align = if i == 3 { DT_RIGHT } else { DT_LEFT }; // the size column is right-aligned like its numbers
                     text(dc, &format!("{}{arrow}", wstr(buf.as_ptr())), rc(r.left + sc(10), r.top, r.right - sc(12), r.bottom), if sorted { pal().text } else { pal().dim }, align);
                     SelectObject(dc, of);
-                    DeleteObject(f);
                     CDRF_SKIPDEFAULT as isize
                 }
                 _ => 0,
@@ -411,6 +596,7 @@ fn layout(cw: i32, n: usize) -> Layout {
 fn inside(r: &RECT, x: i32, y: i32) -> bool { x >= r.left && x < r.right && y >= r.top && y < r.bottom }
 
 fn hit(l: &Layout, x: i32, y: i32) -> i32 {
+    if recycle::current() && inside(&l.pill,x,y){return 31+((x-l.pill.left)*3/(l.pill.right-l.pill.left).max(1)).clamp(0,2);}
     for (i, c) in l.close.iter().enumerate() { if inside(c, x, y) && l.tabs.len() > 1 { return CLOSE + i as i32; } }
     for (i, t) in l.tabs.iter().enumerate() { if inside(t, x, y) { return TAB + i as i32; } }
     for (k, r) in [(BACK, &l.back), (FWD, &l.fwd), (UP, &l.up), (RELOAD, &l.reload), (SEARCH, &l.search), (VIEW, &l.view), (PLUS, &l.plus)] {
@@ -429,8 +615,8 @@ pub fn place_edit(chrome: HWND) {
         GetClientRect(chrome, &mut r);
         let p = layout(r.right, 1).pill;
         let eh = sc(20);
-        MoveWindow(edit, p.left + sc(40), (p.top + p.bottom - eh) / 2, (p.right - p.left - sc(40) - sc(16)).max(0), eh, 1);
-        if GetFocus() != edit { ShowWindow(edit, SW_HIDE); } // the path parts are painted instead until the pill is clicked
+        MoveWindow(edit, p.left + sc(40), (p.top + p.bottom - eh) / 2, (p.right - p.left - sc(40) - sc(16)).max(0), eh, 0);
+        if GetFocus() != edit && IsWindowVisible(edit) != 0 { ShowWindow(edit, SW_HIDE); } // the path parts are painted instead until the pill is clicked
     }
 }
 
@@ -496,6 +682,7 @@ unsafe fn glow(dc: HDC, key: i32, r: RECT, base: u32, to: u32, rad: i32, on: boo
 }
 
 unsafe fn paint_chrome(hwnd: HWND) {
+    #[cfg(test)] let _probe = PaintProbe::new(0);
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let wdc = BeginPaint(hwnd, &mut ps);
     let mut cr: RECT = std::mem::zeroed();
@@ -504,8 +691,8 @@ unsafe fn paint_chrome(hwnd: HWND) {
     let snap = ST.with(|c| c.try_borrow().ok().map(|s| (s.tabs.iter().map(label).collect::<Vec<_>>(), s.active, s.hist.pos > 0, s.hist.pos + 1 < s.hist.v.len(), s.thumbs, s.edit, s.dir.clone())));
     let Some((labels, active, can_back, can_fwd, thumbs, edit, dir)) = snap else { EndPaint(hwnd, &ps); return };
     BUSY.set(false);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
-    let old = SelectObject(dc, bmp);
+    let dc = paint_buffer(&CHROME_BUFFER, wdc, cr.right, cr.bottom);
+    if dc.is_null() { EndPaint(hwnd, &ps); return; }
     let bg = CreateSolidBrush(pal().bg);
     FillRect(dc, &cr, bg);
     DeleteObject(bg);
@@ -513,7 +700,7 @@ unsafe fn paint_chrome(hwnd: HWND) {
     SetBkMode(dc, TRANSPARENT as i32);
     let l = layout(cr.right, labels.len());
     let hot = HOT.get();
-    let (f_txt, f_glyph, f_small) = (font(13, 400, ui_face()) as HFONT, font(16, 400, winrust_common::style::icon_face()) as HFONT, font(12, 400, winrust_common::style::icon_face()) as HFONT);
+    let (f_txt, f_glyph, f_small) = (paint_font(13, 400, ui_face()), paint_font(16, 400, winrust_common::style::icon_face()), paint_font(12, 400, winrust_common::style::icon_face()));
     let of = SelectObject(dc, f_txt);
 
     // tabs
@@ -594,20 +781,27 @@ unsafe fn paint_chrome(hwnd: HWND) {
         }
     }
     CRUMBS.set(crumbs);
+    if recycle::is(&dir) && !focused {
+        CRUMBS.set(vec![]);
+        fill(dc,l.pill,pill(),sc(17));SelectObject(dc,f_txt);
+        for(i,title)in ["Восстановить","Удалить навсегда…","Очистить корзину…"].into_iter().enumerate(){
+            let width=(l.pill.right-l.pill.left)/3;
+            let r=rc(l.pill.left+i as i32*width+sc(3),l.pill.top+sc(3),l.pill.left+(i as i32+1)*width-sc(3),l.pill.bottom-sc(3));
+            glow(dc,31+i as i32,r,pill(),pal().hover,sc(8),hot==31+i as i32);
+            text(dc,title,r,if i==0{pal().accent}else{pal().text},DT_CENTER);
+        }
+    }
 
     fill(dc, rc(0, cr.bottom - 1, cr.right, cr.bottom), pal().line, 0); // hairline under the chrome
     BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
-    for f in [f_txt, f_glyph, f_small] { DeleteObject(f); }
-    SelectObject(dc, old);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-    if BUSY.get() { SetTimer(hwnd, 4, 16, None); } else { KillTimer(hwnd, 4); }
+    schedule_animation(hwnd, BUSY.get());
     EndPaint(hwnd, &ps);
 }
 
 /// Item / selection counts and the sort order, along the bottom edge.
 pub unsafe fn paint_status(h: HWND) {
+    #[cfg(test)] let _probe = PaintProbe::new(3);
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let dc = BeginPaint(h, &mut ps);
     let mut cr: RECT = std::mem::zeroed();
@@ -639,16 +833,15 @@ pub unsafe fn paint_status(h: HWND) {
             (s, 0) => format!("{}  \u{00B7}  {s} selected", items(n)),
             (s, b) => format!("{}  \u{00B7}  {s} selected  \u{00B7}  {}", items(n), size_text(b)),
         };
-        let left = crate::jobs::status_text().unwrap_or(left); // a copy, packing or unpacking in progress
-        let by = ["Name", "Date", "Type", "Size"][SORT_COL.load(Relaxed).min(3)];
+        let left = crate::jobs::status_text().or_else(||ACTIVITY.with_borrow(Clone::clone)).unwrap_or(left);
+        let by = if recycle::current(){["Имя","Дата удаления","Расположение","Размер"]}else{["Name", "Date", "Type", "Size"]}[SORT_COL.load(Relaxed).min(3)];
         let right = format!("{by} {}", if SORT_ASC.load(Relaxed) { "\u{2191}" } else { "\u{2193}" });
-        let f = font(12, 400, ui_face()) as HFONT;
+        let f = paint_font(12, 400, ui_face());
         let of = SelectObject(dc, f);
         SetBkMode(dc, TRANSPARENT as i32);
         text(dc, &left, rc(strip.left + sc(14), strip.top, strip.right / 2, strip.bottom), pal().dim, DT_LEFT);
         text(dc, &right, rc(strip.right / 2, strip.top, strip.right - sc(14), strip.bottom), pal().dim, DT_RIGHT);
         SelectObject(dc, of);
-        DeleteObject(f);
     }
     EndPaint(h, &ps);
 }
@@ -671,9 +864,10 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
     };
     match m {
         WM_PAINT => paint_chrome(h),
+        WM_DESTROY => { KillTimer(h, 4); CHROME_BUFFER.set(None); clear_paint_fonts(); }
         WM_ERASEBKGND => return 1,
         WM_SIZE => { place_edit(h); InvalidateRect(h, ptr::null(), 0); } // the pill and the tabs re-flow: repaint it all
-        WM_TIMER if wp == 4 => { InvalidateRect(h, ptr::null(), 0); }
+        WM_TIMER if wp == 4 => animation_tick(h),
         WM_MOUSEMOVE => {
             let k = match hit(&layout_now(), x, y) { NONE => crumb_at(x, y).map_or(NONE, |i| CRUMB + i as i32), k => k };
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
@@ -703,6 +897,7 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
             PRESS.set((k, now()));
             InvalidateRect(h, ptr::null(), 0);
             let (act, idx) = match k {
+                31..=33 => (k as usize, 0),
                 k if (CMD..CMD + 5).contains(&k) => (k as usize - CMD as usize + 10, 0), BACK => (4, 0), FWD => (5, 0), UP => (6, 0), RELOAD => (7, 0), SEARCH => (9, 0), VIEW => (8, 0), PLUS => (3, 0),
                 k if k >= CLOSE => (2, (k - CLOSE) as isize),
                 k => (if m == WM_MBUTTONDOWN { 2 } else { 1 }, (k - TAB) as isize), // middle click on a tab closes it
@@ -792,6 +987,7 @@ pub fn nav_init(h: HWND) {
     for p in pins() {
         if p.is_dir() { v.push(NavItem { title: p.file_name().map_or_else(|| p.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned()), path: p, glyph: "\u{E718}", cap: None }); }
     }
+    v.push(NavItem{title:"Корзина".into(),path:PathBuf::from(recycle::PATH),glyph:"\u{E74D}",cap:None});
     v.push(head("This PC"));
     unsafe {
         use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
@@ -835,10 +1031,29 @@ pub unsafe fn layout_children(cw: i32, ch: i32) {
     let (top, status) = (sc(CHROME_H), sc(STATUS_H));
     let nw = if cw > sc(760) { sc(NAV_W) } else { 0 };
     let h = (ch - top - status).max(0);
-    MoveWindow(chrome, 0, 0, cw, top, 1);
-    MoveWindow(nav, 0, top, nw, h, 1);
-    MoveWindow(list, nw, top, cw - nw, h, 1);
+    // The native list can paint synchronously while WM_SIZE / column changes
+    // are still in progress. Suppress those intermediate frames, then queue
+    // one paint after geometry and header widths agree. Never unhide a list
+    // that the caller intentionally hid (WM_SETREDRAW changes WS_VISIBLE).
+    let redraw = IsWindowVisible(list) != 0;
+    if redraw { SendMessageW(list, WM_SETREDRAW, 0, 0); }
+    // Batch the layout. MoveWindow(..., TRUE) repainted each child immediately,
+    // before the other children and column widths had their final geometry.
+    let mut batch = BeginDeferWindowPos(3);
+    for (child, x, y, w, height) in [(chrome, 0, 0, cw, top), (nav, 0, top, nw, h), (list, nw, top, (cw - nw).max(0), h)] {
+        if !batch.is_null() { batch = DeferWindowPos(batch, child, ptr::null_mut(), x, y, w, height, SWP_NOZORDER | SWP_NOACTIVATE); }
+    }
+    if batch.is_null() || EndDeferWindowPos(batch) == 0 {
+        MoveWindow(chrome, 0, 0, cw, top, 0);
+        MoveWindow(nav, 0, top, nw, h, 0);
+        MoveWindow(list, nw, top, (cw - nw).max(0), h, 0);
+        for child in [chrome, nav, list] { InvalidateRect(child, ptr::null(), 0); }
+    }
     fit_columns(list);
+    if redraw {
+        SendMessageW(list, WM_SETREDRAW, 1, 0);
+        RedrawWindow(list, ptr::null(), ptr::null_mut(), RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+    }
 }
 
 /// Item under y (None over headings or empty space).
@@ -855,19 +1070,20 @@ fn nav_hit(y: i32) -> Option<usize> {
 }
 
 unsafe fn paint_nav(hwnd: HWND) {
+    #[cfg(test)] let _probe = PaintProbe::new(1);
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let wdc = BeginPaint(hwnd, &mut ps);
     let mut cr: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut cr);
     BUSY.set(false);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right.max(1), cr.bottom.max(1)));
-    let old = SelectObject(dc, bmp);
+    let dc = paint_buffer(&NAV_BUFFER, wdc, cr.right, cr.bottom);
+    if dc.is_null() { EndPaint(hwnd, &ps); return; }
     let bg = CreateSolidBrush(pal().bg);
     FillRect(dc, &cr, bg);
     DeleteObject(bg);
     winrust_common::style::backdrop(dc, cr, sc(100) as f32 / 100.0);
     SetBkMode(dc, TRANSPARENT as i32);
-    let (f_txt, f_head, f_glyph, f_small) = (font(13, 400, ui_face()) as HFONT, font(12, 600, ui_face()) as HFONT, font(16, 400, winrust_common::style::icon_face()) as HFONT, font(11, 400, ui_face()) as HFONT);
+    let (f_txt, f_head, f_glyph, f_small) = (paint_font(13, 400, ui_face()), paint_font(12, 600, ui_face()), paint_font(16, 400, winrust_common::style::icon_face()), paint_font(11, 400, ui_face()));
     let of = SelectObject(dc, f_txt);
     // where we are = the deepest item that contains the current folder
     let cur = ST.with(|c| c.try_borrow().ok().map(|s| s.dir.to_string_lossy().to_lowercase())).unwrap_or_default();
@@ -910,11 +1126,7 @@ unsafe fn paint_nav(hwnd: HWND) {
     fill(dc, rc(cr.right - 1, 0, cr.right, cr.bottom), pal().line, 0); // hairline between the pane and the list
     BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
-    for f in [f_txt, f_head, f_glyph, f_small] { DeleteObject(f); }
-    SelectObject(dc, old);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-    if BUSY.get() { SetTimer(hwnd, 4, 16, None); } else { KillTimer(hwnd, 4); }
+    schedule_animation(hwnd, BUSY.get());
     EndPaint(hwnd, &ps);
 }
 
@@ -922,8 +1134,9 @@ pub unsafe extern "system" fn nav_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) 
     let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
     match m {
         WM_PAINT => paint_nav(h),
+        WM_DESTROY => { KillTimer(h, 4); NAV_BUFFER.set(None); }
         WM_ERASEBKGND => return 1,
-        WM_TIMER if wp == 4 => { InvalidateRect(h, ptr::null(), 0); }
+        WM_TIMER if wp == 4 => animation_tick(h),
         WM_MOUSEMOVE => {
             let k = nav_hit(y).map_or(-1, |i| i as i32);
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
