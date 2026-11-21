@@ -60,8 +60,17 @@ pub fn cancel() {
     }
 }
 
-/// Runs `f` on a worker thread; its error (or None) is posted to `h` as WM_JOB (wp = Box<Option<String>>).
+pub struct Completion {
+    pub error: Option<String>,
+    pub cut: Option<(u32, Vec<PathBuf>)>,
+}
+
+/// Runs `f` on a worker thread; its result is posted to `h` as WM_JOB.
 fn spawn(h: isize, what: String, f: impl FnOnce(&Progress) -> Result<(), String> + Send + 'static) -> bool {
+    spawn_with_cut(h, what, None, f)
+}
+
+fn spawn_with_cut(h: isize, what: String, cut: Option<(u32, Vec<PathBuf>)>, f: impl FnOnce(&Progress) -> Result<(), String> + Send + 'static) -> bool {
     if RUNNING.swap(true, Relaxed) {
         return false;
     }
@@ -83,7 +92,7 @@ fn spawn(h: isize, what: String, f: impl FnOnce(&Progress) -> Result<(), String>
         *JOB.lock().unwrap() = None;
         RUNNING.store(false, Relaxed);
         let _ = ticker.join();
-        let msg = Box::new(r.err());
+        let msg = Box::new(Completion { error: r.err(), cut });
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(h as _, super::WM_JOB, Box::into_raw(msg) as usize, 0) };
     });
     true
@@ -183,7 +192,8 @@ fn copy_file(src: &Path, dst: &Path, size: u64, p: &Progress) -> std::io::Result
 /// only when every file arrived.
 pub fn copy(h: isize, from: Vec<PathBuf>, to: PathBuf, then_delete: bool) -> bool {
     let what = if then_delete { "Moving" } else { "Copying" }.to_string();
-    spawn(h, what, move |p| copy_now(&from, &to, then_delete, p))
+    let cut = then_delete.then(|| (super::clipboard_sequence(), from.clone()));
+    spawn_with_cut(h, what, cut, move |p| copy_now(&from, &to, then_delete, p))
 }
 
 fn copy_now(from: &[PathBuf], to: &Path, then_delete: bool, p: &Progress) -> Result<(), String> {
