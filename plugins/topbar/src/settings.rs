@@ -104,6 +104,7 @@ pub(crate) unsafe fn bar_page() {
         fly::MItem::new(t!("Маленькая", "Small", ja: "小", pt: "Pequeno")).on(st::bar_size() == 0),
         fly::MItem::new(t!("Обычная", "Normal", ja: "通常", pt: "Normal")).on(st::bar_size() == 1),
         fly::MItem::new(t!("Большая", "Large", ja: "大", pt: "Grande")).on(st::bar_size() == 2),
+        fly::MItem::new(format!("{} ({} %)", t!("Размер значков", "Icon size", ja: "アイコンのサイズ", pt: "Tamanho dos ícones"), st::icon_size())).hint("›"),
         fly::MItem::head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento")),
         fly::MItem::new(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente")).on(st::autohide()),
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10")).on(st::align_left()),
@@ -113,13 +114,28 @@ pub(crate) unsafe fn bar_page() {
         match i {
             2..=5 => st::set_side(sides[i - 2]),
             7..=9 => st::set_bar_size((i - 7) as u8),
-            11 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
-            12 => st::set_align_left(!st::align_left()),
-            13 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            10 => return icon_size_page(),
+            12 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
+            13 => st::set_align_left(!st::align_left()),
+            14 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
             _ => return style_menu(),
         }
-        relook(i != 13);
+        relook(i != 14);
         bar_page();
+    });
+}
+
+pub(crate) unsafe fn icon_size_page() {
+    use i18n::style as st;
+    const SIZES: [u8; 6] = [50, 60, 70, 80, 90, 100];
+    let mut items = vec![back(), fly::MItem::head(t!("Размер значков", "Icon size", ja: "アイコンのサイズ", pt: "Tamanho dos ícones")).sep()];
+    items.extend(SIZES.iter().map(|&size| fly::MItem::new(format!("{size} %")).on(st::icon_size() == size)));
+    gear_page("\u{E8A1}", t!("Размер значков", "Icon size", ja: "アイコンのサイズ", pt: "Tamanho dos ícones"), t!("Размер значков на панели", "Size of icons on the bar", ja: "バーのアイコンサイズ", pt: "Tamanho dos ícones na barra"), items, move |i| {
+        let Some(&size) = i.checked_sub(2).and_then(|n| SIZES.get(n)) else { return bar_page() };
+        st::set_icon_size(size);
+        reload_icons();
+        relook(false);
+        icon_size_page();
     });
 }
 

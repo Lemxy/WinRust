@@ -252,9 +252,9 @@ fn wide(s: &str) -> Vec<u16> {
 fn sc(v: i32) -> i32 {
     (v as f32 * SCALE.get()) as i32
 }
-/// Taskbar symbols are 70% of their original size; slots and hit targets stay unchanged.
+/// Taskbar symbols use the chosen size; slots and hit targets stay unchanged.
 fn icon_sc(v: i32) -> i32 {
-    sc((v as f32 * 0.70).round() as i32).max(1)
+    sc((v as f32 * i18n::style::icon_size() as f32 / 100.0).round() as i32).max(1)
 }
 fn bar_h() -> i32 {
     let d = [-6, 0, 8][i18n::style::bar_size() as usize % 3]; // small / normal / large
@@ -894,7 +894,7 @@ unsafe fn lnk_icon(lnk: &[u16], target: &str) -> HICON {
     icon
 }
 
-/// Size app icons are drawn at (about 17 logical px). Icons are loaded at exactly this size:
+/// Size app icons are drawn at. Icons are loaded at exactly this size:
 /// a 32 px icon stretched by DrawIconEx comes out jagged.
 fn icon_px() -> i32 {
     icon_sc(24)
@@ -921,6 +921,24 @@ unsafe fn item_icon(path: &str, px: i32) -> HICON {
 
 thread_local! {
     static EXE_ICONS: RefCell<HashMap<String, HICON>> = RefCell::new(HashMap::new()); // crisp icons of running apps, by exe
+}
+
+/// Recreate cached app icons after the size changes so they remain crisp.
+unsafe fn reload_icons() {
+    PINS.with_borrow_mut(|pins| {
+        for pin in pins.iter_mut() {
+            let icon = lnk_icon(&pin.lnk, &pin.target);
+            if !pin.icon.is_null() { DestroyIcon(pin.icon); }
+            pin.icon = icon;
+        }
+    });
+    EXE_ICONS.with_borrow_mut(|icons| {
+        for icon in icons.values() {
+            if !icon.is_null() { DestroyIcon(*icon); }
+        }
+        icons.clear();
+    });
+    refresh_buttons();
 }
 
 /// Icon of a running window for its bar button: its exe's icon at the exact size (cached), else what the window reports.
@@ -1744,7 +1762,7 @@ unsafe fn paint(hwnd: HWND) {
     SetBkMode(dc, TRANSPARENT as i32);
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
     let font = |f: &[u16], px: i32, wt: i32| CreateFontW(-sc(px), 0, 0, 0, wt, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr());
-    let (f_txt, f_small, f_glyph, f_bold) = (font(&face, 13, 400), font(&face, 12, 400), font(&gface, 11, 400), font(&face, 13, 600));
+    let (f_txt, f_small, f_glyph, f_bold) = (font(&face, 13, 400), font(&face, 12, 400), font(&gface, (16.0 * i18n::style::icon_size() as f32 / 100.0).round() as i32, 400), font(&face, 13, 600));
     let of = SelectObject(dc, f_txt);
 
     'horiz: {

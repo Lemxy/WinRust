@@ -66,6 +66,8 @@ The gear at the left end of the bar opens **Bar settings**; a style picked on it
 
 The gear menu also sets the bar position (bottom, top, left or right: a side bar shows icons only and the panels open next to it) and auto-hide.
 
+In **Bar settings → Icon size**, choose 50, 60, 70, 80, 90 or 100%. The default is 60%; changing it leaves the bar size and button click targets the same.
+
 Press **Ctrl+Alt+T** to tile the open windows from any theme, the same action as **Tile the windows** in the gear menu.
 
 The choice is stored in `%ProgramData%\WinRust\style.txt`.

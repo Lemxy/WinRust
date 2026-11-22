@@ -435,6 +435,7 @@ pub fn save_themes(t: &[Theme]) {
 pub fn reset_all() {
     set_side(Side::Bottom);
     set_bar_size(1);
+    set_icon_size(60);
     set_autohide(false);
     set_align_left(false);
     set_alttab_per_monitor(false);
@@ -607,6 +608,15 @@ mod tests {
         assert_eq!(Side::parse(""), Side::Bottom);
         assert_eq!(Side::parse("unknown"), Side::Bottom);
     }
+
+    #[test]
+    fn icon_size_accepts_menu_choices_only() {
+        assert_eq!(valid_icon_size(50), Some(50));
+        assert_eq!(valid_icon_size(60), Some(60));
+        assert_eq!(valid_icon_size(100), Some(100));
+        assert_eq!(valid_icon_size(55), None);
+        assert_eq!(valid_icon_size(0), None);
+    }
 }
 
 fn size_file() -> Option<PathBuf> {
@@ -632,6 +642,38 @@ pub fn set_bar_size(v: u8) {
     if let Some(f) = size_file() {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, v.min(2).to_string());
+    }
+}
+
+fn icon_size_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("icon-size.txt"))
+}
+
+static ICON_SIZE: AtomicU8 = AtomicU8::new(60);
+static ICON_SIZE_AT: AtomicU64 = AtomicU64::new(0);
+
+fn valid_icon_size(v: u8) -> Option<u8> {
+    (50..=100).contains(&v).then_some(v).filter(|v| v % 10 == 0)
+}
+
+/// Icon size as a percentage of the original, 60 by default. Re-read once a second.
+pub fn icon_size() -> u8 {
+    if now_ms().saturating_sub(ICON_SIZE_AT.load(Relaxed)) > 1000 {
+        let v = icon_size_file().and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|s| s.trim().parse::<u8>().ok()).and_then(valid_icon_size).unwrap_or(60);
+        ICON_SIZE.store(v, Relaxed);
+        ICON_SIZE_AT.store(now_ms(), Relaxed);
+    }
+    ICON_SIZE.load(Relaxed)
+}
+
+pub fn set_icon_size(v: u8) {
+    let v = valid_icon_size(v).unwrap_or(60);
+    ICON_SIZE.store(v, Relaxed);
+    ICON_SIZE_AT.store(now_ms(), Relaxed);
+    if let Some(f) = icon_size_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, v.to_string());
     }
 }
 
