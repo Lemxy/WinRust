@@ -1932,8 +1932,8 @@ unsafe fn activate_app(aumid: &str) -> bool {
         .is_ok()
 }
 
-/// Opens a file, shortcut or URI through explorer, which starts it with the desktop user's normal token: the bar itself
-/// may run elevated (see the launcher), and everything started from it must not inherit that.
+/// Opens a file, shortcut, URI or program with the desktop user's normal token: the bar itself may run elevated (see the
+/// launcher), and everything started from it must not inherit that.
 unsafe fn open(path: &[u16]) {
     let n = path.iter().position(|&c| c == 0).unwrap_or(path.len());
     let p = String::from_utf16_lossy(&path[..n]);
@@ -1949,10 +1949,17 @@ unsafe fn open(path: &[u16]) {
     if aumid.is_some_and(|id| activate_app(&id)) {
         return;
     }
-    // Always through explorer.exe: it starts the target with the desktop user's normal token. ShellExecuteW from here would
-    // inherit this bar's admin rights, and an elevated app cannot receive files dragged in from normal windows (UIPI), and
-    // PrtSc / Win+Shift+S (ms-screenclip:) do not work when started elevated. With an argument and no explorer shell
-    // running, explorer.exe hands the target to its COM host and does not become a shell or raise a taskbar.
+    // A program is a path to Explorer, and Explorer is not the shell on a WinRust machine: `explorer.exe wt.exe` only
+    // opens a folder window, so the Win+X "Terminal" item showed the file manager and a task manager never started.
+    if winrust_common::launch::is_program(&p) {
+        winrust_common::launch::program(&p);
+        return;
+    }
+    // Everything else through explorer.exe: it hands paths, shortcuts, shell addresses and URIs to the shell with the
+    // desktop user's normal token. ShellExecuteW from here would inherit this bar's admin rights, and an elevated app
+    // cannot receive files dragged in from normal windows (UIPI), and PrtSc / Win+Shift+S (ms-screenclip:) do not work
+    // when started elevated. With an argument and no explorer shell running, explorer.exe hands the target to its COM
+    // host and does not become a shell or raise a taskbar.
     if Command::new("explorer.exe").arg(&p).spawn().is_err() {
         ShellExecuteW(null_mut(), wide("open").as_ptr(), wide(&p).as_ptr(), null(), null(), SW_SHOWNORMAL);
     }
