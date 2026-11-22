@@ -6,10 +6,12 @@ use crate::*;
 use std::sync::OnceLock;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-    Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser},
+    Security::{GetTokenInformation, LookupAccountNameW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER, TokenUser},
     System::{
         Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS},
-        RemoteDesktop::ProcessIdToSessionId,
+        RemoteDesktop::{
+            ProcessIdToSessionId, WTS_CURRENT_SERVER_HANDLE, WTS_INFO_CLASS, WTSDomainName, WTSFreeMemory, WTSQuerySessionInformationW, WTSUserName,
+        },
         Threading::{GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
     },
 };
@@ -90,6 +92,42 @@ fn process_sid(pid: u32) -> Option<String> {
     }
 }
 
+/// "DOMAIN\user" of a session, straight from the terminal-services session table: no process list, no WMI, and it
+/// answers in sessions where enumerating processes is restricted or the shell is not a process we know.
+fn wts_user(session: u32) -> Option<String> {
+    unsafe fn query(session: u32, class: WTS_INFO_CLASS) -> Option<String> {
+        let mut buf: *mut u16 = std::ptr::null_mut();
+        let mut len = 0u32;
+        if unsafe { WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session, class, &mut buf, &mut len) } == 0 || buf.is_null() {
+            return None;
+        }
+        let units = unsafe { std::slice::from_raw_parts(buf, (len / 2) as usize) };
+        let s = String::from_utf16_lossy(&units[..units.iter().position(|&c| c == 0).unwrap_or(units.len())]);
+        unsafe { WTSFreeMemory(buf as *mut core::ffi::c_void) };
+        Some(s)
+    }
+    let name = unsafe { query(session, WTSUserName) }?;
+    if name.is_empty() {
+        return None;
+    }
+    let domain = unsafe { query(session, WTSDomainName) }.unwrap_or_default();
+    Some(if domain.is_empty() { name } else { format!("{domain}\\{name}") })
+}
+
+/// The SID of an account name ("DOMAIN\user" or "user").
+fn name_sid(account: &str) -> Option<String> {
+    let name = wide(account);
+    unsafe {
+        let mut sid = [0u8; 68]; // SECURITY_MAX_SID_SIZE
+        let mut len = sid.len() as u32;
+        let mut domain = [0u16; 256];
+        let mut dlen = domain.len() as u32;
+        let mut kind: SID_NAME_USE = 0;
+        let ok = LookupAccountNameW(std::ptr::null(), name.as_ptr(), sid.as_mut_ptr().cast(), &mut len, domain.as_mut_ptr(), &mut dlen, &mut kind);
+        (ok != 0).then(|| sid_text(sid.as_mut_ptr().cast()))
+    }
+}
+
 /// The SID of whoever runs this session's shell: explorer.exe, or topbar / rust-explorer / rs-shell when Explorer is
 /// replaced. A plain Win32 probe: the earlier one asked PowerShell, and on a machine where that child cannot see the
 /// process list (WMI is not always reachable from an elevated installer) it answered "no shell" although the shell was
@@ -132,10 +170,16 @@ fn detect() -> Result<Session, String> {
     unsafe {
         let mut session = 0u32;
         ProcessIdToSessionId(GetCurrentProcessId(), &mut session);
-        let sid = shell_sid(session).ok_or_else(|| {
-            tf!("не удалось определить пользователя сеанса (нет запущенного explorer.exe, topbar или rust-explorer)", "could not determine the signed-in user (no running explorer.exe, topbar or rust-explorer)", ja: "サインイン中のユーザーを特定できませんでした (実行中の explorer.exe、topbar、rust-explorer がありません)", pt: "não foi possível identificar o usuário conectado (sem explorer.exe, topbar ou rust-explorer em execução)")
-        })?;
+        // The session table first: it is a query about the session, not an enumeration, so it answers even where
+        // walking the process list does not (a restricted token, an unreachable WMI, an unknown shell executable).
+        let sid = wts_user(session).and_then(|a| name_sid(&a)).or_else(|| shell_sid(session));
         let token = process_sid(GetCurrentProcessId()).ok_or_else(|| t!("не удалось прочитать SID учётной записи установщика", "could not read the installer's own account SID", ja: "インストーラーのアカウント SID を読み取れませんでした", pt: "não foi possível ler o SID da conta do instalador").to_string())?;
+        let Some(sid) = sid else {
+            // Neither way worked (an unusual session): fall back to the elevated account and say so, so uninstall still
+            // works and an install is not silently impossible.
+            log(&t!("пользователь сеанса не определён, настройки пользователя идут в текущую учётную запись", "signed-in user unknown, per-user settings go to the current account", ja: "サインイン中のユーザーを特定できないため、ユーザーごとの設定は現在のアカウントに書き込みます", pt: "usuário conectado desconhecido; as configurações por usuário vão para a conta atual").to_string());
+            return Ok(Session { other: false, sid: token });
+        };
         if matches!(sid.as_str(), "S-1-5-18" | "S-1-5-19" | "S-1-5-20") {
             return Err(t!("оболочка сеанса запущена не от обычного пользователя (SYSTEM или служба)", "the session shell does not run as a normal user (SYSTEM or a service)", ja: "セッションのシェルが通常のユーザーとして実行されていません (SYSTEM またはサービス)", pt: "o shell da sessão não roda como um usuário comum (SYSTEM ou um serviço)").into());
         }
