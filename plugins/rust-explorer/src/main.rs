@@ -107,8 +107,9 @@ fn work_strips() -> (i32, i32) {
 /// The dock style reserves nothing but floats over the bottom edge, so it gets a fixed gap while topbar runs.
 fn desk_top() -> i32 { work_strips().0 + ui::sc(8) }
 fn desk_bottom() -> i32 {
-    let reserved = work_strips().1;
+    let (top, reserved) = work_strips();
     if reserved > 0 { return reserved + ui::sc(4); }
+    if top > 0 { return 0; } // a top bar leaves the bottom edge available for desktop icons
     let bar_up = unsafe { !FindWindowW(w("topbar").as_ptr(), ptr::null()).is_null() };
     if bar_up && winrust_common::style::style() == winrust_common::style::Style::Dock { ui::sc(52) } else { ui::sc(8) }
 }
@@ -422,6 +423,25 @@ fn desktop_scale() -> u32 {
         .filter(|v| [75, 85, 100, 125].contains(v))
         .unwrap_or(if small_marker().exists() { 75 } else { 100 })
 }
+/// Fit one more usable row when the remaining desktop height is nearly a full icon cell.
+fn desktop_row_spacing(height: i32, desired: i32) -> i32 {
+    if height <= 0 || desired <= 0 { return desired; }
+    let rows = (height + desired - 1) / desired;
+    let fitted = height / rows;
+    if fitted * 5 >= desired * 4 { fitted } else { desired }
+}
+fn set_desktop_spacing(list: HWND) -> bool {
+    let scale = desktop_scale() as i32;
+    let (cx, desired_cy) = ((88 * scale + 50) / 100, (96 * scale + 50) / 100);
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(list, &mut client) };
+    let height = if client.bottom > 0 { client.bottom } else { (unsafe { GetSystemMetrics(SM_CYSCREEN) }) - desk_top() - desk_bottom() };
+    let cy = desktop_row_spacing(height, ui::sc(desired_cy));
+    let want = ((cy as isize) << 16) | ui::sc(cx) as isize;
+    if put(list, LVM_GETITEMSPACING, 0, 0) == want { return false; }
+    put(list, LVM_SETICONSPACING, 0, want);
+    true
+}
 thread_local! {
     static DESK_IL: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
     static DESK_FONT: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
@@ -455,8 +475,7 @@ unsafe fn apply_icon_size(list: HWND) {
     DESK_ICON_MAP.with_borrow_mut(|map| map.clear());
     put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, il as isize);
     if old != 0 { ImageList_Destroy(old as _); }
-    let (cx, cy) = ((88 * scale + 50) / 100, (96 * scale + 50) / 100);
-    put(list, LVM_SETICONSPACING, 0, ((ui::sc(cy) as isize) << 16) | ui::sc(cx) as isize);
+    set_desktop_spacing(list);
     let font = windows_sys::Win32::Graphics::Gdi::CreateFontW(-ui::sc((13 * scale + 50) / 100), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, w(ui::ui_face()).as_ptr());
     put(list, WM_SETFONT, font as usize, 1);
     let old_font = DESK_FONT.replace(font as isize);
@@ -1888,6 +1907,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             WM_TIMER if desk() && wp == 7 => {
                 let list = ST.with_borrow(|st| st.list);
                 place_desk_list(list); // catches a bar move even if the work-area broadcast was missed
+                if set_desktop_spacing(list) { reload(h); }
                 desk::check_live(list);
                 0
             }
@@ -1984,6 +2004,34 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_grid_reaches_the_bottom_row() {
+        let cy = super::desktop_row_spacing(1038, 82);
+        assert_eq!(cy, 79);
+        assert_eq!(1038 / cy, 13);
+        assert_eq!(super::desktop_row_spacing(120, 96), 96); // do not squeeze short views excessively
+    }
+
+    #[test]
+    fn desktop_icons_render_in_a_custom_size_list() {
+        unsafe {
+            let _ = super::InitCommonControlsEx(&super::INITCOMMONCONTROLSEX {
+                dwSize: std::mem::size_of::<super::INITCOMMONCONTROLSEX>() as u32,
+                dwICC: super::ICC_LISTVIEW_CLASSES,
+            });
+            let list = super::ImageList_Create(27, 27, super::ILC_COLOR32 | super::ILC_MASK, 1, 1);
+            assert_ne!(list, 0);
+            super::DESK_IL.set(list as isize);
+            let index = super::desktop_icon(0);
+            assert!(index >= 0);
+            let icon = super::ImageList_GetIcon(list, index, super::ILD_NORMAL as u32);
+            assert!(!icon.is_null());
+            super::DestroyIcon(icon);
+            super::ImageList_Destroy(list);
+            super::DESK_IL.set(0);
+        }
+    }
+
     #[test]
     fn desktop_follows_the_bars_current_edge() {
         use winrust_common::style::{Side, Style};
