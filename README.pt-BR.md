@@ -66,7 +66,7 @@ A engrenagem na ponta esquerda da barra abre as **Configurações da barra**; um
 
 O menu da engrenagem também define a posição da barra (embaixo, em cima, à esquerda ou à direita: uma barra lateral mostra só ícones e os painéis abrem ao lado dela) e o ocultar automático.
 
-Em **Configurações da barra → Tamanho dos ícones**, escolha 50, 60, 70, 80, 90 ou 100%. O padrão é 60%; a altura da barra e as áreas de clique não mudam.
+Em **Configurações da barra → Posição, tamanho, comportamento → Tamanho dos ícones**, escolha 50, 60, 70, 80, 90 ou 100%. O padrão é 60%; a altura da barra e as áreas de clique não mudam.
 
 Pressione **Ctrl+Alt+T** para colocar as janelas abertas lado a lado em qualquer tema, como a opção **Lado a lado** no menu da engrenagem.
 
