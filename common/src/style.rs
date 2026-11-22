@@ -142,6 +142,7 @@ pub fn set_align_left(on: bool) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     Bottom,
+    Top,
     Left,
     Right,
 }
@@ -149,6 +150,7 @@ pub enum Side {
 impl Side {
     pub fn parse(s: &str) -> Side {
         match s.trim().to_ascii_lowercase().as_str() {
+            "top" => Side::Top,
             "left" => Side::Left,
             "right" => Side::Right,
             _ => Side::Bottom,
@@ -157,6 +159,7 @@ impl Side {
     pub fn name(self) -> &'static str {
         match self {
             Side::Bottom => "bottom",
+            Side::Top => "top",
             Side::Left => "left",
             Side::Right => "right",
         }
@@ -175,10 +178,11 @@ fn side_code(s: Side) -> u8 {
         Side::Bottom => 0,
         Side::Left => 1,
         Side::Right => 2,
+        Side::Top => 3,
     }
 }
 
-/// The bar's edge (bottom unless %ProgramData%\WinRust\side.txt says left or right). Re-read once a second.
+/// The bar's edge (bottom unless %ProgramData%\WinRust\side.txt names another edge). Re-read once a second.
 pub fn side() -> Side {
     if now_ms().saturating_sub(SIDE_AT.load(Relaxed)) > 1000 {
         let s = side_file().and_then(|f| std::fs::read_to_string(f).ok()).map_or(Side::Bottom, |s| Side::parse(&s));
@@ -188,6 +192,7 @@ pub fn side() -> Side {
     match SIDE.load(Relaxed) {
         1 => Side::Left,
         2 => Side::Right,
+        3 => Side::Top,
         _ => Side::Bottom,
     }
 }
@@ -597,8 +602,10 @@ mod tests {
         assert_eq!(Side::parse(" Left
 "), Side::Left);
         assert_eq!(Side::parse("right"), Side::Right);
+        assert_eq!(Side::parse("TOP"), Side::Top);
+        assert_eq!(Side::Top.name(), "top");
         assert_eq!(Side::parse(""), Side::Bottom);
-        assert_eq!(Side::parse("top"), Side::Bottom);
+        assert_eq!(Side::parse("unknown"), Side::Bottom);
     }
 }
 

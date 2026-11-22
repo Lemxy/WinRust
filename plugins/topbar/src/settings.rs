@@ -12,7 +12,7 @@ pub(crate) unsafe fn style_menu() {
         fly::MItem::new(t!("Язык", "Language", ja: "言語", pt: "Idioma")).hint(i18n::lang().name()),
         fly::MItem::head(t!("Панель", "Bar", ja: "バー", pt: "Barra")).sep(),
         fly::MItem::new(t!("Положение, размер, поведение", "Position, size, behavior", ja: "位置、サイズ、動作", pt: "Posição, tamanho, comportamento")).hint("›"),
-        fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows", ja: "ウィンドウを並べて表示", pt: "Lado a lado")),
+        fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows", ja: "ウィンドウを並べて表示", pt: "Lado a lado")).hint("Ctrl+Alt+T"),
         fly::MItem::new(t!("Сбросить всё по умолчанию…", "Reset everything to defaults…", ja: "すべて初期設定に戻す…", pt: "Restaurar tudo ao padrão…")).danger().sep(),
     ];
     gear_page("\u{E713}", t!("Настройки панели", "Bar settings", ja: "バーの設定", pt: "Configurações da barra"), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs", ja: "バーと WinRust プログラムの外観", pt: "Aparência da barra e dos programas da WinRust"), items, |i| match i {
@@ -92,11 +92,12 @@ pub(crate) unsafe fn theme_page() {
 
 pub(crate) unsafe fn bar_page() {
     use i18n::style::{self as st, Side};
-    let sides = [Side::Bottom, Side::Left, Side::Right];
+    let sides = [Side::Bottom, Side::Top, Side::Left, Side::Right];
     let items = vec![
         back(),
         fly::MItem::head(t!("Положение", "Position", ja: "位置", pt: "Posição")).sep(),
         fly::MItem::new(t!("Снизу", "Bottom", ja: "下", pt: "Embaixo")).on(st::side() == Side::Bottom),
+        fly::MItem::new(t!("Сверху", "Top", ja: "上", pt: "Em cima")).on(st::side() == Side::Top),
         fly::MItem::new(t!("Слева", "Left", ja: "左", pt: "Esquerda")).on(st::side() == Side::Left),
         fly::MItem::new(t!("Справа", "Right", ja: "右", pt: "Direita")).on(st::side() == Side::Right),
         fly::MItem::head(t!("Размер", "Size", ja: "サイズ", pt: "Tamanho")),
@@ -110,14 +111,14 @@ pub(crate) unsafe fn bar_page() {
     ];
     gear_page("\u{E8A1}", t!("Панель", "Bar", ja: "バー", pt: "Barra"), t!("Где она, какого размера и как себя ведёт", "Where it sits, its size and behavior", ja: "配置場所、サイズ、動作", pt: "Onde fica, seu tamanho e comportamento"), items, move |i| {
         match i {
-            2..=4 => st::set_side(sides[i - 2]),
-            6..=8 => st::set_bar_size((i - 6) as u8),
-            10 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
-            11 => st::set_align_left(!st::align_left()),
-            12 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            2..=5 => st::set_side(sides[i - 2]),
+            7..=9 => st::set_bar_size((i - 7) as u8),
+            11 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
+            12 => st::set_align_left(!st::align_left()),
+            13 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
             _ => return style_menu(),
         }
-        relook(i != 12);
+        relook(i != 13);
         bar_page();
     });
 }
