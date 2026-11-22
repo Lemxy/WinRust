@@ -68,6 +68,8 @@ The gear menu also sets the bar position (bottom, top, left or right: a side bar
 
 In **Bar settings → Position, size, behavior → Icon size**, choose 50, 60, 70, 80, 90 or 100%. The default is 60%; changing it leaves the bar size and button click targets the same.
 
+On the WinRust desktop, right-click empty space and choose **Desktop size (icons and text)** for 75, 85, 100 or 125%. The desktop icon area follows the bar when it moves to the top or bottom.
+
 Press **Ctrl+Alt+T** to tile the open windows from any theme, the same action as **Tile the windows** in the gear menu.
 
 The choice is stored in `%ProgramData%\WinRust\style.txt`.

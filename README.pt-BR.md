@@ -68,6 +68,8 @@ O menu da engrenagem também define a posição da barra (embaixo, em cima, à e
 
 Em **Configurações da barra → Posição, tamanho, comportamento → Tamanho dos ícones**, escolha 50, 60, 70, 80, 90 ou 100%. O padrão é 60%; a altura da barra e as áreas de clique não mudam.
 
+Na área de trabalho do WinRust, clique com o botão direito em um espaço vazio e escolha **Desktop size (icons and text)** para 75, 85, 100 ou 125%. A área dos ícones acompanha a barra quando ela se move para cima ou para baixo.
+
 Pressione **Ctrl+Alt+T** para colocar as janelas abertas lado a lado em qualquer tema, como a opção **Lado a lado** no menu da engrenagem.
 
 A escolha fica em `%ProgramData%\WinRust\style.txt`.

@@ -37,7 +37,12 @@ fn virt() -> (i32, i32, i32, i32) {
 fn place_desk_list(list: HWND) {
     let (vx, vy, ..) = virt();
     let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    unsafe { MoveWindow(list, -vx, -vy + desk_top(), sw, (sh - desk_top() - desk_bottom()).max(0), 1) };
+    let (top, bottom) = (desk_top(), desk_bottom());
+    let (x, y, h) = (-vx, -vy + top, (sh - top - bottom).max(0));
+    let mut current: RECT = unsafe { std::mem::zeroed() };
+    let unchanged = unsafe { GetWindowRect(list, &mut current) != 0 }
+        && (current.left, current.top, current.right, current.bottom) == (0, top, sw, top + h);
+    if !unchanged { unsafe { MoveWindow(list, x, y, sw, h, 1) }; }
 }
 /// Renders the wallpaper for the current monitor layout (at start and when monitors change), freeing the old one.
 fn reload_wall() {
@@ -72,11 +77,31 @@ fn saved_place() -> Option<(bool, RECT)> {
     let (max, r) = parse_place(&fs::read_to_string(place_file()).ok()?)?;
     (!unsafe { MonitorFromRect(&r, MONITOR_DEFAULTTONULL) }.is_null()).then_some((max, r))
 }
-/// What the bar reserves at the top and bottom of the screen: the work area topbar sets when there is no explorer.
+/// The bar's actual edge wins over a stale work area left by its previous position.
+fn bar_strips(side: winrust_common::style::Side, theme: winrust_common::style::Style, autohide: bool, b: RECT, sh: i32) -> (i32, i32) {
+    use winrust_common::style::{Side, Style};
+    if autohide || (theme == Style::Dock && side == Side::Bottom) { return (0, 0); }
+    if side == Side::Top || (side == Side::Bottom && theme == Style::Tiling) {
+        (b.bottom.max(0), 0)
+    } else if side == Side::Bottom {
+        (0, (sh - b.top).max(0))
+    } else {
+        (0, 0)
+    }
+}
+
+/// What the bar reserves at the top and bottom of the screen.
 fn work_strips() -> (i32, i32) {
     let mut r: RECT = unsafe { std::mem::zeroed() };
     if unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut _ as *mut _, 0) } == 0 { return (0, 0); }
-    (r.top.max(0), (unsafe { GetSystemMetrics(SM_CYSCREEN) } - r.bottom).max(0))
+    let sh = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    let fallback = (r.top.max(0), (sh - r.bottom).max(0));
+    let bar = unsafe { FindWindowW(w("topbar").as_ptr(), ptr::null()) };
+    if bar.is_null() { return fallback; }
+    use winrust_common::style;
+    let mut b: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetWindowRect(bar, &mut b) } == 0 { return fallback; }
+    bar_strips(style::side(), style::style(), style::autohide(), b, sh)
 }
 /// Margins of the desktop's icon list, from the bar's real size: its reserved strip (any height, top or bottom).
 /// The dock style reserves nothing but floats over the bottom edge, so it gets a fixed gap while topbar runs.
@@ -391,15 +416,51 @@ fn item_menu(h: HWND, dir: &Path, paths: &[PathBuf]) {
 /// "Hide desktop icons" is a marker file, so it survives restarts.
 fn icons_marker() -> PathBuf { PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join(r"WinRust\desktop-icons-hidden.txt") }
 fn small_marker() -> PathBuf { icons_marker().with_file_name("small-icons") }
-/// Desktop icon size: the system's large (32 px, default) or small (16 px) icons with a tighter grid. Same icon indexes in both.
+fn desktop_scale_file() -> PathBuf { icons_marker().with_file_name("desktop-scale.txt") }
+fn desktop_scale() -> u32 {
+    fs::read_to_string(desktop_scale_file()).ok().and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|v| [75, 85, 100, 125].contains(v))
+        .unwrap_or(if small_marker().exists() { 75 } else { 100 })
+}
+thread_local! {
+    static DESK_IL: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    static DESK_FONT: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    static DESK_ICON_MAP: std::cell::RefCell<std::collections::HashMap<i32, i32>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+/// Resize an icon from the shell's system list into the desktop's chosen image list.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn desktop_icon(system_index: i32) -> i32 {
+    if system_index < 0 { return I_IMAGENONE; }
+    if let Some(index) = DESK_ICON_MAP.with_borrow(|map| map.get(&system_index).copied()) { return index; }
+    let mut fi: SHFILEINFOW = std::mem::zeroed();
+    let source = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_LARGEICON);
+    let icon = ImageList_GetIcon(source as _, system_index, ILD_NORMAL as u32);
+    if icon.is_null() { return I_IMAGENONE; }
+    let px = ui::sc((32 * desktop_scale() as i32 + 50) / 100).max(1);
+    let resized = CopyImage(icon as _, IMAGE_ICON, px, px, 0) as HICON;
+    let index = ImageList_ReplaceIcon(DESK_IL.get() as _, -1, if resized.is_null() { icon } else { resized });
+    if !resized.is_null() { DestroyIcon(resized); }
+    DestroyIcon(icon);
+    if index >= 0 { DESK_ICON_MAP.with_borrow_mut(|map| { map.insert(system_index, index); }); }
+    index
+}
+/// Change desktop icons, labels, and grid spacing together. The regular file manager keeps its own scale.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn apply_icon_size(list: HWND) {
-    let small = small_marker().exists();
-    let mut fi: SHFILEINFOW = std::mem::zeroed();
-    let il = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | if small { SHGFI_SMALLICON } else { SHGFI_LARGEICON });
+    let scale = desktop_scale() as i32;
+    let px = ui::sc((32 * scale + 50) / 100).max(1);
+    let il = ImageList_Create(px, px, ILC_COLOR32 | ILC_MASK, 64, 64);
+    if il == 0 { return; }
+    let old = DESK_IL.replace(il as isize);
+    DESK_ICON_MAP.with_borrow_mut(|map| map.clear());
     put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, il as isize);
-    let (cx, cy) = if small { (76, 64) } else { (88, 96) };
+    if old != 0 { ImageList_Destroy(old as _); }
+    let (cx, cy) = ((88 * scale + 50) / 100, (96 * scale + 50) / 100);
     put(list, LVM_SETICONSPACING, 0, ((ui::sc(cy) as isize) << 16) | ui::sc(cx) as isize);
+    let font = windows_sys::Win32::Graphics::Gdi::CreateFontW(-ui::sc((13 * scale + 50) / 100), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, w(ui::ui_face()).as_ptr());
+    put(list, WM_SETFONT, font as usize, 1);
+    let old_font = DESK_FONT.replace(font as isize);
+    if old_font != 0 { windows_sys::Win32::Graphics::Gdi::DeleteObject(old_font as _); }
 }
 fn icons_hidden() -> bool { icons_marker().exists() }
 fn set_icons_hidden(hide: bool) {
@@ -418,7 +479,14 @@ unsafe fn bg_menu(h: HWND) {
     if disk.is_some() { AppendMenuW(m, MF_STRING, 6, w("Disk usage (WinRust Disk)").as_ptr()); }
     if desk() { for (id, l) in [(8usize, "Sort icons by name"), (9, "Sort icons by date"), (10, "Sort icons by size"), (11, "Arrange icons")] { AppendMenuW(m, MF_STRING, id, w(l).as_ptr()); } }
     if !desk() { AppendMenuW(m, MF_STRING, 13, w(if group_on() { "No grouping" } else { "Group by date" }).as_ptr()); }
-    if desk() { AppendMenuW(m, MF_STRING, 12, w(if small_marker().exists() { "Large icons" } else { "Small icons" }).as_ptr()); }
+    if desk() {
+        let sizes = CreatePopupMenu();
+        for (id, size) in [(20usize, 75), (21, 85), (22, 100), (23, 125)] {
+            let label = format!("{size}%{}", if desktop_scale() == size { "  ✓" } else { "" });
+            AppendMenuW(sizes, MF_STRING, id, w(&label).as_ptr());
+        }
+        AppendMenuW(m, MF_POPUP, sizes as usize, w("Desktop size (icons and text)").as_ptr());
+    }
     if desk() { AppendMenuW(m, MF_STRING, 7, w(if icons_hidden() { "Show desktop icons" } else { "Hide desktop icons" }).as_ptr()); }
     let mut pt: POINT = std::mem::zeroed();
     GetCursorPos(&mut pt);
@@ -431,11 +499,12 @@ unsafe fn bg_menu(h: HWND) {
             let k = group_marker();
             if group_on() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
         }
-        12 => { // the grid changes with the size: icons are laid out again
-            let k = small_marker();
-            if k.exists() { let _ = fs::remove_file(&k); } else { let _ = fs::write(&k, "1"); }
+        20..=23 => { // keep the saved icon positions, mapped to the new grid
+            let size = [75, 85, 100, 125][id as usize - 20];
+            let k = desktop_scale_file();
+            if let Some(parent) = k.parent() { let _ = fs::create_dir_all(parent); }
+            let _ = fs::write(k, size.to_string());
             apply_icon_size(ST.with_borrow(|st| st.list));
-            let _ = fs::remove_file(desk::pos_file());
         }
         8..=11 => { // the saved cells are dropped: reload lays every icon out again, down the columns in sort order
             if id != 11 { SORT_COL.store([0, 1, 3][id as usize - 8], Relaxed); SORT_ASC.store(true, Relaxed); }
@@ -1505,9 +1574,6 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 let il = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_SMALLICON);
                 put(list, LVM_SETIMAGELIST, LVSIL_SMALL as usize, il as isize);
                 if desk() {
-                    // system large icons; indexes are shared with the small list, so icon_of() works unchanged
-                    let big = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_LARGEICON);
-                    put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, big as isize);
                     apply_icon_size(list);
                     // transparent background (the desktop paints it) and shadowed labels, readable on light wallpapers too
                     let ex = LVS_EX_TRANSPARENTBKGND | 0x0080_0000; // LVS_EX_TRANSPARENTSHADOWTEXT
@@ -1516,7 +1582,6 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     put(list, LVM_SETTEXTCOLOR, 0, 0x00FF_FFFF);
                     reload_wall();
                     // grey (not ClearType) smoothing: on a live wallpaper the labels sit on a colour key, where ClearType leaves coloured fringes
-                    put(list, WM_SETFONT, windows_sys::Win32::Graphics::Gdi::CreateFontW(-ui::sc(13), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, w(ui::ui_face()).as_ptr()) as usize, 1);
                     // like explorer's desktop: wallpaper apps look for a SHELLDLL_DefView under Progman
                     CreateWindowExW(0, w("SHELLDLL_DefView").as_ptr(), ptr::null(), WS_CHILD, 0, 0, 0, 0, h, 0 as _, inst, ptr::null());
                     SetTimer(h, 7, 2000, None); // live wallpaper on / off (desk::check_live)
@@ -1659,7 +1724,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 it.iImage = if r.thumb >= 0 { r.thumb } else { I_IMAGENONE };
                             } else if it.mask & LVIF_IMAGE != 0 {
                                 if r.icon < 0 { r.icon = icon_of(&dir.join(&r.name), r.dir); }
-                                it.iImage = r.icon;
+                                it.iImage = if desk() { desktop_icon(r.icon) } else { r.icon };
                             }
                         });
                     }
@@ -1820,7 +1885,12 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             // icons hidden: the list is not shown, so the click lands on the desktop itself; the menu must still open
             WM_CONTEXTMENU if desk() && icons_hidden() => { bg_menu(h); 0 }
             desk::SPAWN_WORKERW if desk() => { desk::spawn_workerw(h); 0 }
-            WM_TIMER if desk() && wp == 7 => { desk::check_live(ST.with_borrow(|st| st.list)); 0 }
+            WM_TIMER if desk() && wp == 7 => {
+                let list = ST.with_borrow(|st| st.list);
+                place_desk_list(list); // catches a bar move even if the work-area broadcast was missed
+                desk::check_live(list);
+                0
+            }
             WM_DESTROY => { if !desk() { save_place(h); } shellwin::revoke(); PostQuitMessage(0); 0 }
             _ => DefWindowProcW(h, m, wp, lp),
         }
@@ -1914,6 +1984,17 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_follows_the_bars_current_edge() {
+        use winrust_common::style::{Side, Style};
+        let top = super::RECT { left: 0, top: 0, right: 1920, bottom: 34 };
+        let bottom = super::RECT { left: 0, top: 1046, right: 1920, bottom: 1080 };
+        assert_eq!(super::bar_strips(Side::Top, Style::Normal, false, top, 1080), (34, 0));
+        assert_eq!(super::bar_strips(Side::Bottom, Style::Normal, false, bottom, 1080), (0, 34));
+        assert_eq!(super::bar_strips(Side::Bottom, Style::Tiling, false, top, 1080), (34, 0));
+        assert_eq!(super::bar_strips(Side::Top, Style::Normal, true, top, 1080), (0, 0));
+    }
+
     #[test]
     fn window_place_parses_and_rejects_junk() {
         let (max, r) = super::parse_place("max 10 20 1010 680").unwrap();
