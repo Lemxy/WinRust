@@ -4,7 +4,7 @@
 
 **Rust で書かれた Windows シェル: 標準のものより高速で軽量です。** Windows の一部を置き換える小さなネイティブ プログラム群 (.NET も Electron も不要): タスクバー、エクスプローラー、ファイル検索、タスク マネージャー、さらにディスク クリーナー、ディスク マップ、フォト ビューアー。インストーラー 1 つで導入でき、ボタン 1 つですべて元に戻せます。
 
-[English](README.md) | [Русский](README.ru.md) | 日本語 | [Português (Brasil)](README.pt-BR.md)
+[English](README.md) | [Русский](README.ru.md) | 日本語 | [Português (Brasil)](README.pt-BR.md) | [简体中文](README.zh.md)
 
 <p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
 
@@ -24,7 +24,7 @@ UAC が**別の管理者**のパスワードを求めた場合でも、ユーザ
 
 **手動更新:** リリース ページから新しい `WinRust.exe` をダウンロードし、管理者として実行して、更新またはインストールするコンポーネントを選びます。既存の `rust-explorer` は、更新時には既定で選択されたままになります。設定と、保存された Windows の元の値は保持されます。
 
-インストーラーは英語で表示されます。右上の言語ボタン (またはバーの歯車 → **バーの設定 → 言語**) で、すべての WinRust プログラムの表示を選んだ言語 (English、Русский、日本語、Português (Brasil)) に切り替えられます。選択内容は `%ProgramData%\WinRust\lang.txt` (`en`、`ru`、`ja`、`pt`) に保存されます。
+インストーラーは英語で表示されます。右上の言語ドロップダウン (English、Русский、日本語、Português (Brasil)、简体中文)、バーの歯車 (**バーの設定 → 言語**)、rust-settings の **個人用設定** ページ (**表示言語**) のどれからでも切り替えられます。選択は `%ProgramData%\WinRust\lang.txt` (`en`、`ru`、`ja`、`pt`、`zh`) に保存され、切り替えたプログラムはすぐ描き直され、ほかのプログラムは起動時に読み込みます。変更後は再起動 (またはサインアウト) してください。
 
 ## 削除
 
@@ -114,7 +114,7 @@ src/            インストーラー (plugin-launcher.exe)
   main.rs         プラグイン テーブル PLUGINS: 名前、テキスト、インストール/アンインストールの組、アイコン
   install/        各プラグインが何を変更し、どう元に戻すか (プラグインごとに 1 ファイル)
   cli.rs, ui.rs   コマンド ラインとウィンドウ。どちらも同じインストール関数を呼びます
-common/         winrust-common: 言語切り替え (t!/tf!)、UI スタイルとパレット、reg.exe 出力のパーサー、NTFS MFT リーダー
+common/         winrust-common: 言語切り替え (t!/tf!: 英語、ロシア語、日本語、ブラジル ポルトガル語、簡体字中国語)、UI スタイルとパレット、reg.exe 出力のパーサー、NTFS MFT リーダー
 plugins/        各プラグインのソース (それぞれ独立したクレート)
 ReShell/        reshell (デスクトップのホットキー、topbar のセーフティ ネット)。topbar に同梱
 payload.txt     インストーラーに埋め込まれる exe と、ビルドがそれらを置く場所
@@ -124,7 +124,7 @@ scripts/        ビルド、更新、リリース
 すべて 1 つの cargo ワークスペースです (`Cargo.lock` は 1 つ、すべての exe は `target\release`)。`plugins/rust-search` と `plugins/chrome-rs` は `panic = "unwind"` が必要なため別々にビルドします (`Cargo.toml` を参照)。
 
 ### 言語の追加
-`t!("русский", "english", ja: "日本語", pt: "português")` と `tf!(…)` が各テキストを現在の言語で返します (`ja:` と `pt:` を省略すると日本語とポルトガル語では英語が表示されます)。言語は `common/src/lib.rs` の `Lang` です。
+`t!("русский", "english", ja: "日本語", pt: "português", zh: "中文")` と `tf!(…)` が各テキストを現在の言語で返します (`ja:`/`pt:`/`zh:` を省略するとそれらの言語では英語が表示されます)。言語は `common/src/lib.rs` の `Lang` です。
 
 ### ビルド
 Windows x64、Rust stable (1.85+) の MSVC ツールチェーンが必要です。

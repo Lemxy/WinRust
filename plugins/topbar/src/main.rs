@@ -436,8 +436,8 @@ unsafe fn tip_text(h: i32) -> String {
         SEARCH => "Search".into(),
         0 => "Start".into(),
         TAPP => "Hidden icons".into(),
-        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo").into(),
-        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho").into(),
+        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式").into(),
+        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho", zh: "显示桌面").into(),
         CLOCK => {
             let mut t: SYSTEMTIME = zeroed();
             GetLocalTime(&mut t);
@@ -445,12 +445,12 @@ unsafe fn tip_text(h: i32) -> String {
             let n = GetDateFormatW(0x0400, 2, &t, null(), b.as_mut_ptr(), 80).max(1) as usize - 1; // DATE_LONGDATE
             String::from_utf16_lossy(&b[..n])
         }
-        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", layout_names(layouts().1).0),
+        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", zh: "输入语言：{}", layout_names(layouts().1).0),
         WIFI_I => match net() {
-            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%"),
-            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet").into(),
-            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo").into(),
-            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado").into(),
+            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%", zh: "Wi‑Fi · 信号 {q}%"),
+            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet", zh: "Wi‑Fi 已连接，无 Internet").into(),
+            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo", zh: "有线网络").into(),
+            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接").into(),
         },
         VOL_I => vol_tip(),
         BAT_I => match BAT.get() {
@@ -1964,13 +1964,14 @@ fn wstr_of(w: &[u16]) -> String {
     String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())])
 }
 
-/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows".
+/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows"; "3 个窗口" (no plural in Chinese).
 fn windows_ru(n: usize) -> String {
     use i18n::Lang;
     let w = match lang!() {
         Lang::En => if n == 1 { "window" } else { "windows" },
         Lang::Pt => if n == 1 { "janela" } else { "janelas" },
         Lang::Ja => "ウィンドウ",
+        Lang::Zh => "个窗口",
         Lang::Ru => match (n % 10, n % 100) {
             (1, x) if x != 11 => "окно",
             (2..=4, x) if !(12..=14).contains(&x) => "окна",
@@ -2001,9 +2002,9 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
     let stem = std::path::Path::new(&launch).file_stem().unwrap_or_default().to_string_lossy().to_string();
     let name: String = stem.chars().take(1).flat_map(char::to_uppercase).chain(stem.chars().skip(1)).collect();
     let sub = match (wins.len(), pin.is_some()) {
-        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução").to_string(),
-        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", windows_ru(n)),
-        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", windows_ru(n)),
+        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução", zh: "已固定 · 未运行").to_string(),
+        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", zh: "已固定 · {}", windows_ru(n)),
+        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", zh: "运行中 · {}", windows_ru(n)),
     };
     let icon = if picon.is_null() { bicon } else { picon };
     let mut items: Vec<(fly::MItem, A)> = Vec::new();
@@ -2015,30 +2016,30 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
         }
     }
     if !launch.is_empty() {
-        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela") });
+        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela", zh: "新建窗口") });
         items.push((if items.is_empty() { it } else { it.sep() }, A::Open));
     }
     if pin.is_some() {
-        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra")), A::Pin));
+        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra", zh: "从任务栏取消固定")), A::Pin));
     } else if !exe.is_empty() {
-        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra")), A::Pin));
+        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra", zh: "固定到任务栏")), A::Pin));
     }
     if let Some(p) = pin.filter(|_| !lnk.is_empty()) {
         let n = PINS.with_borrow(|p| p.len());
         if p > 0 {
-            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda") }), A::Left));
+            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima", zh: "上移") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda", zh: "左移") }), A::Left));
         }
         if p + 1 < n {
-            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita") }), A::Right));
+            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo", zh: "下移") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita", zh: "右移") }), A::Right));
         }
     }
     if !launch.is_empty() {
         let s = fly::start_pinned(&launch);
-        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar") }), A::Start));
+        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单") }), A::Start));
     }
     if !wins.is_empty() {
-        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela") }).hint("Alt+F4").sep(), A::Close));
-        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo")).danger(), A::Kill));
+        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas", zh: "关闭所有窗口") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela", zh: "关闭窗口") }).hint("Alt+F4").sep(), A::Close));
+        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo", zh: "结束进程")).danger(), A::Kill));
     }
     let acts: Vec<A> = items.iter().map(|x| x.1).collect();
     let items = items.into_iter().map(|x| x.0).collect();
@@ -2296,7 +2297,7 @@ unsafe fn start_menu() {
         items.push(if i == tools.len() { it.sep() } else { it });
         targets.push(*to);
     }
-    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar").to_string(), String::new());
+    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar", zh: "启动").to_string(), String::new());
     fly::menu(tip_cx(&bar_layout(bar), 0), Some(head), items, move |i| {
         let Some(&to) = targets.get(i) else { return };
         let quiet = |c: &mut Command| { let _ = c.creation_flags(NO_WINDOW).spawn(); };

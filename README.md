@@ -4,7 +4,7 @@
 
 **A Windows shell written in Rust: faster and lighter than the stock one.** Small native programs (no .NET, no Electron) that replace parts of Windows: the taskbar, File Explorer, file search, Task Manager, plus a disk cleaner, a disk map and a photo viewer. One installer puts them in, one button takes them all out.
 
-English | [Русский](README.ru.md) | [日本語](README.ja.md) | [Português (Brasil)](README.pt-BR.md)
+English | [Русский](README.ru.md) | [日本語](README.ja.md) | [Português (Brasil)](README.pt-BR.md) | [简体中文](README.zh.md)
 
 <p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
 
@@ -24,7 +24,7 @@ If UAC asks for **another administrator's** password, the per-user settings (sta
 
 **Manual update:** download the new `WinRust.exe` from the releases page, run it as administrator and select the components you want to update or install. An existing `rust-explorer` stays selected by default for updates. Your settings and the saved original Windows values stay.
 
-The installer is in English. The language button in its corner (or the gear on the bar → **Bar settings → Language**) switches every WinRust program to the chosen language: English, Русский, 日本語 or Português (Brasil). The choice is stored in `%ProgramData%\WinRust\lang.txt` (`en`, `ru`, `ja`, `pt`).
+The installer is in English. Its corner holds a language drop-down — English, Русский, 日本語, Português (Brasil), 简体中文; the same list sits behind the gear on the bar (**Bar settings → Language**), and rust-settings has it on its Personalization page (**Interface language**). The choice is stored in `%ProgramData%\WinRust\lang.txt` (`en`, `ru`, `ja`, `pt`, `zh`); the program you switch in repaints at once, the other programs read it when they start, so restart them (or sign out) after a change.
 
 ## Remove
 
@@ -122,6 +122,9 @@ payload/        those exes once built (not in git)
 scripts/        build, update, release
 ```
 Everything is one cargo workspace (one `Cargo.lock`, every exe in `target\release`). `plugins/rust-search` and `plugins/chrome-rs` build separately because they need `panic = "unwind"` (see `Cargo.toml`).
+
+### Adding a language
+`t!("русский", "english", ja: "日本語", pt: "português", zh: "中文")` and `tf!(…)` return each text in the current language (without `ja:`/`pt:`/`zh:` those languages show the English one). The languages are the `Lang` enum in `common/src/lib.rs`.
 
 ### Build
 Needs Windows x64, Rust stable (1.85+) with the MSVC toolchain.

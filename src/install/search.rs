@@ -54,7 +54,7 @@ pub(crate) fn install() -> Result<(), String> {
             j.set_svc("WSearch", "disabled")?;
             let _ = run("sc.exe", &["stop", "WSearch"]);
         } else {
-            WARN.lock().unwrap().push(t!("службы Windows Search (WSearch) нет в этой системе: шаг пропущен", "the Windows Search service (WSearch) does not exist on this system: step skipped", ja: "Windows Search サービス (WSearch) がこのシステムに存在しません: 手順をスキップしました", pt: "o serviço Pesquisa do Windows (WSearch) não existe neste sistema: etapa ignorada").into());
+            WARN.lock().unwrap().push(t!("службы Windows Search (WSearch) нет в этой системе: шаг пропущен", "the Windows Search service (WSearch) does not exist on this system: step skipped", ja: "Windows Search サービス (WSearch) がこのシステムに存在しません: 手順をスキップしました", pt: "o serviço Pesquisa do Windows (WSearch) não existe neste sistema: etapa ignorada", zh: "此系统上不存在 Windows Search 服务（WSearch）：已跳过该步骤").into());
         }
         // SearchHost.exe (the Start/Win+S search UI) is not a service, so it gets the same IFEO trick as taskmgr: Windows runs `cmd /c exit` instead.
         j.set_reg(SH_KEY, "Debugger", "REG_SZ", "cmd.exe /c exit")?;

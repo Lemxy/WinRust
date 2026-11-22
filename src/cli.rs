@@ -25,9 +25,33 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         let _ = writeln!(out, "{s}");
     };
     let yes = args.iter().any(|a| a == "--yes");
-    let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--yes").collect();
+    // `--lang zh` (or `--lang=zh`) also switches the interface language, so one elevated command installs and enables
+    // it: the components restarted below read lang.txt and start in it.
+    let lang_arg = args.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--lang=") {
+        Some(v) => Some(v.to_string()),
+        None if a == "--lang" => args.get(i + 1).cloned(),
+        None => None,
+    });
+    let mut words: Vec<&str> = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+        } else if a == "--yes" || a.starts_with("--lang=") {
+            continue;
+        } else if a == "--lang" {
+            skip = true;
+        } else {
+            words.push(a);
+        }
+    }
     let find = |n: &str| PLUGINS.iter().position(|p| p.name == n);
-    let usage = "usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin>|all | uninstall <plugin> | rollback --yes";
+    let usage = "usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin>|all | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh]";
+    if let Some(code) = &lang_arg {
+        let l = i18n::Lang::parse(code);
+        i18n::set_lang(l);
+        say(&tf!("Язык: {}", "Language: {}", ja: "言語: {}", pt: "Idioma: {}", zh: "语言：{}", l.name()));
+    }
     let result = match words.as_slice() {
         ["list"] => {
             for p in PLUGINS {
