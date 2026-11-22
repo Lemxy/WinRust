@@ -65,7 +65,7 @@ struct Conn {
 
 fn auth_name(a: i32) -> &'static str {
     match a {
-        1 => "Open",
+        1 => t!("Открытая", "Open", ja: "オープン", pt: "Aberta", zh: "开放"),
         2 => "WEP",
         3 => "WPA",
         4 => "WPA‑Personal",
@@ -73,7 +73,7 @@ fn auth_name(a: i32) -> &'static str {
         7 => "WPA2‑Personal",
         8 => "WPA3",
         9 => "WPA3‑Personal",
-        _ => "Secured",
+        _ => t!("Защищено", "Secured", ja: "保護あり", pt: "Protegida", zh: "已加密"),
     }
 }
 
@@ -119,7 +119,44 @@ thread_local! {
     static GHOST: Cell<(HWND, u64, (i32, i32))> = const { Cell::new((null_mut(), 0, (0, 0))) }; // the closing flyout: window, start, position
 }
 
-const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+/// January..December in the UI language; Japanese and Chinese name the month by its number (see `month_title`).
+fn month_name(m: i32) -> &'static str {
+    [
+        t!("Январь", "January", ja: "1月", pt: "Janeiro", zh: "1月"),
+        t!("Февраль", "February", ja: "2月", pt: "Fevereiro", zh: "2月"),
+        t!("Март", "March", ja: "3月", pt: "Março", zh: "3月"),
+        t!("Апрель", "April", ja: "4月", pt: "Abril", zh: "4月"),
+        t!("Май", "May", ja: "5月", pt: "Maio", zh: "5月"),
+        t!("Июнь", "June", ja: "6月", pt: "Junho", zh: "6月"),
+        t!("Июль", "July", ja: "7月", pt: "Julho", zh: "7月"),
+        t!("Август", "August", ja: "8月", pt: "Agosto", zh: "8月"),
+        t!("Сентябрь", "September", ja: "9月", pt: "Setembro", zh: "9月"),
+        t!("Октябрь", "October", ja: "10月", pt: "Outubro", zh: "10月"),
+        t!("Ноябрь", "November", ja: "11月", pt: "Novembro", zh: "11月"),
+        t!("Декабрь", "December", ja: "12月", pt: "Dezembro", zh: "12月"),
+    ][(m.clamp(1, 12) - 1) as usize]
+}
+
+/// The calendar header: "Сентябрь 2026", "2026年9月".
+fn month_title(y: i32, m: i32) -> String {
+    match winrust_common::lang!() {
+        winrust_common::Lang::Ja | winrust_common::Lang::Zh => format!("{y}年{m}月"),
+        _ => format!("{} {y}", month_name(m)),
+    }
+}
+
+/// Weekday initials of the calendar's first row, Monday first.
+fn weekday_initials() -> [&'static str; 7] {
+    [
+        t!("Пн", "Mo", ja: "月", pt: "seg", zh: "一"),
+        t!("Вт", "Tu", ja: "火", pt: "ter", zh: "二"),
+        t!("Ср", "We", ja: "水", pt: "qua", zh: "三"),
+        t!("Чт", "Th", ja: "木", pt: "qui", zh: "四"),
+        t!("Пт", "Fr", ja: "金", pt: "sex", zh: "五"),
+        t!("Сб", "Sa", ja: "土", pt: "sáb", zh: "六"),
+        t!("Вс", "Su", ja: "日", pt: "dom", zh: "日"),
+    ]
+}
 
 // ---------- data ----------
 
@@ -255,7 +292,7 @@ unsafe fn on_files(hw: HWND, hd: HDROP) {
     }
     DragFinish(hd);
     note(&match added.len() {
-        0 => "Already in Start".to_string(),
+        0 => t!("Уже в Пуске", "Already in Start", ja: "すでにスタートにあります", pt: "Já está no Iniciar", zh: "已在开始菜单中").to_string(),
         1 => format!("Added to Start: {}", added[0]),
         n => format!("Added {n} items to Start"),
     });
@@ -991,7 +1028,14 @@ unsafe fn app_menu(hw: HWND, i: usize, x: i32, y: i32) {
     let m = CreatePopupMenu();
     let path = wstr(&lnk);
     let file = !path.starts_with("shell:"); // Store apps have no file to run elevated or to show in a folder
-    for (id, label) in [(1, "Open"), (2, "Run as administrator"), (3, "Open file location"), (4, if start_pinned(&path) { "Remove from Start" } else { "Add to Start" })] {
+    let pin_label = if start_pinned(&path) { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单") };
+    let menu = [
+        (1, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")),
+        (2, t!("Запуск от имени администратора", "Run as administrator", ja: "管理者として実行", pt: "Executar como administrador", zh: "以管理员身份运行")),
+        (3, t!("Расположение файла", "Open file location", ja: "ファイルの場所を開く", pt: "Abrir local do arquivo", zh: "打开文件所在位置")),
+        (4, pin_label),
+    ];
+    for (id, label) in menu {
         if file || id == 1 || id == 4 {
             AppendMenuW(m, MF_STRING, id, wide(label).as_ptr());
         }
@@ -1249,7 +1293,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             let states = [q >= 0, bt == Some(true), air == Some(true), acc, eco, false];
             let tiles = [
                 ("\u{E701}", "Wi‑Fi".to_string(), wsub),
-                ("\u{E702}", "Bluetooth".to_string(), onoff(bt)),
+                ("\u{E702}", t!("Bluetooth", "Bluetooth", ja: "Bluetooth", pt: "Bluetooth", zh: "蓝牙").to_string(), onoff(bt)),
                 ("\u{E709}", t!("Авиарежим", "Airplane mode", ja: "機内モード", pt: "Modo avião", zh: "飞行模式").to_string(), onoff(air)),
                 ("\u{E776}", t!("Спец. возможности", "Accessibility", ja: "アクセシビリティ", pt: "Acessibilidade", zh: "辅助功能").to_string(), onoff(Some(acc))),
                 ("\u{E945}", t!("Экономия энергии", "Energy saver", ja: "省エネ", pt: "Economia de energia", zh: "节能模式").to_string(), onoff(Some(eco))),
@@ -1318,12 +1362,12 @@ unsafe fn paint(hw: HWND, k: Kind) {
         Kind::Cal => {
             let (y, m) = CAL.get();
             SelectObject(dc, f_title);
-            text(dc, &format!("{} {y}", MONTHS[m as usize - 1]), r(16, 10, w - 100, 42), pal().text, DT_LEFT);
+            text(dc, &month_title(y, m), r(16, 10, w - 100, 42), pal().text, DT_LEFT);
             SelectObject(dc, f_glyph);
             text(dc, "\u{E70E}", r(w - 84, 10, w - 52, 42), pal().text, DT_CENTER);
             text(dc, "\u{E70D}", r(w - 48, 10, w - 16, 42), pal().text, DT_CENTER);
             SelectObject(dc, f_small);
-            for (i, d) in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].iter().enumerate() {
+            for (i, d) in weekday_initials().iter().enumerate() {
                 text(dc, d, r(18 + 42 * i as i32, 54, 60 + 42 * i as i32, 78), pal().dim, DT_CENTER);
             }
             let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
@@ -1605,7 +1649,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             SelectObject(dc, f_txt);
             let q = QUERY.with_borrow(|q| q.clone());
             if q.is_empty() {
-                text(dc, "Type to search apps", r(64, 20, w - 64, 56), pal().dim, DT_LEFT);
+                text(dc, t!("Введите для поиска", "Type to search apps", ja: "アプリを検索", pt: "Digite para pesquisar apps", zh: "输入以搜索应用"), r(64, 20, w - 64, 56), pal().dim, DT_LEFT);
             } else {
                 text(dc, &q, r(64, 20, w - 64, 56), if SELALL.get() { pal().accent } else { pal().text }, DT_LEFT);
             }
@@ -1618,11 +1662,11 @@ unsafe fn paint(hw: HWND, k: Kind) {
             let f = filtered();
             if f.is_empty() {
                 if q.is_empty() {
-                    text(dc, "Nothing here yet", r(24, 76, w - 24, 106), pal().text, DT_LEFT);
-                    text(dc, "Drag an app or file onto the Start button to add it", r(24, 106, w - 24, 134), pal().dim, DT_LEFT);
-                    text(dc, "Or search an app and right-click it → Add to Start", r(24, 134, w - 24, 162), pal().dim, DT_LEFT);
+                    text(dc, t!("Здесь пока пусто", "Nothing here yet", ja: "まだ何もありません", pt: "Nada aqui ainda", zh: "这里还什么都没有"), r(24, 76, w - 24, 106), pal().text, DT_LEFT);
+                    text(dc, t!("Перетащите приложение или файл на кнопку «Пуск», чтобы добавить", "Drag an app or file onto the Start button to add it", ja: "スタート ボタンにアプリやファイルをドラッグして追加します", pt: "Arraste um app ou arquivo para o botão Iniciar para adicionar", zh: "把应用或文件拖到“开始”按钮即可添加"), r(24, 106, w - 24, 134), pal().dim, DT_LEFT);
+                    text(dc, t!("Или найдите приложение и добавьте его из меню по правой кнопке", "Or search an app and right-click it → Add to Start", ja: "またはアプリを検索し、右クリックして「スタートに追加」を選びます", pt: "Ou pesquise um app e use o menu do botão direito → Adicionar ao Iniciar", zh: "或者搜索应用，右键点击 → 添加到开始菜单"), r(24, 134, w - 24, 162), pal().dim, DT_LEFT);
                 } else {
-                    text(dc, "No apps found", r(24, 76, w - 24, 116), pal().dim, DT_LEFT);
+                    text(dc, t!("Приложения не найдены", "No apps found", ja: "アプリが見つかりません", pt: "Nenhum app encontrado", zh: "未找到应用"), r(24, 76, w - 24, 116), pal().dim, DT_LEFT);
                 }
             }
             let rs = rects(k);
@@ -1674,8 +1718,8 @@ unsafe fn paint(hw: HWND, k: Kind) {
             SelectObject(dc, f_small);
             let note = NOTE.with_borrow(|n| n.clone());
             let hint = match CONFIRM.get() {
-                2 => "Click again to restart".to_string(),
-                3 => "Click again to shut down".to_string(),
+                2 => t!("Нажмите ещё раз для перезагрузки", "Click again to restart", ja: "もう一度クリックで再起動", pt: "Clique de novo para reiniciar", zh: "再次点击以重启").to_string(),
+                3 => t!("Нажмите ещё раз для выключения", "Click again to shut down", ja: "もう一度クリックでシャットダウン", pt: "Clique de novo para desligar", zh: "再次点击以关机").to_string(),
                 _ if !note.is_empty() => note,
                 _ => std::env::var("USERNAME").unwrap_or_default(),
             };
