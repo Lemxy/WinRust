@@ -883,7 +883,10 @@ unsafe fn anim_step(hw: HWND) {
 }
 
 pub fn toggle(k: Kind) {
-    if FLY.get() == Some(k) {
+    // The panel counts as open only while its window is alive: Alt+F4 (or anything else destroying the window behind our
+    // back) leaves the state saying "open", and then every Win press would only "close" a dead window and never open a new
+    // one — the button looks dead until the bar restarts.
+    if FLY.get() == Some(k) && unsafe { IsWindow(FH.get()) } != 0 {
         return close();
     }
     // No debounce here: a Win press right after the panel closed (or while it is still fading out) must open it. The bar is
@@ -1879,7 +1882,7 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
 
 #[cfg(test)]
 mod tests {
-    use super::{flip_layout, score, init, is_open, toggle, close_now, Kind, GetModuleHandleW, SetProcessDPIAware, null};
+    use super::{flip_layout, score, init, is_open, toggle, close_now, Kind, FLY, FH, GetModuleHandleW, SetProcessDPIAware, null, null_mut, DestroyWindow, IsWindow};
 
     #[test]
     fn layout_flip_both_ways() {
@@ -1888,9 +1891,10 @@ mod tests {
         assert_eq!(flip_layout("vs code"), "мы сщву");
     }
 
-    /// A Win press right after the panel closed (or while it fades out) must open it again: no dead window after a close.
+    /// The Win button always opens Start: a press right after a close is not dropped, and a state left saying "open" with no
+    /// window behind it (CreateWindowExW failed) does not turn the button into a close-only no-op.
     #[test]
-    fn start_reopens_right_after_a_close() {
+    fn win_button_always_opens_start() {
         unsafe {
             SetProcessDPIAware();
             init(GetModuleHandleW(null()));
@@ -1899,7 +1903,16 @@ mod tests {
             toggle(Kind::Start);
             assert!(!is_open(Kind::Start), "the second press closes it");
             toggle(Kind::Start);
-            assert!(is_open(Kind::Start), "the third press, right after the close, opens it again");
+            assert!(is_open(Kind::Start), "a press right after the close opens it again");
+            let live = FH.get();
+            assert!(!live.is_null() && IsWindow(live) != 0);
+            DestroyWindow(live);
+            close_now();
+            // the window is gone but the state still says "open" (what a failed creation or a kill behind our back leaves)
+            FLY.set(Some(Kind::Start));
+            FH.set(null_mut());
+            toggle(Kind::Start);
+            assert!(is_open(Kind::Start) && IsWindow(FH.get()) != 0, "the press opens a real panel");
             close_now();
         }
     }
