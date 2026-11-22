@@ -112,7 +112,6 @@ thread_local! {
     static DRAG: Cell<u8> = const { Cell::new(0) }; // 0 none, 1 volume slider, 2 brightness slider
     static MENU_X: Cell<i32> = const { Cell::new(0) };
     static CONFIRM: Cell<i32> = const { Cell::new(-1) };
-    static LAST: Cell<(Option<Kind>, u64)> = const { Cell::new((None, 0)) }; // which flyout closed when
     static FIN: Cell<(i32, i32)> = const { Cell::new((0, 0)) }; // where the open flyout rests
     static T0: Cell<u64> = const { Cell::new(0) }; // when it started opening
     static JUST: RefCell<(String, u64)> = const { RefCell::new((String::new(), 0)) }; // the app pinned last and when: its row pulses
@@ -776,7 +775,6 @@ pub fn menu(cx: i32, head: Option<(HICON, &'static str, String, String)>, items:
     if is_open(Kind::Menu) {
         close_now();
     }
-    LAST.set((None, 0)); // always opens, even right after another menu closed
     MITEMS.set(items);
     MHEAD.set(head);
     MPICK.set(Some(Box::new(pick)));
@@ -831,9 +829,6 @@ pub fn context_menu(x: i32) {
 
 /// Starts the fade-out of the open flyout (it stays as a ghost window until the fade ends).
 pub fn close() {
-    if FLY.get().is_some() {
-        LAST.set((FLY.get(), unsafe { now_ms() }));
-    }
     let h = FH.replace(null_mut());
     FLY.set(None);
     if h.is_null() {
@@ -891,10 +886,8 @@ pub fn toggle(k: Kind) {
     if FLY.get() == Some(k) {
         return close();
     }
-    let (was, at) = LAST.get();
-    if was == Some(k) && unsafe { now_ms() }.saturating_sub(at) < 400 {
-        return; // it closed an instant ago (focus moved to the key / click that is toggling it): this press means "close", not "reopen"
-    }
+    // No debounce here: a Win press right after the panel closed (or while it is still fading out) must open it. The bar is
+    // WS_EX_NOACTIVATE, so the click that closes the panel never comes back as a second toggle of its own.
     close();
     unsafe {
         HV.with_borrow_mut(|m| m.retain(|k, _| *k < 1_000_000)); // flyout keys are >= 1_000_000: no stale glow from the last panel
@@ -1886,13 +1879,29 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
 
 #[cfg(test)]
 mod tests {
-    use super::{flip_layout, score};
+    use super::{flip_layout, score, init, is_open, toggle, close_now, Kind, GetModuleHandleW, SetProcessDPIAware, null};
 
     #[test]
     fn layout_flip_both_ways() {
         assert_eq!(flip_layout("сркщьу"), "chrome");
         assert_eq!(flip_layout("ntktuhfv"), "телеграм");
         assert_eq!(flip_layout("vs code"), "мы сщву");
+    }
+
+    /// A Win press right after the panel closed (or while it fades out) must open it again: no dead window after a close.
+    #[test]
+    fn start_reopens_right_after_a_close() {
+        unsafe {
+            SetProcessDPIAware();
+            init(GetModuleHandleW(null()));
+            toggle(Kind::Start);
+            assert!(is_open(Kind::Start), "the first press opens Start");
+            toggle(Kind::Start);
+            assert!(!is_open(Kind::Start), "the second press closes it");
+            toggle(Kind::Start);
+            assert!(is_open(Kind::Start), "the third press, right after the close, opens it again");
+            close_now();
+        }
     }
 
     #[test]
