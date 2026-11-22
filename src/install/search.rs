@@ -47,9 +47,9 @@ pub(crate) fn install() -> Result<(), String> {
         } else {
             run(dst.to_str().unwrap(), &["--autostart"])?; // fallback: Run key
         }
-        // via explorer: it starts the launcher with the desktop user's normal token. Started from here it would
-        // inherit admin rights, and every file opened from search would run elevated too.
-        let _ = Command::new("explorer.exe").arg(&dst).spawn();
+        // with the desktop user's normal token (launch::program): started from here it would inherit admin rights, and
+        // every file opened from search would run elevated too.
+        let _ = winrust_common::launch::program(&dst.to_string_lossy());
         if has_wsearch() {
             j.set_svc("WSearch", "disabled")?;
             let _ = run("sc.exe", &["stop", "WSearch"]);

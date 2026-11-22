@@ -334,8 +334,8 @@ fn profile_off(donors: &[u32]) -> Result<String, String> {
         if sys::run_unelevated(donors, r) {
             launched += 1;
         } else if let Some(exe) = r.strip_prefix('"').and_then(|x| x.split('"').next()) {
-            // без донора: explorer.exe запускает программу с обычными правами, но без аргументов
-            launched += Command::new("explorer.exe").arg(exe).spawn().is_ok() as usize;
+            // без донора: программа запускается с обычными правами, но без аргументов
+            launched += winrust_common::launch::program(exe) as usize;
         }
     }
     fs::remove_file(&f).map_err(|e| e.to_string())?;

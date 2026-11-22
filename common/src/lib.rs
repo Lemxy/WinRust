@@ -12,6 +12,7 @@ use std::{
 pub mod desktop;
 pub mod fg;
 pub mod journal;
+pub mod launch;
 pub mod mem;
 pub mod mft;
 pub mod proc;
