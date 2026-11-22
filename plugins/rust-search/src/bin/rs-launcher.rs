@@ -163,9 +163,13 @@ fn is_app(path: &str) -> bool {
 
 /// (title, subtitle) for a result row.
 fn labels(path: &str) -> (String, String) {
+    use winrust_common::t;
     let (dir, file) = path.rsplit_once('\\').unwrap_or(("", path));
     if is_app(path) {
-        (file.trim_end_matches(".lnk").trim_end_matches(".LNK").to_string(), "Application".into())
+        (
+            file.trim_end_matches(".lnk").trim_end_matches(".LNK").to_string(),
+            t!("Приложение", "Application", ja: "アプリケーション", pt: "Aplicativo", zh: "应用").into(),
+        )
     } else {
         (file.to_string(), dir.to_string())
     }
@@ -174,7 +178,9 @@ fn labels(path: &str) -> (String, String) {
 /// (title, subtitle) for a Run mode row.
 fn run_labels(line: &str, src: Option<run::Src>) -> (String, String) {
     use winrust_common::t;
-    let desc = |i: usize| t!(run::KNOWN[i].1, run::KNOWN[i].2, ja: run::KNOWN[i].3, pt: run::KNOWN[i].4);
+    let desc = |i: usize| {
+        t!(run::KNOWN[i].1, run::KNOWN[i].2, ja: run::KNOWN[i].3, pt: run::KNOWN[i].4, zh: run::KNOWN[i].5)
+    };
     let known = run::describe(line).map(desc); // a typed or recent command we know gets its description too
     match src {
         Some(run::Src::Typed) => (line.to_string(), known.unwrap_or(t!("Выполнить", "Run", ja: "実行", pt: "Executar", zh: "运行")).into()),

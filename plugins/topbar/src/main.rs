@@ -2271,29 +2271,29 @@ unsafe fn open_launcher() -> bool {
 /// Right click on Start: the Win+X menu (Explorer's own is gone with the bar).
 unsafe fn start_menu() {
     let bar = BAR.load(Relaxed) as HWND;
-    // (label in ru/en/ja/pt, target); "!" targets are actions of ours, the rest goes through `open`
-    let tools: [(&str, &str, &str, &str, &str); 15] = [
-        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "ms-settings:appsfeatures"),
-        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "powercfg.cpl"),
-        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "eventvwr.msc"),
-        ("Система", "System", "システム", "Sistema", "ms-settings:about"),
-        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "devmgmt.msc"),
-        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "ms-settings:network"),
-        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "diskmgmt.msc"),
-        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "compmgmt.msc"),
-        ("Терминал", "Terminal", "ターミナル", "Terminal", "!term"),
-        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "taskmgr.exe"),
-        ("Параметры", "Settings", "設定", "Configurações", "ms-settings:"),
-        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "shell:MyComputerFolder"),
-        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "!run"),
-        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "!desktop"),
-        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "!taskview"),
+    // (label in ru/en/ja/pt/zh, target); "!" targets are actions of ours, the rest goes through `open`
+    let tools: [(&str, &str, &str, &str, &str, &str); 15] = [
+        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "应用和功能", "ms-settings:appsfeatures"),
+        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "电源选项", "powercfg.cpl"),
+        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "事件查看器", "eventvwr.msc"),
+        ("Система", "System", "システム", "Sistema", "系统", "ms-settings:about"),
+        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "设备管理器", "devmgmt.msc"),
+        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "网络连接", "ms-settings:network"),
+        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "磁盘管理", "diskmgmt.msc"),
+        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "计算机管理", "compmgmt.msc"),
+        ("Терминал", "Terminal", "ターミナル", "Terminal", "终端", "!term"),
+        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "任务管理器", "taskmgr.exe"),
+        ("Параметры", "Settings", "設定", "Configurações", "设置", "ms-settings:"),
+        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "文件资源管理器", "shell:MyComputerFolder"),
+        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "运行", "!run"),
+        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "桌面", "!desktop"),
+        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "任务视图", "!taskview"),
     ];
-    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "!shutdown")];
+    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "锁定", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "睡眠", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "重启", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "关机", "!shutdown")];
     let mut items = Vec::new();
     let mut targets = Vec::new();
-    for (i, (ru, en, ja, pt, to)) in tools.iter().chain(power.iter()).enumerate() {
-        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt));
+    for (i, (ru, en, ja, pt, zh, to)) in tools.iter().chain(power.iter()).enumerate() {
+        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt, zh: *zh));
         items.push(if i == tools.len() { it.sep() } else { it });
         targets.push(*to);
     }
