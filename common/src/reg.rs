@@ -21,6 +21,16 @@ pub fn get_dword(path: &str, name: &str) -> Option<u32> {
     raw(path, Some(name)).and_then(|(ty, b)| (ty == 4 && b.len() >= 4).then(|| u32::from_le_bytes(b[..4].try_into().unwrap())))
 }
 
+/// A REG_SZ / REG_EXPAND_SZ read natively (not expanded); None when missing or of another type.
+pub fn get_str(path: &str, name: &str) -> Option<String> {
+    let (ty, b) = raw(path, Some(name))?;
+    if ty != 1 && ty != 2 {
+        return None;
+    }
+    let w: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+    Some(String::from_utf16_lossy(&w))
+}
+
 fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
     use windows_sys::Win32::System::Registry::*;
     let (root, sub) = path.split_once('\\').unwrap_or((path, ""));
