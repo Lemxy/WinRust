@@ -108,7 +108,18 @@ fn title(hwnd: HWND) {
         }
         _ => winrust_common::t!("Просмотр фото", "Photo viewer", ja: "フォト ビューアー", pt: "Visualizador de fotos", zh: "图片查看器", es: "Visor de fotos").into(),
     });
-    unsafe { SetWindowTextW(hwnd, wide(&t).as_ptr()) };
+    unsafe {
+        SetWindowTextW(hwnd, wide(&t).as_ptr());
+        InvalidateRect(hwnd, null(), 0); // the title is drawn in our own caption
+    }
+}
+
+/// The window draws its own caption: a thin strip with the file's name and the buttons; the picture gets the rest.
+const CAP: winrust_common::caption::Caption = winrust_common::caption::Caption { height: 32, drag: 32, buttons: winrust_common::caption::MIN | winrust_common::caption::MAX | winrust_common::caption::CLOSE };
+
+/// Where the picture area starts: under the caption strip.
+fn top(hwnd: HWND) -> i32 {
+    winrust_common::caption::height(hwnd, CAP)
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -121,11 +132,15 @@ unsafe fn paint(hwnd: HWND) {
         let mem = CreateCompatibleDC(dc);
         let bmp = CreateCompatibleBitmap(dc, cw, ch);
         let old = SelectObject(mem, bmp);
-        let b = CreateSolidBrush(BG[2] as u32 | (BG[1] as u32) << 8 | (BG[0] as u32) << 16);
+        let bg = BG[2] as u32 | (BG[1] as u32) << 8 | (BG[0] as u32) << 16;
+        let b = CreateSolidBrush(bg);
         FillRect(mem, &rc, b);
         DeleteObject(b as _);
+        let top = top(hwnd);
         APP.with_borrow(|a| {
-            if let (Some(i), Some((z, x, y))) = (&a.img, view(a, cw as f64, ch as f64)) {
+            if let (Some(i), Some((z, x, y))) = (&a.img, view(a, cw as f64, (ch - top) as f64)) {
+                let y = y + top as f64;
+                IntersectClipRect(mem, 0, top, cw, ch); // a zoomed picture slides under the caption, not over it
                 let mut bi: BITMAPINFO = std::mem::zeroed();
                 bi.bmiHeader = BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: i.w, biHeight: -i.h, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() };
                 SetStretchBltMode(mem, if z < 1.0 { HALFTONE } else { COLORONCOLOR } as _);
@@ -135,11 +150,30 @@ unsafe fn paint(hwnd: HWND) {
                 SelectObject(mem, a.font as _);
                 SetBkMode(mem, TRANSPARENT as _);
                 SetTextColor(mem, 0x93_8e_8e);
-                let mut r = rc;
+                let mut r = RECT { top, ..rc };
                 let t = wide(if a.files.is_empty() { winrust_common::t!("Откройте фото этой программой или перетащите его сюда", "Open a picture with this program, or drop one here", ja: "このプログラムで画像を開くか、ここにドロップしてください", pt: "Abra uma imagem com este programa ou solte uma aqui", zh: "用它打开一张图片，或把图片拖到这里", es: "Abre una imagen con este programa o suéltala aquí") } else { &a.note });
                 DrawTextW(mem, t.as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             }
         });
+        // the caption strip: the window's title (file, position, size) on the left, the buttons on the right
+        SelectClipRgn(mem, null_mut());
+        let strip = RECT { left: 0, top: 0, right: cw, bottom: top };
+        let cap_bg = winrust_common::style::mix(bg, 0xFF_FF_FF, 0.04);
+        let b = CreateSolidBrush(cap_bg);
+        FillRect(mem, &strip, b);
+        DeleteObject(b as _);
+        let mut name = [0u16; 512];
+        let n = GetWindowTextW(hwnd, name.as_mut_ptr(), name.len() as i32);
+        let s = winrust_common::caption::scale(hwnd);
+        let f = CreateFontW(-((12.0 * s) as i32), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide(winrust_common::style::sans_face()).as_ptr());
+        let of = SelectObject(mem, f as _);
+        SetBkMode(mem, TRANSPARENT as _);
+        SetTextColor(mem, 0xC8_C8_C8);
+        let mut tr = RECT { left: (12.0 * s) as i32, top: 0, right: cw - winrust_common::caption::buttons_width(hwnd, CAP) - 8, bottom: top };
+        DrawTextW(mem, name.as_ptr(), n, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(mem, of);
+        DeleteObject(f as _);
+        winrust_common::caption::paint_buttons(mem, hwnd, CAP, cap_bg, 0xF0_F0_F0);
         BitBlt(dc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old);
         DeleteObject(bmp as _);
@@ -167,11 +201,15 @@ fn delete_current(hwnd: HWND) {
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        // the picture's area: the client below the caption strip
         let client = || {
             let mut rc: RECT = std::mem::zeroed();
             GetClientRect(hwnd, &mut rc);
-            (rc.right as f64, rc.bottom as f64)
+            (rc.right as f64, (rc.bottom - top(hwnd)) as f64)
         };
+        if let Some(r) = winrust_common::caption::handle(hwnd, msg, wp, lp, CAP, |_, _| false) {
+            return r;
+        }
         match msg {
             WM_CREATE => {
                 let dpi = GetDpiForSystem() as i32;
@@ -212,6 +250,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_MOUSEWHEEL => {
                 let mut p = POINT { x: (lp & 0xFFFF) as i16 as i32, y: (lp >> 16) as i16 as i32 };
                 ScreenToClient(hwnd, &mut p);
+                p.y -= top(hwnd);
                 let (cw, ch) = client();
                 let k = if (wp >> 16) as i16 > 0 { 1.15 } else { 1.0 / 1.15 };
                 APP.with_borrow_mut(|a| {
@@ -289,6 +328,8 @@ fn main() {
         let wc = WNDCLASSW { style: CS_DBLCLKS, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
         RegisterClassW(&wc);
         let hwnd = CreateWindowExW(0, class.as_ptr(), wide(winrust_common::t!("Просмотр фото", "Photo viewer", ja: "フォト ビューアー", pt: "Visualizador de fotos", zh: "图片查看器", es: "Visor de fotos")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800, null_mut(), null_mut(), inst, null());
+        winrust_common::caption::install(hwnd);
+        windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(hwnd, 20, &1i32 as *const i32 as *const _, 4); // dark frame and window menu
         if let Some(p) = std::env::args_os().nth(1) {
             open(hwnd, Path::new(&p));
         }
