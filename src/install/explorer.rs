@@ -241,7 +241,7 @@ pub(crate) fn rx_install() -> Result<(), String> {
 }
 
 pub(crate) fn rx_uninstall() -> Result<(), String> {
-    restore_service_trim()?;
+    let service_restore = restore_service_trim();
     // Windows may restart its shell again; our hooks off; then the shell back, unelevated, only if none is running
     let back = reg_dword(RX_STATE, "AutoRestartShell").unwrap_or(1);
     let r = run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &back.to_string(), "/f"]);
@@ -260,6 +260,8 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
     }
     let _ = run("powershell", &["-NoProfile", "-Command", r#"if (-not (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?(\s+/NoUACCheck)?\s*$' })) { runas /trustlevel:0x20000 C:\Windows\explorer.exe }"#]);
     let _ = fs::remove_file(rx_lnk());
+    // Complete the shell hand-off even if a service failed to return to its saved state.
+    service_restore?;
     let _ = fs::remove_file(start_lnk("Rust Explorer"));
     let _ = fs::remove_dir_all(rx_dir());
     if r.is_ok() {
