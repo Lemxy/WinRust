@@ -78,8 +78,9 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
                 return 1;
             }
             // Win+Space / Win+Shift+Space: without explorer nobody switches the keyboard layout (Alt+Shift still works, the
-            // system handles that one itself)
-            if !EXPLORER_UP.load(Relaxed) && k.vkCode == VK_SPACE as u32 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_CONTROL) && !held(VK_MENU) {
+            // system handles that one itself). Our own Start in front: the system switcher's request never reaches the elevated
+            // bar (UIPI drops it), so it is done here too (#105).
+            if (!EXPLORER_UP.load(Relaxed) || own_foreground()) && k.vkCode == VK_SPACE as u32 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_CONTROL) && !held(VK_MENU) {
                 if down0 {
                     WIN_ALONE.store(false, Relaxed);
                     keybd_event(0xE8, 0, 0, 0); // a key between Win down and up: no Start menu on release

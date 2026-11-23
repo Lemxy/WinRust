@@ -32,7 +32,7 @@ const SERVICES: &[(&str, &str)] = &[
     ("whesvc", "Windows Health and Optimized Experiences"),
     ("TrkWks", "distributed link tracking"),
     ("WSAIFabricSvc", "Windows AI Fabric (Copilot+/Recall features)"),
-    // PcaSvc, InventorySvc, lfsvc: rust-explorer's install already disables them with its own backup, not duplicated here
+    // InventorySvc, lfsvc: rust-explorer's install already disables them with its own backup; PcaSvc stays on (older games)
 ];
 
 // (key, value, DWORD data, what it does)

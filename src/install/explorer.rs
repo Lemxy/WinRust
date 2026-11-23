@@ -86,8 +86,12 @@ fn trim_write((key, name): Dword<'_>, value: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Still restored on uninstall (older versions turned them off), never turned off any more: cbdhsvc is the clipboard history
+/// (Win+V), PcaSvc the compatibility assistant older games lean on (#102).
+const NO_LONGER_TRIMMED: [&str; 2] = ["cbdhsvc", "PcaSvc"];
+
 fn apply_service_trim() {
-    for (backup, key, value, new) in trim_settings() {
+    for (backup, key, value, new) in trim_settings().filter(|s| !NO_LONGER_TRIMMED.contains(&s.0)) {
         let result = backup_and_set((&key, value), (RX_STATE, backup), new, trim_read, trim_write);
         if matches!(&result, Ok(true)) && value == "Start" && new == 4 {
             let _ = run("sc.exe", &["stop", backup]);
