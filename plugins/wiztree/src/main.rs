@@ -131,7 +131,7 @@ fn fixed_drives() -> Vec<char> {
 fn rescan(hwnd: HWND, drive: char) {
     APP.with_borrow_mut(|a| {
         (a.tree, a.drive, a.cur, a.hot, a.cells) = (None, drive, ROOT, None, vec![]);
-        a.status = tf!("Чтение MFT диска {drive}: ...", "Reading the MFT of {drive}: ...", ja: "ドライブ {drive}: の MFT を読み込んでいます...", pt: "Lendo a MFT de {drive}: ...", zh: "正在读取 {drive}: 的 MFT…");
+        a.status = tf!("Чтение MFT диска {drive}: ...", "Reading the MFT of {drive}: ...", ja: "ドライブ {drive}: の MFT を読み込んでいます...", pt: "Lendo a MFT de {drive}: ...", zh: "正在读取 {drive}: 的 MFT…", es: "Leyendo la MFT de {drive}: ...");
     });
     unsafe { InvalidateRect(hwnd, null(), 0) };
     let h = hwnd as isize;
@@ -196,7 +196,7 @@ unsafe fn paint(hwnd: HWND) {
                 head = format!("{head}    {}", human(size));
                 foot = match a.hot.and_then(|n| a.cells.get(n)) {
                     Some((_, id)) => format!("{}    {}", path_of(&t.recs, *id, a.drive).0, human(t.tot[id])),
-                    None => t!("Щелчок: открыть папку / показать файл    ПКМ, Backspace: вверх    Tab: следующий диск    F5: обновить", "Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan", ja: "クリック: フォルダーを開く / ファイルを表示    右クリック、Backspace: 上へ    Tab: 次のドライブ    F5: 再スキャン", pt: "Clique: abrir pasta / mostrar arquivo    Botão direito, Backspace: subir    Tab: próxima unidade    F5: examinar de novo", zh: "单击：打开文件夹 / 定位文件    右键、Backspace：上一层    Tab：下一个磁盘    F5：重新扫描").into(),
+                    None => t!("Щелчок: открыть папку / показать файл    ПКМ, Backspace: вверх    Tab: следующий диск    F5: обновить", "Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan", ja: "クリック: フォルダーを開く / ファイルを表示    右クリック、Backspace: 上へ    Tab: 次のドライブ    F5: 再スキャン", pt: "Clique: abrir pasta / mostrar arquivo    Botão direito, Backspace: subir    Tab: próxima unidade    F5: examinar de novo", zh: "单击：打开文件夹 / 定位文件    右键、Backspace：上一层    Tab：下一个磁盘    F5：重新扫描", es: "Clic: abrir carpeta / mostrar archivo    Clic derecho, Retroceso: subir    Tab: siguiente unidad    F5: volver a analizar").into(),
                 };
             }
             text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: w - 12, bottom: top }, ACCENT, one);
