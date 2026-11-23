@@ -29,6 +29,7 @@ mod shot;
 mod lang;
 mod settings;
 mod thumbs;
+mod glass;
 use {tray::*, status::*, run::*, shot::*, lang::*, settings::*};
 use windows::{
     Win32::{
@@ -1934,10 +1935,17 @@ unsafe fn paint(hwnd: HWND) {
     GetClientRect(hwnd, &mut cr);
     let h = cr.bottom;
     BUSY.set(false);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, h));
+    // with the blur the bar is painted where its pixels can be reached (glass.rs); otherwise as always
+    let glass = if glass::blur_on() { glass::dib(wdc, cr.right, h) } else { None };
+    let dc = CreateCompatibleDC(wdc);
+    let bmp = glass.map_or_else(|| CreateCompatibleBitmap(wdc, cr.right, h), |(b, _)| b);
     let old = SelectObject(dc, bmp);
     // the background (gradient, facets, hairlines) is the same every frame: drawn once per size / style, then copied
     BitBlt(dc, 0, 0, cr.right, h, bg_layer(wdc, cr), 0, 0, SRCCOPY);
+    let px_count = (cr.right * h).max(0) as usize;
+    if let Some((_, px)) = glass {
+        glass::remember_backdrop(px, px_count, BG.get().2);
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let [f_txt, f_small, f_glyph, f_bold] = bar_fonts();
     let of = SelectObject(dc, f_txt);
@@ -2085,6 +2093,9 @@ unsafe fn paint(hwnd: HWND) {
     text(dc, &dt, RECT { left: cb.left, top: mid - sc(1), right: cb.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
     }
 
+    if let Some((_, px)) = glass {
+        glass::finish(px, px_count, (255 * i18n::style::bar_opacity() as u32 / 100) as u8);
+    }
     BitBlt(wdc, 0, 0, cr.right, h, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
     SelectObject(dc, old);

@@ -202,6 +202,17 @@ pub fn set_tray_all(on: bool) {
     TRAY_ALL.set(on);
 }
 
+static BLUR: Flag = Flag::new("bar-blur.txt");
+
+/// Windows' own blur behind the bar (the one its taskbar uses). Shows through a see-through bar. Off unless switched on.
+pub fn bar_blur() -> bool {
+    BLUR.get(|| false)
+}
+
+pub fn set_bar_blur(on: bool) {
+    BLUR.set(on);
+}
+
 /// Which screen edge the topbar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
