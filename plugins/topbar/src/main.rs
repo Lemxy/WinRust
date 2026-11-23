@@ -2790,6 +2790,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     if msg != 0 && msg == i18n::style::msg() {
         // someone switched the look or the language (the installer, rust-settings, our own gear): repaint in it
         i18n::style::reload();
+        onedrive_recheck();
         relook(false);
         return 0;
     }
@@ -3043,6 +3044,7 @@ fn main() {
         hide_taskbar();
         place(hwnd);
         refresh();
+        onedrive_recheck(); // remembers the OneDrive switch as it is now
         announce(); // apps already running re-add their icons to us
         SetTimer(hwnd, 1, 1000, None); // status poll; windows come from win_event
         BAR.store(hwnd as isize, Relaxed);

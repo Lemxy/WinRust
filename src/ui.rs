@@ -319,7 +319,10 @@ pub(crate) fn opts(i: usize) -> Vec<Opt> {
                 name: t!("Скрыть значок OneDrive", "Hide the OneDrive icon", ja: "OneDrive アイコンを隠す", pt: "Ocultar o ícone do OneDrive", zh: "隐藏 OneDrive 图标", es: "Ocultar el ícono de OneDrive"),
                 note: t!("Синхронизация продолжает работать", "Sync keeps working", ja: "同期は引き続き動作します", pt: "A sincronização continua funcionando", zh: "同步功能仍可正常使用", es: "La sincronización sigue funcionando"),
                 on: od_hidden(),
-                flip: || report(set_od_hidden(!od_hidden())),
+                flip: || {
+                    report(set_od_hidden(!od_hidden()));
+                    i18n::style::broadcast(); // a running bar drops or asks back the icon at once
+                },
             },
             Opt {
                 name: t!("Полупрозрачная панель", "See-through bar", ja: "半透明のバー", pt: "Barra translúcida", zh: "半透明任务栏", es: "Barra translúcida"),
