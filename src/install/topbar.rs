@@ -1,5 +1,7 @@
-//! topbar: the bottom bar instead of the taskbar, plus reshell hotkeys and the PowerShell profile block.
+//! topbar: the bottom bar instead of the taskbar, plus reshell (desktop hotkeys, Win+E/D/I and the bar's watchdog) and,
+//! on request, the PowerShell profile block.
 use crate::*;
+use std::sync::atomic::AtomicU8;
 
 pub(crate) fn bar_dir() -> PathBuf {
     program_files().join("topbar")
@@ -7,13 +9,30 @@ pub(crate) fn bar_dir() -> PathBuf {
 
 pub(crate) const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
-// topbar.cfg next to topbar.exe (the bar re-reads it every few seconds). Missing file = OneDrive hidden.
+// topbar.cfg next to topbar.exe (the bar re-reads it every few seconds). Missing file = OneDrive hidden, the bar's own
+// default; a fresh install writes the file with OneDrive shown, so nobody loses an icon they did not ask to lose.
 pub(crate) fn cfg_path() -> PathBuf {
     bar_dir().join("topbar.cfg")
 }
 
 pub(crate) fn od_hidden() -> bool {
-    fs::read_to_string(cfg_path()).map_or(true, |c| !c.contains("hide_onedrive=0"))
+    fs::read_to_string(cfg_path()).map_or_else(|_| bar_dir().join("topbar.exe").is_file(), |c| !c.contains("hide_onedrive=0"))
+}
+
+/// What the installer applied, so an update keeps it and the window can tell what a switch would change.
+pub(crate) const TB_STATE: &str = r"HKLM\SOFTWARE\plugin-launcher\topbar";
+
+/// The PowerShell aliases are in the user's profile now. Installs from before the switch wrote them with every topbar.
+pub(crate) fn ps_aliases_now() -> bool {
+    bar_dir().join("topbar.exe").is_file() && i18n::reg::get_dword(TB_STATE, "PsProfile").is_none_or(|d| d == 1)
+}
+
+/// What the next `bar_install` does with the aliases: 0 keep, 1 leave them out, 2 write them.
+static PS_ALIASES: AtomicU8 = AtomicU8::new(0);
+
+/// `None` = keep what is there (an update), which on a fresh install means no aliases.
+pub(crate) fn set_ps_aliases(v: Option<bool>) {
+    PS_ALIASES.store(v.map_or(0, |s| 1 + s as u8), Relaxed);
 }
 
 pub(crate) fn set_od_hidden(v: bool) -> Result<(), String> {
@@ -46,11 +65,21 @@ pub(crate) fn shells_run(script: &str) -> Result<(), String> {
 }
 
 pub(crate) fn bar_install() -> Result<(), String> {
+    let had_ps = ps_aliases_now();
+    let want_ps = match PS_ALIASES.load(Relaxed) {
+        1 => false,
+        2 => true,
+        _ => had_ps,
+    };
+    let od = od_hidden(); // before the exe lands: a fresh install shows OneDrive
     with_payload(&["topbar.exe", "rs-du.exe", "reshell.exe"], |d| {
         let dst = bar_dir().join("topbar.exe");
         let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);
         fs::create_dir_all(bar_dir()).map_err(|e| e.to_string())?;
         put(&d.join("topbar.exe"), &dst)?;
+        if !cfg_path().is_file() {
+            soft("topbar.cfg", set_od_hidden(od));
+        }
         fs::create_dir_all(tm_dir()).map_err(|e| e.to_string())?;
         put(&d.join("rs-du.exe"), &tm_dir().join("rs-du.exe"))?; // topbar menu "Чистильщик диска"
         let rsh = bar_dir().join("reshell.exe"); // Win+1/2/3 desktop hotkeys, no args = hotkeys
@@ -74,7 +103,13 @@ pub(crate) fn bar_install() -> Result<(), String> {
             run("reg", &["add", RUN_KEY, "/v", "topbar", "/t", "REG_SZ", "/d", &format!("\"{}\"", dst.display()), "/f"])?;
             let _ = winrust_common::launch::program(&dst.to_string_lossy()); // normal user token, like rs-launcher
         }
-        soft(t!("профиль PowerShell не записан", "PowerShell profile was not written", ja: "PowerShell プロファイルを書き込めませんでした", pt: "o perfil do PowerShell não foi gravado", zh: "PowerShell 配置文件未写入", es: "no se escribió el perfil de PowerShell"), profile_install()); // a shell nicety, must not fail the bar install
+        // a shell nicety: only on request, and never a reason to fail the bar install
+        if want_ps {
+            soft(t!("профиль PowerShell не записан", "PowerShell profile was not written", ja: "PowerShell プロファイルを書き込めませんでした", pt: "o perfil do PowerShell não foi gravado", zh: "PowerShell 配置文件未写入", es: "no se escribió el perfil de PowerShell"), profile_install());
+        } else if had_ps {
+            soft(t!("профиль PowerShell не очищен", "PowerShell profile was not cleaned up", ja: "PowerShell プロファイルを元に戻せませんでした", pt: "o perfil do PowerShell não foi limpo", zh: "PowerShell 配置文件未清理", es: "no se limpió el perfil de PowerShell"), profile_uninstall());
+        }
+        soft("PsProfile", run("reg", &["add", TB_STATE, "/v", "PsProfile", "/t", "REG_DWORD", "/d", if want_ps { "1" } else { "0" }, "/f"]));
         Ok(())
     })
 }
@@ -94,6 +129,7 @@ pub(crate) fn bar_uninstall() -> Result<(), String> {
     let _ = profile_uninstall();
     let r = run(bar_dir().join("topbar.exe").to_str().unwrap(), &["--restore"]); // a killed bar cannot restore the taskbar itself
     let _ = fs::remove_dir_all(bar_dir());
+    let _ = run("reg", &["delete", TB_STATE, "/f"]);
     cleaner_release(tm_dir().join("rtaskmgr-win32.exe").is_file());
     r
 }
