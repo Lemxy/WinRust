@@ -7,6 +7,10 @@ pub const ROW_H: f64 = 28.0;
 pub const NAV_W: f64 = 48.0;
 pub const NAV_W_OPEN: f64 = 220.0;
 pub const BAND_H: f64 = 52.0;
+/// The window draws its own caption: the top band is the title bar, the buttons sit at its right end.
+pub const CAPTION: winrust_common::caption::Caption = winrust_common::caption::Caption { height: 32, drag: BAND_H as i32, buttons: winrust_common::caption::MIN | winrust_common::caption::MAX | winrust_common::caption::CLOSE };
+/// What the caption buttons and a gap take from the band's right end (96-DPI px).
+pub const CAP_BTNS: f64 = 3.0 * 46.0 + 8.0;
 
 pub fn series_color(i: usize, dark: bool) -> Rgb {
     let c = [Rgb(10, 132, 255), Rgb(94, 92, 230), Rgb(48, 209, 88), Rgb(255, 159, 10), Rgb(191, 90, 242)][i.min(4)]; // Apple system blue, indigo, green, orange, purple

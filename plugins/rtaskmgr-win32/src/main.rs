@@ -211,6 +211,18 @@ fn main() {
 
     let a = app.clone();
     let _raw = nwg::bind_raw_event_handler(&app.win.handle, 0x10000, move |hwnd, msg, w, l| -> Option<isize> {
+        // the band drags the window, except for the menu button and the page buttons in it (the search box is its own window)
+        let in_control = |x: i32, y: i32| {
+            a.ui.try_borrow().map_or(true, |ui| {
+                ui.lay.as_ref().is_some_and(|lay| {
+                    let inside = |r: &R| x >= r.l && x < r.r && y >= r.t && y < r.b;
+                    inside(&lay.nav_toggle) || lay.buttons.iter().any(|b| inside(&b.0))
+                })
+            })
+        };
+        if let Some(r) = unsafe { winrust_common::caption::handle(hwnd as _, msg, w, l, draw::CAPTION, in_control) } {
+            return Some(r);
+        }
         match msg {
             WM_PAINT => {
                 a.paint(hwnd);
@@ -276,6 +288,7 @@ fn main() {
         }
     })
     .unwrap();
+    unsafe { winrust_common::caption::install(hwnd as _) }; // our caption from here on: the handler above answers WM_NCCALCSIZE
 
     let a = app.clone();
     let _h = nwg::full_bind_event_handler(&app.win.handle, move |evt, data, handle| {
