@@ -15,7 +15,7 @@
 | `src/main.rs` | таблица `PLUGINS` и общее состояние |
 | `src/install/` | что каждый плагин меняет в системе и как откатывается (файл на плагин; `mod.rs`: общие хелперы, payload, `install_plugin`/`rollback`) |
 | `src/cli.rs`, `src/ui.rs` | командная строка и окно |
-| `common/` | `winrust-common`: `t!`/`tf!`/`en!` (язык) и `mft` (чтение MFT) для всех программ |
+| `common/` | `winrust-common`: `t!`/`tf!`/`lang!`/`en!` (язык: en, ru, ja, pt; `t!(ru, en, ja: .., pt: ..)`, без `ja:`/`pt:` показывается английский) и `mft` (чтение MFT) для всех программ |
 | `plugins/<имя>/`, `ReShell/` | исходники плагинов (это и есть оригиналы: копий на рабочем столе больше нет, правь здесь) |
 | `payload.txt` | единственный список вшиваемых exe: из него читают `build.rs` и `scripts\build-plugins.ps1` |
 
@@ -26,7 +26,7 @@
 - Полная сборка: `powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1` (плагины → `payload\` → установщик).
 - Только плагины: `scripts\build-plugins.ps1`. Только установщик: `cargo build --release -p plugin-launcher` (нужен заполненный `payload\`).
 - Тесты: `cargo test --workspace` и `cargo test` в `plugins\rust-search`. У самого установщика тестового exe нет (`test = false`: манифест требует админа).
-- В юнит-тестах тексты всегда русские: в коде с тестами пиши `en!()`, а не `english()`.
+- В юнит-тестах тексты всегда русские: в коде с тестами пиши `lang!()`/`en!()`, а не `lang()`.
 
 ## Обновить установленный плагин после правки (без пересборки установщика)
 
@@ -57,6 +57,7 @@ powershell -ExecutionPolicy Bypass -File scripts\update-plugin.ps1 <rust-search|
 - Никаких `Co-Authored-By` и упоминаний Claude в коммитах, PR и релизах: Claude не должен появляться контрибьютором. Это важнее общих шаблонов атрибуции.
 - Автор: `Lemxy <183076981+Lemxy@users.noreply.github.com>` (уже в git config). Настоящую почту владельца в репозиторий не писать.
 - `git push --force`, удаление репозитория/тегов/релизов и смена видимости только по прямой просьбе.
+- Чужие PR вливать только через `git merge --squash` и коммит от Lemxy без `Co-Authored-By` (владелец не хочет чужих контрибьюторов в истории). Мерж-коммиты с авторством автора PR не использовать; после пуша PR на GitHub уже будут помечены merged.
 - Не коммитить `payload\*.exe`, `target\`, логи (они в `.gitignore`).
 
 **Документация.**
@@ -65,6 +66,6 @@ powershell -ExecutionPolicy Bypass -File scripts\update-plugin.ps1 <rust-search|
 - Оговорку про неподписанный exe и SmartScreen не убирать, пока нет подписи.
 - Описание, темы и главная страница репозитория (`gh repo edit`) только по просьбе владельца.
 
-**Релиз.** `scripts\release.ps1 v0.2.0 [-Notes "..."]`: `build-all.ps1`, пуш, тег, GitHub Release с `WinRust.exe`. Только когда владелец просит. Перед релизом проверить, что README и ROADMAP не устарели.
+**Релиз.** `scripts\release.ps1 v0.2.0 [-Notes "..."]`: `build-all.ps1`, пуш, тег, GitHub Release с `WinRust.exe`, всеми exe плагинов и подписанными `manifest.txt`/`manifest.sig` для автообновления (`src/update/`). Подписывает `tools/winrust-sign` ключом `%USERPROFILE%\.winrust\update-signing.key`: без ключа релиз не выйдет. Ключ никогда не коммитить и не пересоздавать: установленные копии доверяют только `update-key.pub` из корня. Только когда владелец просит. Перед релизом проверить, что README и ROADMAP не устарели.
 
 **Если пуш не прошёл:** показать ошибку владельцу, не чинить принудительным пушем. Если в `gh auth status` активен не `Lemxy`: `gh auth switch -u Lemxy`.

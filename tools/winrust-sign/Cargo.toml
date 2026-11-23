@@ -1,0 +1,11 @@
+[package]
+name = "winrust-sign"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# The owner's release signing tool (release.ps1 runs it). Not part of the installer or its payload.
+[dependencies]
+ed25519-dalek = "2.1.1"
+getrandom = "0.2.15"
