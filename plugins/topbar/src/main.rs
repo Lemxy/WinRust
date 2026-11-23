@@ -1303,8 +1303,11 @@ fn refresh_status() {
             // The empty-tray check below misses this when some icons already reached the bar.
             announce();
         }
-        if TAPPS.with_borrow(|t| t.is_empty()) && n % 4 == 2 {
-            announce(); // no icons yet (apps started before us, or explorer restarted): ask them to register again
+        // no icons yet (apps started before us, or explorer restarted): ask them to register again. Every 4 s for the first
+        // minute, then once a minute: a PC with no tray apps at all should not wake every window in the session forever
+        let ask = if n < 60 { n % 4 == 2 } else { n % 60 == 2 };
+        if ask && TAPPS.with_borrow(|t| t.is_empty()) {
+            announce();
         }
         if n % 3 == 0 {
             read_wifi();
