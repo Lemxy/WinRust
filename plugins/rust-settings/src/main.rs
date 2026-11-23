@@ -837,6 +837,8 @@ const ROWS_TOP: i32 = 84;
 const NAV_TOP: i32 = 14;
 const NAV_H: i32 = 40;
 const COL_MAX: i32 = 760;
+/// The window draws its own caption: buttons at the top right, the page title's band drags it (as in Windows 11 Settings).
+const CAP: winrust_common::caption::Caption = winrust_common::caption::Caption { height: 32, drag: ROWS_TOP - 8, buttons: winrust_common::caption::MIN | winrust_common::caption::MAX | winrust_common::caption::CLOSE };
 
 /// Left and right edge of the content column (device px): at most `COL_MAX` wide, centred in the space beside the sidebar.
 fn col(cw: i32, dpi: i32) -> (i32, i32) {
@@ -906,9 +908,7 @@ fn max_scroll(rows: usize, ch: i32) -> i32 {
 unsafe fn frame(hwnd: HWND) {
     let t = theme();
     let set = |attr: u32, v: u32| unsafe { windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(hwnd, attr, &v as *const u32 as _, 4) };
-    set(20, !winrust_common::style::style().light() as u32); // dark caption buttons, except on the light style
-    set(35, t.side); // caption colour: one surface with the sidebar
-    set(36, t.fg); // caption text
+    set(20, !winrust_common::style::style().light() as u32); // dark frame and window menu, except on the light style
     set(34, t.sep); // border
     set(33, if t.square { 1 } else { 2 }); // corners: square / round
 }
@@ -1214,6 +1214,7 @@ unsafe fn paint(hwnd: HWND) {
                 RestoreDC(mem, saved);
             }
         });
+        winrust_common::caption::paint_buttons(mem, hwnd, CAP, t.bg, t.fg);
         BitBlt(dc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old);
         DeleteObject(bmp as _);
@@ -1683,6 +1684,14 @@ unsafe fn wifi_menu(hwnd: HWND, x: i32, y: i32) {
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        // the sidebar's page list reaches up into the caption band: it stays clickable
+        let nav = |x: i32, y: i32| {
+            let s = winrust_common::caption::scale(hwnd); // not APP: this runs inside COM calls that hold it borrowed
+            x < (SIDE as f32 * s) as i32 && y >= (NAV_TOP as f32 * s) as i32
+        };
+        if let Some(r) = winrust_common::caption::handle(hwnd, msg, wp, lp, CAP, nav) {
+            return r;
+        }
         if msg == winrust_common::style::msg() {
             let was = winrust_common::lang();
             winrust_common::style::reload(); // the style (topbar menu) or the language (any WinRust window) changed
@@ -2057,6 +2066,7 @@ fn main() {
         let wc = WNDCLASSW { style: 0, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
         RegisterClassW(&wc);
         let hwnd = CreateWindowExW(0, class.as_ptr(), wide(t!("Параметры", "Settings", ja: "設定", pt: "Configurações", zh: "设置", es: "Configuración")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 940 * dpi / 96, 620 * dpi / 96, null_mut(), null_mut(), inst, null());
+        winrust_common::caption::install(hwnd);
         frame(hwnd);
         MAIN.store(hwnd as isize, std::sync::atomic::Ordering::Relaxed);
         wifi::watch(hwnd);
