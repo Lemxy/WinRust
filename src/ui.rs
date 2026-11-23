@@ -143,6 +143,9 @@ pub(crate) const ID_CHECK: usize = 100; // + plugin index: the whole row toggles
 pub(crate) const STARTING: usize = usize::MAX - 1; // JOB before apply() picks its first step
 
 pub(crate) const HEAD: u32 = rgb(16, 16, 16); // header and title bar
+/// The header is the title bar: it drags the window, minimize and close sit at its top right.
+pub(crate) const CAP: winrust_common::caption::Caption = winrust_common::caption::Caption { height: 32, drag: HEAD_H as i32, buttons: winrust_common::caption::MIN | winrust_common::caption::CLOSE };
+const CAP_W: f32 = 2.0 * 46.0 + 8.0; // the buttons and a gap: the language list stays clear of them
 const SIDE: u32 = rgb(24, 24, 24); // the step list
 const ON_ACCENT: u32 = rgb(12, 12, 12); // text and ticks on the accent colour
 
@@ -262,8 +265,9 @@ pub(crate) fn update_box(_w: f32) -> Box4 {
 }
 
 /// The language drop-down at the right end of the header, and one item of its list.
-pub(crate) fn lang_box(_w: f32) -> Box4 {
-    [X1 - 132.0, 19.0, X1, 45.0]
+pub(crate) fn lang_box(w: f32) -> Box4 {
+    let r = X1.min(w - CAP_W);
+    [r - 132.0, 19.0, r, 45.0]
 }
 const LANG_ITEM_H: f32 = 26.0; // one item of the open list
 const LANG_LIST: &str = "WinRustLangList";
@@ -400,8 +404,8 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     ui.text("W", mark, 16.0, 800, ON_ACCENT, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     ui.text("WinRust", [PAD + 32.0, 0.0, X1, HEAD_H], 20.0, 700, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     let tw = ui.width("WinRust", 20.0, 700);
-    ui.text(t!("Установка", "Setup", ja: "セットアップ", pt: "Instalação", zh: "安装程序", es: "Instalación"), [PAD + 40.0 + tw, 0.0, X1 - 140.0, HEAD_H], 16.0, 300, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     let lb = lang_box(w);
+    ui.text(t!("Установка", "Setup", ja: "セットアップ", pt: "Instalação", zh: "安装程序", es: "Instalación"), [PAD + 40.0 + tw, 0.0, lb[0] - 8.0, HEAD_H], 16.0, 300, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     let open = LANG_OPEN.get().is_some();
     ui.round(lb, 3.0, if hot(ID_LANG) || open { rgb(40, 40, 40) } else { HEAD }, if open { ACCENT } else { rgb(70, 70, 70) });
     ui.text(i18n::lang().name(), [lb[0] + 10.0, lb[1], lb[2] - 26.0, lb[3]], 13.0, 400, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -689,6 +693,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     }
 
     GdipDeleteGraphics(g);
+    winrust_common::caption::paint_buttons(mem, hwnd, CAP, HEAD, TEXT);
     BitBlt(hdc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
     SelectObject(mem, ob);
     DeleteObject(bmp);
@@ -1221,6 +1226,17 @@ pub(crate) fn lang_changed(hwnd: HWND, written: bool) {
 }
 
 pub(crate) unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    // the header drags the window, except for the language list in it
+    let in_header_control = |x: i32, y: i32| {
+        let s = scale();
+        let mut rc: RECT = zeroed();
+        GetClientRect(hwnd, &mut rc);
+        let (x, y, lb) = (x as f32 / s, y as f32 / s, lang_box(rc.right as f32 / s));
+        x >= lb[0] && x <= lb[2] && y >= lb[1] && y <= lb[3]
+    };
+    if let Some(r) = winrust_common::caption::handle(hwnd, msg, wp, lp, CAP, in_header_control) {
+        return r;
+    }
     match msg {
         WM_PAINT => paint(hwnd),
         WM_ERASEBKGND => return 1,

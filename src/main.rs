@@ -201,19 +201,19 @@ fn main() {
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: cls.as_ptr(), ..zeroed() };
         RegisterClassW(&wc);
         let s = ui::scale();
+        // the caption is drawn by the window (ui::CAP): the window is exactly the page, WS_CAPTION stays for dragging and snapping
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let mut r = RECT { left: 0, top: 0, right: (WIN_W * s) as i32, bottom: (WIN_H * s) as i32 };
-        AdjustWindowRect(&mut r, style, 0);
         let title = wide("WinRust");
-        let hwnd = CreateWindowExW(0, cls.as_ptr(), title.as_ptr(), style | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, null_mut(), null_mut(), hi, null());
+        let hwnd = CreateWindowExW(0, cls.as_ptr(), title.as_ptr(), style, CW_USEDEFAULT, CW_USEDEFAULT, (WIN_W * s) as i32, (WIN_H * s) as i32, null_mut(), null_mut(), hi, null());
+        winrust_common::caption::install(hwnd);
         let h = hwnd as isize;
         thread::spawn(move || {
             if update::look_for_update().is_some() {
                 InvalidateRect(h as HWND, null(), 0);
             }
         });
-        DwmSetWindowAttribute(hwnd, 20, &1i32 as *const i32 as *const _, 4); // dark title bar
-        DwmSetWindowAttribute(hwnd, 35, &ui::HEAD as *const u32 as *const _, 4); // caption colour = the header's (Win11; ignored on Win10)
+        DwmSetWindowAttribute(hwnd, 20, &1i32 as *const i32 as *const _, 4); // dark frame: the shadow and the Alt+Space menu
+        ShowWindow(hwnd, SW_SHOW);
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
             TranslateMessage(&m);
