@@ -1,4 +1,5 @@
-// Alt+Space opens a search card; results come from the `rs --serve` services (one pipe per drive).
+// Alt+Space or Win+S (either can be switched off in the installer) opens a search card; results come from the
+// `rs --serve` services (one pipe per drive).
 // Type to search, Up/Down (or mouse) to pick, Enter to open, Ctrl+Enter to show in Explorer, Esc to close.
 // `rs-launcher --autostart` registers it to start at logon.
 //
@@ -460,16 +461,81 @@ unsafe fn apply_style(main: HWND) {
     }
 }
 
+static MAIN: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static WIN_S: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false); // the switch, read by the hook
+static HOOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Win+S / Win+Q open the card instead of Windows Search (which the installer switched off). Win+Shift+S stays the snip.
+unsafe extern "system" fn win_s_hook(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+    if n >= 0 && WIN_S.load(std::sync::atomic::Ordering::Relaxed) {
+        let k = &*(l as *const KBDLLHOOKSTRUCT);
+        let held = |vk: u16| GetAsyncKeyState(vk as i32) < 0;
+        let key = k.vkCode == b'S' as u32 || k.vkCode == b'Q' as u32;
+        if key && k.flags & LLKHF_INJECTED == 0 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_SHIFT) && !held(VK_CONTROL) && !held(VK_MENU) {
+            if w == WM_KEYDOWN as usize || w == WM_SYSKEYDOWN as usize {
+                // a key between Win down and up, or Windows opens Start when Win is let go
+                keybd_event(0xE8, 0, 0, 0);
+                keybd_event(0xE8, 0, KEYEVENTF_KEYUP, 0);
+                PostMessageW(MAIN.load(std::sync::atomic::Ordering::Relaxed) as HWND, WM_HOTKEY, 1, 0);
+            }
+            // the other hooks still see the key (topbar's Start must learn Win was not pressed alone), the shell does not
+            CallNextHookEx(null_mut(), n, w, l);
+            return 1;
+        }
+    }
+    CallNextHookEx(null_mut(), n, w, l)
+}
+
+/// The hook's own thread: a card busy painting or asking the index can never stall the keyboard. Windows also drops a
+/// low-level hook that once answered too slowly (a busy boot), so it is set again every 30 s, like topbar's.
+fn win_s_thread() {
+    unsafe {
+        let set = || SetWindowsHookExW(WH_KEYBOARD_LL, Some(win_s_hook), GetModuleHandleW(null()), 0);
+        let mut hook = set();
+        SetTimer(null_mut(), 0, 30_000, None);
+        let mut m: MSG = zeroed();
+        while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
+            if m.message == WM_TIMER {
+                let new = set();
+                if !new.is_null() {
+                    if !hook.is_null() {
+                        UnhookWindowsHookEx(hook);
+                    }
+                    hook = new;
+                }
+            }
+        }
+    }
+}
+
+/// Takes the shortcuts the installer's gear asked for; called at start and when the settings change.
+/// A taken Alt+Space is not fatal any more (Win+S and the bar's search button still open the card): said once, at start.
+unsafe fn apply_keys(main: HWND, at_start: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let keys = winrust_common::search_keys::SearchKeys::read();
+    UnregisterHotKey(main, 1);
+    if keys.alt_space && RegisterHotKey(main, 1, MOD_ALT | MOD_NOREPEAT, VK_SPACE as u32) == 0 && at_start {
+        // its own thread: a message box here would hold the card's messages until someone clicks OK
+        std::thread::spawn(|| note(winrust_common::t!("Alt+Space занят другой программой: поиск открывается по Win+S или кнопкой поиска на панели.", "Alt+Space is taken by another program: search still opens with Win+S or the bar's search button.", ja: "Alt+Space は別のプログラムが使用中です。検索は Win+S またはバーの検索ボタンで開けます。", pt: "Alt+Espaço está em uso por outro programa: a pesquisa ainda abre com Win+S ou pelo botão de pesquisa da barra.", zh: "Alt+Space 已被其他程序占用：仍可用 Win+S 或任务栏上的搜索按钮打开搜索。", es: "Alt+Espacio lo usa otro programa: la búsqueda se sigue abriendo con Win+S o con el botón de búsqueda de la barra."), MB_ICONWARNING));
+    }
+    WIN_S.store(keys.win_s, Relaxed); // switched off, the hook just passes everything on
+    if keys.win_s && !HOOKED.swap(true, Relaxed) {
+        std::thread::spawn(win_s_thread);
+    }
+}
+
 unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if m == winrust_common::style::msg() {
         winrust_common::style::reload();
         apply_style(h);
+        apply_keys(h, false); // the installer's gear broadcasts the same message after changing them
         InvalidateRect(h, null(), 0);
         return 0;
     }
     match m {
         WM_HOTKEY => {
-            // id 1: our Alt+Space; 2: the topbar asks for Run mode (Win+R). The same key again closes, the other switches.
+            // id 1: our Alt+Space / Win+S (or the bar's search button); 2: the topbar asks for Run mode (Win+R).
+            // The same key again closes, the other switches.
             let run = wp == 2;
             if IsWindowVisible(h) != 0 && st(|s| s.ta > 0.0 && s.run == run) { hide(h) } else { show(h, run) }
             0
@@ -1546,12 +1612,22 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
     }
 }
 
-fn kill_search_host() {
-    winrust_common::proc::pids("SearchHost.exe").into_iter().for_each(winrust_common::proc::kill);
+/// The search window that is ended: Windows 11's. Windows 10's (SearchApp.exe, SearchUI.exe) is left alone: Explorer keeps
+/// asking for it, and while it was blocked every ask waited out DCOM's activation timeout, holding up the desktop's right
+/// click and Start for seconds. With WSearch off and Win+S going to our card it has nothing to do anyway.
+const SEARCH_UIS: [&str; 1] = ["SearchHost.exe"];
+
+/// The installer blocked one of them (IFEO): an uninstalled or unblocked setup must get its search back.
+fn search_blocked() -> bool {
+    SEARCH_UIS.iter().any(|n| winrust_common::reg::exists(&format!(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\{n}"), Some("Debugger")))
 }
 
-/// Ends SearchHost the moment it opens a window (a WinEvent, no polling: a process snapshot costs ~9 ms, every 2 s that was
-/// the launcher's whole idle CPU). A full look every 30 s catches one that never makes a window.
+fn kill_search_host() {
+    SEARCH_UIS.iter().flat_map(|n| winrust_common::proc::pids(n)).for_each(winrust_common::proc::kill);
+}
+
+/// Ends the search UI the moment it opens a window (a WinEvent, no polling: a process snapshot costs ~9 ms, every 2 s that
+/// was the launcher's whole idle CPU). A full look every 30 s catches one that never makes a window.
 fn search_host_guard() {
     use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
     unsafe extern "system" fn created(_: HWINEVENTHOOK, _: u32, w: HWND, id: i32, child: i32, _: u32, _: u32) {
@@ -1560,7 +1636,7 @@ fn search_host_guard() {
         if id != 0 || child != 0 || unsafe { GetWindowThreadProcessId(w, &mut pid) } == 0 || pid == 0 || LAST.replace(pid) == pid {
             return;
         }
-        if winrust_common::proc::exe_name(pid).is_some_and(|n| n.eq_ignore_ascii_case("SearchHost.exe")) {
+        if winrust_common::proc::exe_name(pid).is_some_and(|n| SEARCH_UIS.iter().any(|s| n.eq_ignore_ascii_case(s))) {
             winrust_common::proc::kill(pid);
         }
     }
@@ -1600,6 +1676,11 @@ fn main() {
 
         let hi = GetModuleHandleW(null());
         let cls = wide("rs_launcher");
+        // one card per session (a taken Alt+Space used to be the only guard); the handle lives until exit
+        let one = windows_sys::Win32::System::Threading::CreateMutexW(null(), 0, wide("Local\\rs-launcher-single").as_ptr());
+        if one.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+            return;
+        }
         RegisterClassW(&WNDCLASSW {
             style: 0,
             lpfnWndProc: Some(wndproc),
@@ -1622,14 +1703,11 @@ fn main() {
         st(|s| s.scale = scale);
         apply_style(main);
 
-        if RegisterHotKey(main, 1, MOD_ALT | MOD_NOREPEAT, VK_SPACE as u32) == 0 {
-            MessageBoxW(null_mut(), wide(winrust_common::t!("Alt+Space занят (запускатель уже работает?)", "Alt+Space is taken (is the launcher already running?)", ja: "Alt+Space は使用中です（ランチャーが既に実行中では？）", pt: "Alt+Space está em uso (o iniciador já está em execução?)", zh: "Alt+Space 已被占用（启动器是否已在运行？）", es: "Alt+Espacio ya está en uso (¿el buscador ya está abierto?)")).as_ptr(), wide("rs launcher").as_ptr(), MB_ICONERROR);
-            return;
-        }
-        // SearchHost is started by svchost as a packaged app, which ignores the IFEO block the installer sets: end it whenever it appears.
-        // Only when the installer's block is present (an uninstalled / unblocked setup must get its search back).
-        let blocked = winrust_common::reg::exists(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\SearchHost.exe", Some("Debugger"));
-        if blocked {
+        MAIN.store(main as isize, std::sync::atomic::Ordering::Relaxed);
+        apply_keys(main, true);
+        // The search UI is started by svchost as a packaged app, which ignores the IFEO block the installer sets: end it whenever
+        // it appears. Only when the installer's block is present (an uninstalled / unblocked setup must get its search back).
+        if search_blocked() {
             std::thread::spawn(|| search_host_guard());
         }
         let mut msg: MSG = zeroed();

@@ -1,4 +1,4 @@
-//! rust-search: NTFS search service + Alt+Space launcher; disables Windows Search (reversibly).
+//! rust-search: NTFS search service + Alt+Space / Win+S launcher; disables Windows Search (reversibly).
 use crate::*;
 
 /// Where launchers before the change journal kept the originals; turned into the journal's first lines, then deleted.
@@ -59,6 +59,9 @@ pub(crate) fn install() -> Result<(), String> {
         // SearchHost.exe (the Start/Win+S search UI) is not a service, so it gets the same IFEO trick as taskmgr: Windows runs `cmd /c exit` instead.
         j.set_reg(SH_KEY, "Debugger", "REG_SZ", "cmd.exe /c exit")?;
         let _ = run("taskkill", &["/f", "/im", "SearchHost.exe"]);
+        // Windows 10's search window (SearchApp.exe / SearchUI.exe) is not blocked: Explorer keeps activating it, and a
+        // blocked one makes Explorer wait out DCOM's timeout each time (seconds of a frozen desktop menu). Win+S reaches
+        // rs-launcher's hook first, and with WSearch off it has nothing to search.
         j.set_reg(SB_KEY, "SearchboxTaskbarMode", "REG_DWORD", "0") // hide the taskbar search box
     })
 }

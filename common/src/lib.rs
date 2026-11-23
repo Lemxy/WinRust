@@ -19,6 +19,7 @@ pub mod mft;
 pub mod proc;
 pub mod reg;
 pub mod search;
+pub mod search_keys;
 pub mod settings;
 pub mod style;
 

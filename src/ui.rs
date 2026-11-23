@@ -1,5 +1,6 @@
 //! The window: drawing (GDI+ shapes, GDI text), layout, dialogs and the message loop handler.
 use crate::*;
+use winrust_common::search_keys::SearchKeys;
 
 // ---------- drawing ----------
 //
@@ -130,15 +131,14 @@ pub(crate) const ID_MAIN: usize = 0; // the primary button of the page
 pub(crate) const ID_ROLLBACK: usize = 1;
 pub(crate) const ID_OK: usize = 2;
 pub(crate) const ID_CANCEL: usize = 3;
-pub(crate) const ID_SWITCH: usize = 4;
-pub(crate) const ID_GEAR: usize = 5;
 pub(crate) const ID_LANG: usize = 6;
-pub(crate) const ID_SHELL: usize = 7; // settings panel: replace Explorer with rust-explorer
 pub(crate) const ID_ALL: usize = 8; // "select all / none" on the custom page
 pub(crate) const ID_UPDATE: usize = 9; // "update available" link at the bottom of the step list
 const ID_BACK: usize = 10;
 const ID_EXPRESS: usize = 11; // the two choice cards of the first page
 const ID_CUSTOM: usize = 12;
+pub(crate) const ID_OPT: usize = 40; // + row: a switch of the open settings panel
+pub(crate) const ID_GEAR: usize = 70; // + plugin index: the gear on its row
 pub(crate) const ID_CHECK: usize = 100; // + plugin index: the whole row toggles it
 pub(crate) const STARTING: usize = usize::MAX - 1; // JOB before apply() picks its first step
 
@@ -233,11 +233,12 @@ pub(crate) fn row_box(k: usize, _w: f32) -> Box4 {
 const NAME_X: f32 = X0 + 54.0; // the name column of a row
 const DESC_X: f32 = X0 + 232.0; // the short description column
 
-/// Settings gear after the name of the plugin that has settings (topbar): (plugin index, box).
-pub(crate) fn gear_box(w: f32) -> Option<(usize, Box4)> {
-    let (k, i) = ready().enumerate().find(|&(_, i)| PLUGINS[i].settings)?;
-    let r = row_box(k, w);
-    Some((i, [DESC_X - 30.0, r[1] + 5.0, DESC_X - 6.0, r[3] - 5.0]))
+/// Settings gears after the names of the plugins that have settings: (plugin index, box).
+pub(crate) fn gear_boxes(w: f32) -> impl Iterator<Item = (usize, Box4)> {
+    ready().enumerate().filter(|&(_, i)| PLUGINS[i].settings).map(move |(k, i)| {
+        let r = row_box(k, w);
+        (i, [DESC_X - 30.0, r[1] + 5.0, DESC_X - 6.0, r[3] - 5.0])
+    })
 }
 
 /// "Select all / none" at the right end of the components caption.
@@ -245,17 +246,101 @@ pub(crate) fn all_box(_w: f32) -> Box4 {
     [X1 - 160.0, LIST_TOP - 28.0, X1, LIST_TOP - 6.0]
 }
 
-/// On/off switch inside the settings panel's first row.
-pub(crate) fn switch_box(w: f32) -> Box4 {
-    let (d, _, _) = dialog_boxes(w);
-    let mid = d[1] + 72.0 + 32.0;
-    [d[2] - 24.0 - 16.0 - 40.0, mid - 12.0, d[2] - 24.0 - 16.0, mid + 12.0]
+/// Height of one switch row in a settings panel with `n` of them: roomy, shrinking only when many must fit.
+fn opt_h(n: usize) -> f32 {
+    ((WIN_H - 40.0 - 72.0 - 20.0 - BTN_H - 20.0) / n.max(1) as f32).clamp(52.0, 64.0)
 }
 
-/// Second switch row of the settings panel: rust-explorer replaces the Explorer shell too.
-pub(crate) fn shell_switch_box(w: f32) -> Box4 {
-    let b = switch_box(w);
-    [b[0], b[1] + 64.0, b[2], b[3] + 64.0]
+/// The settings panel with `n` switches, and its Done button.
+pub(crate) fn settings_boxes(w: f32, n: usize) -> (Box4, Box4) {
+    let (dw, dh) = (520.0, (72.0 + n.max(1) as f32 * opt_h(n) + 20.0 + BTN_H + 20.0).min(WIN_H - 40.0));
+    let (l, t) = ((w - dw) / 2.0, (WIN_H - dh) / 2.0);
+    let (bt, r) = (t + dh - 20.0 - BTN_H, l + dw - 20.0);
+    ([l, t, l + dw, t + dh], [r - BTN_W, bt, r, bt + BTN_H])
+}
+
+/// Row `k` of a settings panel with `n` switches (the whole row flips it), and the switch at its right end.
+pub(crate) fn opt_boxes(w: f32, n: usize, k: usize) -> (Box4, Box4) {
+    let (d, _) = settings_boxes(w, n);
+    let h = opt_h(n);
+    let t = d[1] + 72.0 + k as f32 * h;
+    let row = [d[0] + 24.0, t, d[2] - 24.0, t + h];
+    let mid = t + h / 2.0;
+    (row, [row[2] - 16.0 - 40.0, mid - 12.0, row[2] - 16.0, mid + 12.0])
+}
+
+/// One switch of a plugin's settings panel. Built fresh for every paint and click, so `on` is always current.
+pub(crate) struct Opt {
+    name: &'static str,
+    note: &'static str,
+    on: bool,
+    flip: fn(),
+}
+
+/// The switches behind plugin `i`'s gear.
+pub(crate) fn opts(i: usize) -> Vec<Opt> {
+    match PLUGINS[i].name {
+        "rust-search" => {
+            let k = SearchKeys::read();
+            vec![
+                Opt {
+                    name: t!("Открывать по Alt+Space", "Open with Alt+Space", ja: "Alt+Space で開く", pt: "Abrir com Alt+Espaço", zh: "用 Alt+Space 打开", es: "Abrir con Alt+Espacio"),
+                    note: t!("Иначе Alt+Space открывает меню окна (переместить, закрыть)", "Otherwise Alt+Space opens the window menu (Move, Close)", ja: "オフにすると Alt+Space はウィンドウ メニュー (移動、閉じる) を開きます", pt: "Senão, Alt+Espaço abre o menu da janela (Mover, Fechar)", zh: "否则 Alt+Space 会打开窗口菜单（移动、关闭）", es: "Si no, Alt+Espacio abre el menú de la ventana (Mover, Cerrar)"),
+                    on: k.alt_space,
+                    flip: || flip_keys(|k| k.alt_space = !k.alt_space),
+                },
+                Opt {
+                    name: t!("Открывать по Win+S", "Open with Win+S", ja: "Win+S で開く", pt: "Abrir com Win+S", zh: "用 Win+S 打开", es: "Abrir con Win+S"),
+                    note: t!("Вместо поиска Windows (и Win+Q)", "Instead of Windows Search (Win+Q too)", ja: "Windows 検索の代わりに (Win+Q も)", pt: "No lugar da Pesquisa do Windows (Win+Q também)", zh: "代替 Windows 搜索（Win+Q 也一样）", es: "En lugar de la Búsqueda de Windows (también Win+Q)"),
+                    on: k.win_s,
+                    flip: || flip_keys(|k| k.win_s = !k.win_s),
+                },
+            ]
+        }
+        TOPBAR => vec![
+            Opt {
+                name: t!("Скрыть значок OneDrive", "Hide the OneDrive icon", ja: "OneDrive アイコンを隠す", pt: "Ocultar o ícone do OneDrive", zh: "隐藏 OneDrive 图标", es: "Ocultar el ícono de OneDrive"),
+                note: t!("Синхронизация продолжает работать", "Sync keeps working", ja: "同期は引き続き動作します", pt: "A sincronização continua funcionando", zh: "同步功能仍可正常使用", es: "La sincronización sigue funcionando"),
+                on: od_hidden(),
+                flip: || report(set_od_hidden(!od_hidden())),
+            },
+            Opt {
+                name: t!("Заменить Проводник", "Replace Explorer", ja: "エクスプローラーを置き換える", pt: "Substituir o Explorer", zh: "替换资源管理器", es: "Reemplazar el Explorador"),
+                note: t!("Оболочкой становится rust-explorer", "rust-explorer becomes the shell", ja: "rust-explorer がシェルになります", pt: "O rust-explorer passa a ser o shell", zh: "rust-explorer 将成为外壳", es: "rust-explorer pasa a ser el shell"),
+                on: SHELL.load(Relaxed),
+                flip: flip_shell,
+            },
+        ],
+        _ => vec![],
+    }
+}
+
+/// The shell part needs the file manager and the bar: switching it on ticks both.
+fn flip_shell() {
+    if !SHELL.fetch_xor(true, Relaxed) {
+        for n in shell_needs() {
+            PLUGINS.iter().position(|p| p.name == n).inspect(|&o| SELECTED[o].store(true, Relaxed));
+        }
+    }
+}
+
+/// rust-search's shortcuts: saved for rs-launcher, which picks them up from the broadcast. One of them always stays on.
+fn flip_keys(change: fn(&mut SearchKeys)) {
+    let mut k = SearchKeys::read();
+    change(&mut k);
+    if !k.alt_space && !k.win_s {
+        *MSG.lock().unwrap() = (t!("Оставьте хотя бы одно сочетание клавиш", "Keep at least one shortcut", ja: "ショートカットを少なくとも 1 つ残してください", pt: "Mantenha pelo menos um atalho", zh: "请至少保留一个快捷键", es: "Deja al menos un atajo").into(), false);
+        return;
+    }
+    report(k.write());
+    i18n::style::broadcast();
+}
+
+/// An option that could not be saved says so in the status line.
+fn report(r: Result<(), String>) {
+    if let Err(e) = r {
+        *MSG.lock().unwrap() = (tf!("Ошибка: {e}", "Error: {e}", ja: "エラー: {e}", pt: "Erro: {e}", zh: "错误：{e}", es: "Error: {e}"), false);
+    }
 }
 
 /// Index of rust-explorer in PLUGINS.
@@ -517,7 +602,6 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
                 ui.text(t!("Только по вашему выбору", "Only when you choose", ja: "選択したときのみ", pt: "Somente quando você escolher", zh: "仅在手动选择时", es: "Solo si tú lo eliges"), [X0, EXTRA_SEC_Y, X1, EXTRA_SEC_Y + 22.0], 12.0, 400, lerp(DIM, BG, 0.3), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
             }
             let (to_rm, to_add) = diff();
-            let gear = gear_box(w);
             for (k, i) in rows().enumerate() {
                 let p = &PLUGINS[i];
                 let r = row_box(k, w);
@@ -529,8 +613,8 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
                 check(&ui, [X0 + 8.0, mid - 9.0, X0 + 26.0, mid + 9.0], SELECTED[i].load(Relaxed), locked(i));
                 ui.text_in(p.glyph, [X0 + 32.0, mid - 10.0, X0 + 50.0, mid + 10.0], 14.0, 400, tile_color(p.name), DT_CENTER | DT_VCENTER | DT_SINGLELINE, icons);
                 ui.text(p.name, [NAME_X, r[1], DESC_X - 34.0, r[3]], 13.5, 600, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-                if let Some((_, gb)) = gear.filter(|&(gi, _)| gi == i) {
-                    ui.text_in("\u{E713}", gb, 14.0, 400, if hot(ID_GEAR) { TEXT } else { DIM }, DT_CENTER | DT_VCENTER | DT_SINGLELINE, icons);
+                if let Some((_, gb)) = gear_boxes(w).find(|&(gi, _)| gi == i) {
+                    ui.text_in("\u{E713}", gb, 14.0, 400, if hot(ID_GEAR + i) { TEXT } else { DIM }, DT_CENTER | DT_VCENTER | DT_SINGLELINE, icons);
                 }
                 let installed = INSTALLED[i].load(Relaxed);
                 let status = if to_rm.contains(&i) {
@@ -675,26 +759,30 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         button(&ui, okb, &ok_label, if danger { 2 } else { 0 }, hot(ID_OK));
     }
 
-    // settings panel of a plugin (topbar: OneDrive switch, which shell)
+    // settings panel of a plugin: its switches in one group, Done at the bottom
     if let Some(i) = SETTINGS.get() {
+        let opts = opts(i);
+        let n = opts.len();
         ui.shape([0.0, 0.0, w, WIN_H + 1.0], 0.0, argb(0, 160));
-        let (d, _, closeb) = dialog_boxes(w);
+        let (d, closeb) = settings_boxes(w, n);
         ui.round(d, 4.0, PANEL, BORDER);
         ui.shape([d[0], d[1], d[2], d[1] + 3.0], 0.0, argb(ACCENT, 255));
         ui.text(&tf!("Настройки {}", "{} settings", ja: "{} の設定", pt: "Configurações de {}", zh: "{} 设置", es: "Configuración de {}", PLUGINS[i].name), [d[0] + 24.0, d[1] + 22.0, d[2] - 24.0, d[1] + 50.0], 16.0, 600, TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        let group = [d[0] + 24.0, d[1] + 72.0, d[2] - 24.0, d[1] + 72.0 + 128.0];
         let inner = rgb(56, 56, 56);
-        ui.round(group, 3.0, inner, inner);
-        ui.shape([group[0] + 16.0, group[1] + 64.0, group[2], group[1] + 64.0 + hair], 0.0, argb(rgb(72, 72, 74), 255));
-        let rows = [
-            (t!("Скрыть значок OneDrive", "Hide the OneDrive icon", ja: "OneDrive アイコンを隠す", pt: "Ocultar o ícone do OneDrive", zh: "隐藏 OneDrive 图标", es: "Ocultar el ícono de OneDrive"), t!("Синхронизация продолжает работать", "Sync keeps working", ja: "同期は引き続き動作します", pt: "A sincronização continua funcionando", zh: "同步功能仍可正常使用", es: "La sincronización sigue funcionando"), od_hidden(), switch_box(w)),
-            (t!("Заменить Проводник", "Replace Explorer", ja: "エクスプローラーを置き換える", pt: "Substituir o Explorer", zh: "替换资源管理器", es: "Reemplazar el Explorador"), t!("Оболочкой становится rust-explorer", "rust-explorer becomes the shell", ja: "rust-explorer がシェルになります", pt: "O rust-explorer passa a ser o shell", zh: "rust-explorer 将成为外壳", es: "rust-explorer pasa a ser el shell"), SHELL.load(Relaxed), shell_switch_box(w)),
-        ];
-        for (k, (name, note, on, sw)) in rows.into_iter().enumerate() {
-            let t = group[1] + k as f32 * 64.0;
-            ui.text(name, [group[0] + 16.0, t + 12.0, sw[0] - 12.0, t + 32.0], 14.0, 500, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            ui.text(note, [group[0] + 16.0, t + 32.0, sw[0] - 12.0, t + 52.0], 12.0, 400, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-            switch(&ui, sw, on, false);
+        if n > 0 {
+            let (first, _) = opt_boxes(w, n, 0);
+            let (last, _) = opt_boxes(w, n, n - 1);
+            ui.round([first[0], first[1], first[2], last[3]], 3.0, inner, inner);
+        }
+        for (k, o) in opts.iter().enumerate() {
+            let (row, sw) = opt_boxes(w, n, k);
+            let mid = (row[1] + row[3]) / 2.0;
+            if k > 0 {
+                ui.shape([row[0] + 16.0, row[1], row[2], row[1] + hair], 0.0, argb(rgb(72, 72, 74), 255));
+            }
+            ui.text(o.name, [row[0] + 16.0, mid - 20.0, sw[0] - 12.0, mid], 14.0, 500, if hot(ID_OPT + k) { lerp(TEXT, ACCENT, 0.25) } else { TEXT }, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            ui.text(o.note, [row[0] + 16.0, mid, sw[0] - 12.0, mid + 20.0], 12.0, 400, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            switch(&ui, sw, o.on, false);
         }
         button(&ui, closeb, t!("Готово", "Done", ja: "完了", pt: "Concluído", zh: "完成", es: "Listo"), 0, hot(ID_CANCEL));
     }
@@ -732,9 +820,10 @@ pub(crate) unsafe fn hit(hwnd: HWND, lp: isize) -> Option<usize> {
     GetClientRect(hwnd, &mut rc);
     let w = rc.right as f32 / s;
     let inside = |b: Box4| x >= b[0] * s && x <= b[2] * s && y >= b[1] * s && y <= b[3] * s;
-    if SETTINGS.get().is_some() {
-        let (_, _, closeb) = dialog_boxes(w);
-        return if inside(switch_box(w)) { Some(ID_SWITCH) } else if inside(shell_switch_box(w)) { Some(ID_SHELL) } else if inside(closeb) { Some(ID_CANCEL) } else { None };
+    if let Some(i) = SETTINGS.get() {
+        let n = opts(i).len();
+        let (_, closeb) = settings_boxes(w, n);
+        return (0..n).find(|&k| inside(opt_boxes(w, n, k).0)).map(|k| ID_OPT + k).or_else(|| inside(closeb).then_some(ID_CANCEL));
     }
     if DIALOG.with_borrow(|d| d.is_some()) {
         let (_, cancel, ok) = dialog_boxes(w);
@@ -764,8 +853,8 @@ pub(crate) unsafe fn hit(hwnd: HWND, lp: isize) -> Option<usize> {
             inside(primary_box()).then_some(ID_MAIN)
         }
         1 => {
-            if gear_box(w).is_some_and(|(_, b)| inside(b)) {
-                return Some(ID_GEAR);
+            if let Some((i, _)) = gear_boxes(w).find(|&(_, b)| inside(b)) {
+                return Some(ID_GEAR + i);
             }
             if inside(all_box(w)) {
                 return Some(ID_ALL);
@@ -898,18 +987,9 @@ pub(crate) unsafe fn close_dialog(hwnd: HWND, run: bool) {
 }
 
 pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
-    if SETTINGS.get().is_some() {
-        if id == ID_SWITCH {
-            if let Err(e) = set_od_hidden(!od_hidden()) {
-                *MSG.lock().unwrap() = (tf!("Ошибка: {e}", "Error: {e}", ja: "エラー: {e}", pt: "Erro: {e}", zh: "错误：{e}", es: "Error: {e}"), false);
-            }
-        } else if id == ID_SHELL {
-            // the shell part needs the file manager and the bar: switching it on ticks both
-            if !SHELL.fetch_xor(true, Relaxed) {
-                for n in shell_needs() {
-                    PLUGINS.iter().position(|p| p.name == n).inspect(|&o| SELECTED[o].store(true, Relaxed));
-                }
-            }
+    if let Some(i) = SETTINGS.get() {
+        if let Some(o) = id.checked_sub(ID_OPT).and_then(|k| opts(i).into_iter().nth(k)) {
+            (o.flip)();
         } else if id == ID_CANCEL {
             SETTINGS.set(None);
         }
@@ -965,8 +1045,8 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
             HOVER.set(None);
             repaint();
         }
-        (1, ID_GEAR) => {
-            SETTINGS.set(PLUGINS.iter().position(|p| p.settings));
+        (1, g) if (ID_GEAR..ID_GEAR + PLUGINS.len()).contains(&g) => {
+            SETTINGS.set(Some(g - ID_GEAR));
             HOVER.set(None);
             repaint();
         }
