@@ -187,7 +187,7 @@ impl App {
         let title = R::new(band.l + px(20.0), 0, band.l + px(320.0), band.b);
         // кнопки справа налево
         let mut buttons = vec![];
-        let mut right = band.r - px(12.0);
+        let mut right = band.r - px(12.0 + CAP_BTNS); // clear of the caption buttons
         for (btn, label, glyph) in page_buttons(ui.page).into_iter().rev() {
             let bw = if label.is_empty() { px(36.0) } else { g.text_w(label, Font::Ui) + px(48.0) };
             let r = R::new(right - bw, px(10.0), right, px(10.0 + 32.0));
@@ -295,6 +295,7 @@ impl App {
                 self.draw_band(&g, &ui, &d, &lay);
                 self.draw_nav(&g, &ui, &lay);
                 self.draw_overlay(&g, &ui, lay.client);
+                winrust_common::caption::paint_buttons(mem as _, hwnd as _, CAPTION, ui.th.bg.c(), ui.th.text.c());
                 winapi::um::wingdi::BitBlt(hdc, 0, 0, w, h, mem, 0, 0, winapi::um::wingdi::SRCCOPY);
                 winapi::um::wingdi::SelectObject(mem, old);
                 winapi::um::wingdi::DeleteObject(bmp as *mut _);
