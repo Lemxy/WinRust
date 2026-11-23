@@ -96,6 +96,10 @@ pub(crate) unsafe extern "system" fn tray_proc(hwnd: HWND, msg: u32, wp: WPARAM,
     DefWindowProcW(hwnd, msg, wp, lp)
 }
 
+thread_local! {
+    static LAST_CLICK: Cell<(usize, u32, u32)> = const { Cell::new((0, 0, 0)) }; // (icon window, icon id, tick) of the last left click
+}
+
 /// Posts the same messages explorer would for a click on the icon; the app shows its own window or menu.
 pub(crate) unsafe fn tray_click(t: (HWND, u32, u32, u32), left: bool) {
     let (hwnd, uid, cb, ver) = t;
@@ -114,11 +118,24 @@ pub(crate) unsafe fn tray_click(t: (HWND, u32, u32, u32), left: bool) {
             PostMessageW(hwnd, cb, uid as usize, ev as isize);
         }
     };
+    // what Explorer sends: the raw button messages always, plus NIN_SELECT / WM_CONTEXTMENU for version 4. Many apps open
+    // only on the button-up or the double click (Steam), so NIN_SELECT alone left them dead (#115).
+    let now = windows_sys::Win32::System::SystemInformation::GetTickCount();
+    let prev = if left { LAST_CLICK.replace((hwnd as usize, uid, now)) } else { (0, 0, 0) };
+    let double = left && (prev.0, prev.1) == (hwnd as usize, uid) && now.wrapping_sub(prev.2) <= GetDoubleClickTime();
+    if double {
+        LAST_CLICK.set((0, 0, 0)); // a third click starts a new pair
+    }
     match (left, ver >= 4) {
-        (true, true) => post(0x400), // NIN_SELECT
-        (true, false) => [WM_LBUTTONDOWN, WM_LBUTTONUP].into_iter().for_each(post),
-        (false, true) => post(WM_CONTEXTMENU),
-        (false, false) => [WM_RBUTTONDOWN, WM_RBUTTONUP].into_iter().for_each(post),
+        (true, v4) => {
+            [WM_LBUTTONDOWN, WM_LBUTTONUP].into_iter().for_each(post);
+            if v4 { post(0x400); } // NIN_SELECT
+            if double { post(WM_LBUTTONDBLCLK); }
+        }
+        (false, v4) => {
+            [WM_RBUTTONDOWN, WM_RBUTTONUP].into_iter().for_each(post);
+            if v4 { post(WM_CONTEXTMENU); }
+        }
     }
 }
 

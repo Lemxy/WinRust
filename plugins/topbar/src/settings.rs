@@ -9,6 +9,7 @@ pub(crate) unsafe fn style_menu() {
         fly::MItem::new(t!("Тема", "Theme", ja: "テーマ", pt: "Tema")).hint(style_name(style())).swatch(i18n::style::pal().accent),
         fly::MItem::new(t!("Цвета и прозрачность", "Colors and transparency", ja: "色と透明度", pt: "Cores e transparência")).hint("›"),
         fly::MItem::new(t!("Шаблоны", "Templates", ja: "テンプレート", pt: "Modelos")).hint("›"),
+        fly::MItem::new(t!("Язык", "Language", ja: "言語", pt: "Idioma")).hint(i18n::lang().name()),
         fly::MItem::head(t!("Панель", "Bar", ja: "バー", pt: "Barra")).sep(),
         fly::MItem::new(t!("Положение, размер, поведение", "Position, size, behavior", ja: "位置、サイズ、動作", pt: "Posição, tamanho, comportamento")).hint("›"),
         fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows", ja: "ウィンドウを並べて表示", pt: "Lado a lado")),
@@ -18,9 +19,10 @@ pub(crate) unsafe fn style_menu() {
         1 => theme_page(),
         2 => colors_page(),
         3 => templates_page(),
-        5 => bar_page(),
-        6 => tile_windows(),
-        7 => reset_page(),
+        4 => language_page(),
+        6 => bar_page(),
+        7 => tile_windows(),
+        8 => reset_page(),
         _ => {}
     });
 }
@@ -44,6 +46,8 @@ pub(crate) fn style_name(s: i18n::style::Style) -> &'static str {
         Tiling => t!("Тайлинг", "Tiling", ja: "タイル表示", pt: "Lado a lado"),
         Road => t!("Белая дорога", "White road", ja: "白い道", pt: "Estrada branca"),
         Ruby => t!("Рубин", "Ruby", ja: "ルビー", pt: "Rubi"),
+        Win98 => "Windows 98",
+        Win7 => "Windows 7",
     }
 }
 
@@ -58,10 +62,26 @@ pub(crate) unsafe fn relook(moved: bool) {
     InvalidateRect(bar, null(), 0);
 }
 
+/// The language of every WinRust program (written to lang.txt; the others pick it up when they start).
+pub(crate) unsafe fn language_page() {
+    use i18n::Lang::*;
+    let mut items = vec![back()];
+    for (k, l) in [En, Ru, Ja, Pt].into_iter().enumerate() {
+        let it = fly::MItem::new(l.name()).on(l == i18n::lang());
+        items.push(if k == 0 { it.sep() } else { it });
+    }
+    gear_page("\u{E774}", t!("Язык", "Language", ja: "言語", pt: "Idioma"), t!("Язык всех программ WinRust", "The language of every WinRust program", ja: "すべての WinRust プログラムの言語", pt: "O idioma de todos os programas da WinRust"), items, move |i| {
+        let Some(&l) = i.checked_sub(1).and_then(|k| [En, Ru, Ja, Pt].get(k)) else { return style_menu() };
+        i18n::set_lang(l);
+        InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0);
+        language_page();
+    });
+}
+
 pub(crate) unsafe fn theme_page() {
     let mut items = vec![back()];
     for (k, &s) in i18n::style::ALL.iter().enumerate() {
-        let it = fly::MItem::new(style_name(s)).swatch(i18n::style::PALS[k].accent).on(s == style());
+        let it = fly::MItem::new(style_name(s)).swatch(i18n::style::PALS[k].accent).on(s == style()).beta(s.beta());
         items.push(if k == 0 { it.sep() } else { it });
     }
     gear_page("\u{E790}", t!("Тема", "Theme", ja: "テーマ", pt: "Tema"), t!("Готовый вид панели и окон", "A ready-made look for the bar and windows", ja: "バーとウィンドウのできあいの外観", pt: "Uma aparência pronta para a barra e as janelas"), items, |i| {

@@ -723,6 +723,7 @@ pub struct MItem {
     pub danger: bool,
     pub sep: bool,
     pub head: bool,  // a section caption: small dim text, not clickable
+    pub beta: bool,  // a red BETA at the right end
     pub swatch: u32, // a colour dot before the label (COLORREF), u32::MAX = none
 }
 
@@ -730,12 +731,16 @@ impl MItem {
     pub fn head(label: impl Into<String>) -> Self {
         MItem { head: true, ..MItem::new(label) }
     }
+    pub fn beta(mut self, on: bool) -> Self {
+        self.beta = on;
+        self
+    }
     pub fn swatch(mut self, c: u32) -> Self {
         self.swatch = c;
         self
     }
     pub fn new(label: impl Into<String>) -> Self {
-        MItem { icon: null_mut(), label: label.into(), hint: "", on: false, danger: false, sep: false, head: false, swatch: u32::MAX }
+        MItem { icon: null_mut(), label: label.into(), hint: "", on: false, danger: false, sep: false, head: false, beta: false, swatch: u32::MAX }
     }
     pub fn hint(mut self, h: &'static str) -> Self {
         self.hint = h;
@@ -805,14 +810,13 @@ pub fn context_menu(x: i32) {
         MItem::new(t!("Персонализация", "Personalization", ja: "個人用設定", pt: "Personalização")),
         MItem::new(t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas")).hint("Ctrl+Shift+Esc").sep(),
         MItem::new(t!("Чистильщик диска", "Disk Cleaner", ja: "ディスク クリーナー", pt: "Limpador de Disco")),
-        MItem::new(tf!("Программы WinRust: {}", "WinRust apps: {}", ja: "WinRust アプリ: {}", pt: "Apps da WinRust: {}", crate::i18n::lang().next().name())), // shared with the other WinRust programs
         MItem::new(t!("Закрыть панель", "Close the bar", ja: "バーを閉じる", pt: "Fechar a barra")).danger().sep(),
     ];
     if pu {
         items.insert(4, MItem::new(t!("Удалить мусор Windows (необратимо)", "Remove Windows junk (irreversible)", ja: "Windows の不要なものを削除 (元に戻せません)", pt: "Remover lixo do Windows (irreversível)")).danger());
     }
     menu(x, None, items, move |i| unsafe {
-        let i = if pu && i > 4 { i - 1 } else if pu && i == 4 { 99 } else { i };
+        let i = if pu && i == 4 { 99 } else { i };
         match i {
             0 => open(&wide("ms-settings:")),
             1 => open(&wide("ms-settings:personalization")),
@@ -820,7 +824,6 @@ pub fn context_menu(x: i32) {
             2 => open(&wide(&format!(r"{}\System32\taskmgr.exe", std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())))),
             3 => open_cleaner(),
             99 => crate::open_purge(),
-            4 => crate::i18n::set_lang(crate::i18n::lang().next()),
             _ => _ = PostMessageW(FindWindowW(wide("topbar").as_ptr(), null()), WM_CLOSE, 0, 0), // quits the bar, brings the Windows taskbar back
         }
     });
@@ -1592,6 +1595,9 @@ unsafe fn paint(hw: HWND, k: Kind) {
                         rx -= sc(18);
                     }
                     SelectObject(dc, f_small);
+                    if it.beta {
+                        text(dc, "BETA", RECT { left: lx, right: rx, ..*rc }, rgb(255, 59, 48), DT_RIGHT);
+                    }
                     if !it.hint.is_empty() {
                         text(dc, it.hint, RECT { left: lx, right: rx, ..*rc }, mix(pal().dim, pal().bg, 0.25), DT_RIGHT);
                     }

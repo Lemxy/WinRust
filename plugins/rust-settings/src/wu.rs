@@ -37,7 +37,8 @@ fn session() -> windows::core::Result<IUpdateSession> {
 }
 
 fn search(s: &IUpdateSession) -> windows::core::Result<IUpdateCollection> {
-    unsafe { s.CreateUpdateSearcher()?.Search(&BSTR::from("IsInstalled=0 and IsHidden=0 and Type='Software'"))?.Updates() }
+    // no Type filter: drivers and firmware too, as Windows Update itself offers them (#100)
+    unsafe { s.CreateUpdateSearcher()?.Search(&BSTR::from("IsInstalled=0 and IsHidden=0"))?.Updates() }
 }
 
 fn titles(c: &IUpdateCollection) -> Vec<String> {

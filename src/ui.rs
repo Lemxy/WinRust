@@ -236,6 +236,21 @@ pub(crate) fn dialog_boxes(w: f32) -> (Box4, Box4, Box4) {
     ([l, t, l + dw, t + dh], [r - BTN_W - 8.0 - BTN_W, bt, r - BTN_W - 8.0, bt + BTN_H], [r - BTN_W, bt, r, bt + BTN_H])
 }
 
+/// Pixels per logical px: the screen's DPI, shrunk so the whole window fits the work area (small screens, big DPI).
+pub(crate) fn scale() -> f32 {
+    unsafe {
+        let dc = GetDC(null_mut());
+        let mut s = GetDeviceCaps(dc, LOGPIXELSX as i32) as f32 / 96.0;
+        ReleaseDC(null_mut(), dc);
+        let mut wa: RECT = zeroed();
+        if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as *mut _, 0) != 0 {
+            let frame = GetSystemMetrics(SM_CYCAPTION) + 2 * GetSystemMetrics(SM_CYFIXEDFRAME) + 8;
+            s = s.min(((wa.bottom - wa.top - frame) as f32 / WIN_H).max(0.5));
+        }
+        s
+    }
+}
+
 /// A button: `kind` 0 = primary (blue), 1 = secondary (grey), 2 = danger (red), 3 = disabled.
 pub(crate) unsafe fn button(ui: &Ui, b: Box4, label: &str, kind: u8, hot: bool) {
     let (fill, fg) = match kind {
@@ -284,7 +299,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     let mem = CreateCompatibleDC(hdc);
     let bmp = CreateCompatibleBitmap(hdc, cw, ch);
     let ob = SelectObject(mem, bmp);
-    let s = GetDeviceCaps(hdc, LOGPIXELSX as i32) as f32 / 96.0;
+    let s = scale();
     let bgb = CreateSolidBrush(BG);
     FillRect(mem, &rc, bgb);
     DeleteObject(bgb);
@@ -510,9 +525,8 @@ thread_local! { pub(crate) static DIALOG: std::cell::RefCell<Option<Dialog>> = c
 /// Clickable thing under the cursor (ID_*). While a panel is up only its buttons count; while a job runs nothing does.
 pub(crate) unsafe fn hit(hwnd: HWND, lp: isize) -> Option<usize> {
     let (x, y) = ((lp & 0xFFFF) as i16 as f32, ((lp >> 16) & 0xFFFF) as i16 as f32);
-    let (mut rc, dc): (RECT, _) = (zeroed(), GetDC(hwnd));
-    let s = GetDeviceCaps(dc, LOGPIXELSX as i32) as f32 / 96.0;
-    ReleaseDC(hwnd, dc);
+    let mut rc: RECT = zeroed();
+    let s = scale();
     GetClientRect(hwnd, &mut rc);
     let w = rc.right as f32 / s;
     let inside = |b: Box4| x >= b[0] * s && x <= b[2] * s && y >= b[1] * s && y <= b[3] * s;

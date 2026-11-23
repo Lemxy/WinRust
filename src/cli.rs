@@ -27,7 +27,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let yes = args.iter().any(|a| a == "--yes");
     let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--yes").collect();
     let find = |n: &str| PLUGINS.iter().position(|p| p.name == n);
-    let usage = "usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin> | uninstall <plugin> | rollback --yes";
+    let usage = "usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin>|all | uninstall <plugin> | rollback --yes";
     let result = match words.as_slice() {
         ["list"] => {
             for p in PLUGINS {
@@ -62,6 +62,20 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                     say(&format!("{} is already installed", PLUGINS[i].name));
                     continue;
                 }
+                match install_plugin(i) {
+                    Ok(m) => say(&m),
+                    Err(e) => {
+                        failed = true;
+                        say(&format!("error: {}: {e}", PLUGINS[i].name));
+                    }
+                }
+            }
+            return if failed { 1 } else { 0 };
+        }
+        // every installed plugin in table order (one UAC prompt for all); one that fails does not stop the rest
+        ["update", "all"] => {
+            let mut failed = false;
+            for i in (0..PLUGINS.len()).filter(|&i| PLUGINS[i].actions.is_some() && (PLUGINS[i].installed)()) {
                 match install_plugin(i) {
                     Ok(m) => say(&m),
                     Err(e) => {

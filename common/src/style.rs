@@ -14,9 +14,11 @@ pub enum Style {
     Tiling,   // a thin status strip at the top, windows side by side
     Road,     // "White road": light ivory, faint triangles in the background
     Ruby,     // deep ruby, a smooth glossy gradient
+    Win98,    // BETA: classic grey, navy accent, square corners, Tahoma
+    Win7,     // BETA: Aero-like glass blue
 }
 
-pub const ALL: [Style; 6] = [Style::Normal, Style::Terminal, Style::Dock, Style::Tiling, Style::Road, Style::Ruby];
+pub const ALL: [Style; 8] = [Style::Normal, Style::Terminal, Style::Dock, Style::Tiling, Style::Road, Style::Ruby, Style::Win98, Style::Win7];
 
 impl Style {
     pub fn name(self) -> &'static str {
@@ -27,6 +29,8 @@ impl Style {
             Style::Tiling => "tiling",
             Style::Road => "road",
             Style::Ruby => "ruby",
+            Style::Win98 => "win98",
+            Style::Win7 => "win7",
         }
     }
     /// Unknown or empty text (no file yet, a hand edit) is the normal style.
@@ -36,14 +40,18 @@ impl Style {
     /// Square corners everywhere.
     // only the terminal keeps the monospace, square look; tiling uses the same sans and rounded shapes as the rest
     pub fn square(self) -> bool {
-        self == Style::Terminal
+        matches!(self, Style::Terminal | Style::Win98)
+    }
+    /// Still unfinished: the menu marks it with a red BETA.
+    pub fn beta(self) -> bool {
+        matches!(self, Style::Win98 | Style::Win7)
     }
     pub fn mono(self) -> bool {
         self == Style::Terminal
     }
     /// Dark text on a light background.
     pub fn light(self) -> bool {
-        self == Style::Road
+        matches!(self, Style::Road | Style::Win98)
     }
 }
 
@@ -232,7 +240,7 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
 }
 
 /// In the order of `ALL`. Neutral, low-contrast surfaces and one restrained accent (the look of macOS / modern fintech apps).
-pub const PALS: [Pal; 6] = [
+pub const PALS: [Pal; 8] = [
     // normal: graphite with the Apple system blue
     Pal { bg: rgb(22, 22, 24), line: rgb(46, 46, 50), hover: rgb(36, 36, 40), active: rgb(44, 44, 49), accent: rgb(10, 132, 255), text: rgb(245, 245, 247), dim: rgb(142, 142, 147) },
     // terminal: green on black
@@ -245,6 +253,10 @@ pub const PALS: [Pal; 6] = [
     Pal { bg: rgb(247, 245, 240), line: rgb(226, 220, 207), hover: rgb(238, 233, 222), active: rgb(232, 225, 210), accent: rgb(176, 134, 52), text: rgb(28, 26, 22), dim: rgb(124, 117, 104) },
     // ruby: deep garnet surfaces, a bright ruby accent, warm rose-white text
     Pal { bg: rgb(26, 7, 13), line: rgb(72, 22, 36), hover: rgb(46, 13, 24), active: rgb(60, 17, 31), accent: rgb(232, 52, 84), text: rgb(252, 238, 241), dim: rgb(178, 126, 139) },
+    // win98: button-face grey, navy title colour
+    Pal { bg: rgb(192, 192, 192), line: rgb(128, 128, 128), hover: rgb(212, 208, 200), active: rgb(160, 160, 160), accent: rgb(0, 0, 128), text: rgb(0, 0, 0), dim: rgb(64, 64, 64) },
+    // win7: Aero glass blue
+    Pal { bg: rgb(31, 58, 96), line: rgb(72, 108, 154), hover: rgb(58, 92, 138), active: rgb(74, 112, 160), accent: rgb(120, 190, 255), text: rgb(255, 255, 255), dim: rgb(176, 198, 226) },
 ];
 
 /// Status colours shared by every style (Apple's dark-mode system green, yellow, red).
@@ -545,7 +557,11 @@ pub fn sans_face() -> &'static str {
 
 /// The UI font of the current style.
 pub fn ui_face() -> &'static str {
-    if style().mono() { "Consolas" } else { sans_face() }
+    match style() {
+        s if s.mono() => "Consolas",
+        Style::Win98 => "Tahoma",
+        _ => sans_face(),
+    }
 }
 
 /// The icon font: Segoe Fluent Icons (Windows 11, same code points) or Segoe MDL2 Assets.

@@ -3,11 +3,15 @@
 # Rebuilds everything (build-all.ps1), pushes pending changes, tags, uploads the exe.
 # For the auto-updater (src/update) it also uploads every plugin exe plus manifest.txt and manifest.sig, signed with the
 # private key in %USERPROFILE%\.winrust\update-signing.key (tools/winrust-sign). Without that key the release stops.
-param([Parameter(Mandatory)][string]$Version, [string]$Notes)
+param([Parameter(Mandatory)][string]$Version, [string]$Notes, [switch]$OnlyInstaller)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 Set-Location $root
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw 'version must look like v0.2.0' }
+# the installer shows its own version (CARGO_PKG_VERSION) and compares it with the latest release
+$toml = Get-Content "$root\Cargo.toml" -Raw
+$toml = [regex]::Replace($toml, '(?m)^version = "[^"]*"', "version = `"$($Version.TrimStart('v'))`"", 1)
+[IO.File]::WriteAllText("$root\Cargo.toml", $toml)
 & "$PSScriptRoot\build-all.ps1"
 cargo build --release -p winrust-sign; if ($LASTEXITCODE) { throw 'winrust-sign build failed' }
 # signed before anything is pushed or tagged: a missing key must not leave a half-made release
@@ -19,7 +23,9 @@ Copy-Item "$root\target\release\plugin-launcher.exe" $exe -Force
 $sha = { param($p) (Get-FileHash $p -Algorithm SHA256).Hash.ToLower() }
 # manifest names are the payload.txt names; the asset gets dots for spaces (GitHub would rename it that way anyway)
 $lines = @('winrust-manifest 1', "version $Version", "$(& $sha $exe) WinRust.exe")
-foreach ($f in Get-ChildItem "$root\payload\*.exe") {
+# -OnlyInstaller: the manifest lists WinRust.exe alone (the plugins ride inside it), so the "update available" link and the
+# auto-updater still see the release without the plugin exes attached
+foreach ($f in $(if ($OnlyInstaller) { @() } else { Get-ChildItem "$root\payload\*.exe" })) {
     Copy-Item $f.FullName (Join-Path $dir ($f.Name -replace ' ', '.')) -Force
     $lines += "$(& $sha $f.FullName) $($f.Name)"
 }

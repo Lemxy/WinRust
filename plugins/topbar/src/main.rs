@@ -721,16 +721,19 @@ unsafe fn place(hwnd: HWND) {
         ab.uEdge = if left { ABE_LEFT } else { ABE_RIGHT };
         ab.rc = if left { RECT { left: 0, top: 0, right: strip, bottom: cy } } else { RECT { left: cx - strip, top: 0, right: cx, bottom: cy } };
         SHAppBarMessage(ABM_QUERYPOS, &mut ab);
+        if left { ab.rc.left = sane_edge(ab.rc.left, cx) } else { ab.rc.right = cx - sane_edge(cx - ab.rc.right, cx) }
         if left { ab.rc.right = ab.rc.left + strip } else { ab.rc.left = ab.rc.right - strip }
     } else if at_top() {
         ab.uEdge = ABE_TOP;
         ab.rc = RECT { left: 0, top: 0, right: cx, bottom: strip };
         SHAppBarMessage(ABM_QUERYPOS, &mut ab);
+        ab.rc.top = sane_edge(ab.rc.top, cy);
         ab.rc.bottom = ab.rc.top + strip;
     } else {
         ab.uEdge = ABE_BOTTOM;
         ab.rc = RECT { left: 0, top: cy - strip, right: cx, bottom: cy };
         SHAppBarMessage(ABM_QUERYPOS, &mut ab);
+        ab.rc.bottom = cy - sane_edge(cy - ab.rc.bottom, cy);
         ab.rc.top = ab.rc.bottom - strip;
     }
     SHAppBarMessage(ABM_SETPOS, &mut ab);
@@ -751,6 +754,13 @@ unsafe fn place(hwnd: HWND) {
     InvalidateRect(hwnd, null(), 0);
 }
 
+/// How far from its screen edge the bar may sit after ABM_QUERYPOS (room left for other appbars). Explorer sometimes answers
+/// with a far-off edge (a stale or huge appbar entry), and the work area then shrank to half the screen (#106): past a
+/// quarter of the screen, or off it, the bar goes back to the edge.
+fn sane_edge(offset: i32, size: i32) -> i32 {
+    if (0..=size / 4).contains(&offset) { offset } else { 0 }
+}
+
 unsafe fn set_work_area(mut want: RECT) {
     let mut cur: RECT = zeroed();
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut cur as *mut _ as *mut _, 0);
@@ -765,12 +775,13 @@ unsafe fn set_work_area(mut want: RECT) {
 /// A window that was already maximized keeps its old height when the work area shrinks: trim it (size only, no restore).
 unsafe extern "system" fn fit_maximized(h: HWND, lp: isize) -> i32 {
     let want = &*(lp as *const RECT);
-    if IsWindowVisible(h) == 0 || IsZoomed(h) == 0 {
+    // the work area is the primary monitor's: a window maximized on another monitor would be cut to a sliver
+    if IsWindowVisible(h) == 0 || IsZoomed(h) == 0 || MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) != MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) {
         return 1;
     }
     let mut r: RECT = zeroed();
     GetWindowRect(h, &mut r);
-    let f = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER); // a maximized window overhangs by its border
+    let f =GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER); // a maximized window overhangs by its border
     let n = RECT { left: r.left.max(want.left - f), top: r.top.max(want.top - f), right: r.right.min(want.right + f), bottom: r.bottom.min(want.bottom + f) };
     if (n.left, n.top, n.right, n.bottom) != (r.left, r.top, r.right, r.bottom) && n.right > n.left && n.bottom > n.top {
         SetWindowPos(h, null_mut(), n.left, n.top, n.right - n.left, n.bottom - n.top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -2785,6 +2796,13 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_far_off_appbar_edge_goes_back_to_the_screen_edge() {
+        assert_eq!(super::sane_edge(48, 1080), 48); // another bar below ours: stack above it
+        assert_eq!(super::sane_edge(540, 1080), 0); // half the screen (#106)
+        assert_eq!(super::sane_edge(-20, 1080), 0);
+    }
+
     #[test]
     fn network_icon_state() {
         use super::{INET, Link, WIFI, arcs_lit, net};
