@@ -147,29 +147,42 @@ fn folder_verb_exists(sid: &str, verb: &str) -> Result<bool, String> {
     }
 }
 
-fn our_folder_binding(sid: &str, verb: &str) -> Result<bool, String> {
+fn folder_string(subkey: &str, name: &str) -> Result<folder_backup::RegistryString, String> {
+    use folder_backup::RegistryString;
     use windows_sys::Win32::System::Registry::{HKEY_USERS, RRF_RT_REG_SZ};
-    let subkey = format!(r"{}\command", folder_subkey(sid, verb));
-    let executable = rx_dir().join("rust-explorer.exe");
-    // Read the whole command, up to the Windows process command-line limit (including NUL).
-    let mut actual = vec![0u16; 32_767];
-    let mut bytes = (actual.len() * size_of::<u16>()) as u32;
+
+    let value_name = wide(name);
+    // Read the whole value, up to the Windows process command-line limit (including NUL).
+    let mut data = vec![0u16; 32_767];
+    let mut bytes = (data.len() * size_of::<u16>()) as u32;
     let code = unsafe {
-        RegGetValueW(HKEY_USERS, wide(&subkey).as_ptr(), null(), RRF_RT_REG_SZ, null_mut(),
-            actual.as_mut_ptr().cast(), &mut bytes)
+        RegGetValueW(HKEY_USERS, wide(subkey).as_ptr(), value_name.as_ptr(), RRF_RT_REG_SZ, null_mut(),
+            data.as_mut_ptr().cast(), &mut bytes)
     };
     let key = format!(r"HKU\{subkey}");
+    let label = if name.is_empty() { "(Default)" } else { name };
     match code {
-        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_UNSUPPORTED_TYPE => return Ok(false),
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => return Ok(RegistryString::Absent),
+        ERROR_UNSUPPORTED_TYPE => return Ok(RegistryString::OtherType),
         ERROR_SUCCESS => {}
-        _ => return Err(trim_registry_error(&key, "(Default)", code)),
+        _ => return Err(trim_registry_error(&key, label, code)),
     }
     let count = bytes as usize / size_of::<u16>();
-    if !bytes.is_multiple_of(size_of::<u16>() as u32) || count == 0 || count > actual.len() || actual[count - 1] != 0 {
-        return Err(trim_registry_error(&key, "(Default)", ERROR_INVALID_DATA));
+    if !bytes.is_multiple_of(size_of::<u16>() as u32) || count == 0 || count > data.len() || data[count - 1] != 0 {
+        return Err(trim_registry_error(&key, label, ERROR_INVALID_DATA));
     }
-    let command = String::from_utf16(&actual[..count - 1]).map_err(|e| format!("{key}: {e}"))?;
-    Ok(folder_backup::uses_executable(&command, &executable.to_string_lossy()))
+    String::from_utf16(&data[..count - 1]).map(RegistryString::Text).map_err(|e| format!(r"{key}\{label}: {e}"))
+}
+
+fn our_folder_binding(sid: &str, verb: &str) -> Result<bool, String> {
+    use folder_backup::RegistryString;
+    let subkey = format!(r"{}\command", folder_subkey(sid, verb));
+    let RegistryString::Text(command) = folder_string(&subkey, "")? else { return Ok(false) };
+    let executable = rx_dir().join("rust-explorer.exe");
+    if !folder_backup::uses_executable(&command, &executable.to_string_lossy()) {
+        return Ok(false);
+    }
+    Ok(folder_string(&subkey, "DelegateExecute")?.allows_direct_command())
 }
 
 fn clear_folder_binding(sid: &str, verb: &str) -> Result<(), String> {

@@ -39,6 +39,22 @@ fn retarget(data: &[u8], user: &str, verb: &str) -> Result<Vec<u8>, String> {
     Ok([0xff, 0xfe].into_iter().chain(output.encode_utf16().flat_map(u16::to_le_bytes)).collect())
 }
 
+pub(crate) enum RegistryString {
+    Absent,
+    Text(String),
+    OtherType,
+}
+
+impl RegistryString {
+    pub(crate) fn allows_direct_command(&self) -> bool {
+        match self {
+            Self::Absent => true,
+            Self::Text(value) => value.is_empty(),
+            Self::OtherType => false,
+        }
+    }
+}
+
 pub(crate) fn uses_executable(command: &str, executable: &str) -> bool {
     let command = command.trim_start_matches([' ', '\t']);
     let path = if let Some(quoted) = command.strip_prefix('"') {
@@ -79,6 +95,14 @@ mod tests {
         [0xff, 0xfe].into_iter()
             .chain(format!("{HEADER}\r\n\r\n{sections}\r\n").encode_utf16().flat_map(u16::to_le_bytes))
             .collect()
+    }
+
+    #[test]
+    fn a_nonempty_or_unrecognized_delegate_takes_precedence_over_ownership() {
+        assert!(RegistryString::Absent.allows_direct_command());
+        assert!(RegistryString::Text(String::new()).allows_direct_command());
+        assert!(!RegistryString::Text("{3a1dc30d-1e33-4c77-8118-b6c6e6b71e2b}".into()).allows_direct_command());
+        assert!(!RegistryString::OtherType.allows_direct_command());
     }
 
     #[test]
