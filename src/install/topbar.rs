@@ -80,6 +80,11 @@ pub(crate) fn bar_install() -> Result<(), String> {
 }
 
 pub(crate) fn bar_uninstall() -> Result<(), String> {
+    // rust-explorer as the shell leans on this bar: Explorer takes the session back first, the file manager stays
+    if rx_shell_on() {
+        shell_off()?;
+        WARN.lock().unwrap().push(t!("rust-explorer вернул оболочку Проводнику: без topbar ему нечем её заменить", "rust-explorer handed the shell back to Explorer: without topbar there is nothing to replace it with", ja: "rust-explorer はシェルをエクスプローラーに戻しました: topbar がないと置き換えられません", pt: "o rust-explorer devolveu o shell ao Explorer: sem a topbar não há com o que substituí-lo", zh: "rust-explorer 已把外壳交还给资源管理器：没有 topbar 就无法替换它", es: "rust-explorer devolvió el shell al Explorador: sin la topbar no hay con qué reemplazarlo").into());
+    }
     let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "topbar", "/f"]);
     let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);

@@ -174,9 +174,15 @@ pub(crate) fn chosen() -> impl Iterator<Item = usize> {
     rows().filter(|&i| SELECTED[i].load(Relaxed))
 }
 
-/// What the button would do now: (to remove, to install).
+/// What the button would do now: (to remove, to install). An installed rust-explorer whose shell switch moved is installed
+/// again: that is how the switch reaches the system.
 pub(crate) fn diff() -> (Vec<usize>, Vec<usize>) {
-    plan(&rows().collect::<Vec<_>>(), |i| INSTALLED[i].load(Relaxed), |i| SELECTED[i].load(Relaxed))
+    plan(&rows().collect::<Vec<_>>(), |i| INSTALLED[i].load(Relaxed), |i| SELECTED[i].load(Relaxed), |i| Some(i) == explorer_idx() && shell_moved())
+}
+
+/// The "Replace Explorer" switch no longer matches the system.
+fn shell_moved() -> bool {
+    SHELL.load(Relaxed) != SHELL_NOW.load(Relaxed)
 }
 
 /// The ticks as the custom page starts: what is installed, plus the recommended components on a fresh machine.
@@ -187,6 +193,7 @@ pub(crate) fn reset_selection() {
     for i in extras() {
         SELECTED[i].store(INSTALLED[i].load(Relaxed), Relaxed); // an applied extra shows as on; a new one is never pre-ticked
     }
+    SHELL.store(SHELL_NOW.load(Relaxed), Relaxed);
 }
 
 /// What "Express" installs (the components not there yet), in install order.
@@ -245,7 +252,7 @@ pub(crate) fn switch_box(w: f32) -> Box4 {
     [d[2] - 24.0 - 16.0 - 40.0, mid - 12.0, d[2] - 24.0 - 16.0, mid + 12.0]
 }
 
-/// Second switch row of the settings panel: which shell to install.
+/// Second switch row of the settings panel: rust-explorer replaces the Explorer shell too.
 pub(crate) fn shell_switch_box(w: f32) -> Box4 {
     let b = switch_box(w);
     [b[0], b[1] + 64.0, b[2], b[3] + 64.0]
@@ -528,6 +535,8 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
                 let installed = INSTALLED[i].load(Relaxed);
                 let status = if to_rm.contains(&i) {
                     Some((t!("Будет удалён", "Will be removed", ja: "削除されます", pt: "Será removido", zh: "将被移除", es: "Se quitará"), BAD))
+                } else if to_add.contains(&i) && installed {
+                    Some((t!("Будет изменён", "Will be changed", ja: "変更されます", pt: "Será alterado", zh: "将被更改", es: "Se cambiará"), ACCENT))
                 } else if to_add.contains(&i) {
                     Some((t!("Будет установлен", "Will be installed", ja: "インストールされます", pt: "Será instalado", zh: "将被安装", es: "Se instalará"), ACCENT))
                 } else if installed {
@@ -551,7 +560,9 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
                 None => note(&ui, t!("Наведите на компонент, чтобы прочитать, что он меняет.", "Point at a component to read what it changes.", ja: "コンポーネントにポインターを合わせると、何が変わるかが表示されます。", pt: "Aponte para um componente para ler o que ele altera.", zh: "将指针移到组件上，即可查看它会更改什么。", es: "Pasa el puntero por un componente para leer qué cambia.")),
             }
             button(&ui, back_box(), t!("Назад", "Back", ja: "戻る", pt: "Voltar", zh: "上一步", es: "Atrás"), 1, hot(ID_BACK));
+            let only_changes = !to_add.is_empty() && to_add.iter().all(|&i| INSTALLED[i].load(Relaxed));
             let (label, kind) = match (to_rm.len(), to_add.len()) {
+                (0, _) if only_changes => (t!("Применить", "Apply", ja: "適用", pt: "Aplicar", zh: "应用", es: "Aplicar").to_string(), 0),
                 (0, 0) if n_inst == 0 => (t!("Ничего не выбрано", "Nothing selected", ja: "未選択", pt: "Nada selecionado", zh: "未选择", es: "No hay nada seleccionado").to_string(), 3),
                 (0, 0) => (t!("Обновить", "Update", ja: "更新", pt: "Atualizar", zh: "更新", es: "Actualizar").to_string(), 0),
                 (0, a) => (tf!("Установить ({a})", "Install ({a})", ja: "インストール ({a})", pt: "Instalar ({a})", zh: "安装（{a}）", es: "Instalar ({a})"), 0),
@@ -677,7 +688,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         ui.shape([group[0] + 16.0, group[1] + 64.0, group[2], group[1] + 64.0 + hair], 0.0, argb(rgb(72, 72, 74), 255));
         let rows = [
             (t!("Скрыть значок OneDrive", "Hide the OneDrive icon", ja: "OneDrive アイコンを隠す", pt: "Ocultar o ícone do OneDrive", zh: "隐藏 OneDrive 图标", es: "Ocultar el ícono de OneDrive"), t!("Синхронизация продолжает работать", "Sync keeps working", ja: "同期は引き続き動作します", pt: "A sincronização continua funcionando", zh: "同步功能仍可正常使用", es: "La sincronización sigue funcionando"), od_hidden(), switch_box(w)),
-            (t!("Заменить Проводник", "Replace Explorer", ja: "エクスプローラーを置き換える", pt: "Substituir o Explorer", zh: "替换资源管理器", es: "Reemplazar el Explorador"), t!("Оболочкой становится rust-explorer", "rust-explorer becomes the shell", ja: "rust-explorer がシェルになります", pt: "O rust-explorer passa a ser o shell", zh: "rust-explorer 将成为外壳", es: "rust-explorer pasa a ser el shell"), explorer_idx().is_some_and(|e| SELECTED[e].load(Relaxed)), shell_switch_box(w)),
+            (t!("Заменить Проводник", "Replace Explorer", ja: "エクスプローラーを置き換える", pt: "Substituir o Explorer", zh: "替换资源管理器", es: "Reemplazar el Explorador"), t!("Оболочкой становится rust-explorer", "rust-explorer becomes the shell", ja: "rust-explorer がシェルになります", pt: "O rust-explorer passa a ser o shell", zh: "rust-explorer 将成为外壳", es: "rust-explorer pasa a ser el shell"), SHELL.load(Relaxed), shell_switch_box(w)),
         ];
         for (k, (name, note, on, sw)) in rows.into_iter().enumerate() {
             let t = group[1] + k as f32 * 64.0;
@@ -816,10 +827,13 @@ pub(crate) unsafe fn finished(hwnd: HWND) {
 pub(crate) fn apply(h: isize) -> Result<String, String> {
     let (rm, add) = diff();
     let update = rm.is_empty() && add.is_empty();
+    set_rx_shell((!update).then(|| SHELL.load(Relaxed))); // an update keeps whatever is installed
     let steps: Vec<(usize, bool)> = if update {
         ready().filter(|&i| INSTALLED[i].load(Relaxed)).map(|i| (i, true)).collect()
     } else {
-        rm.iter().map(|&i| (i, false)).chain(add.iter().map(|&i| (i, true))).collect()
+        // the shell goes back to Explorer before anything else, topbar's removal included
+        let back = explorer_idx().filter(|_| SHELL_NOW.load(Relaxed) && !SHELL.load(Relaxed));
+        crate::selection::steps(&rm, &add, back)
     };
     *STEPS.lock().unwrap() = steps.clone();
     let (mut added, mut removed, mut failed, mut warned) = (Vec::new(), Vec::new(), Vec::new(), false);
@@ -890,10 +904,10 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
                 *MSG.lock().unwrap() = (tf!("Ошибка: {e}", "Error: {e}", ja: "エラー: {e}", pt: "Erro: {e}", zh: "错误：{e}", es: "Error: {e}"), false);
             }
         } else if id == ID_SHELL {
-            if let Some(e) = explorer_idx() {
-                let on = !SELECTED[e].fetch_xor(true, Relaxed);
-                if let Some((other, v)) = linked(PLUGINS[e].name, on) {
-                    PLUGINS.iter().position(|p| p.name == other).inspect(|&o| SELECTED[o].store(v, Relaxed));
+            // the shell part needs the file manager and the bar: switching it on ticks both
+            if !SHELL.fetch_xor(true, Relaxed) {
+                for n in shell_needs() {
+                    PLUGINS.iter().position(|p| p.name == n).inspect(|&o| SELECTED[o].store(true, Relaxed));
                 }
             }
         } else if id == ID_CANCEL {
@@ -935,6 +949,7 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
             for i in rows() {
                 SELECTED[i].store(express_pick(PLUGINS[i].name, PLUGINS[i].bulk, INSTALLED[i].load(Relaxed)), Relaxed);
             }
+            SHELL.store(SHELL_NOW.load(Relaxed), Relaxed);
             let h = hwnd as isize;
             start(hwnd, STARTING, move || apply(h));
         }
@@ -958,14 +973,17 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
         (1, ID_ALL) => {
             let on = chosen().filter(|&i| PLUGINS[i].bulk).count() < N_READY;
             ready().for_each(|i| SELECTED[i].store(on, Relaxed));
+            if !on {
+                SHELL.store(false, Relaxed);
+            }
             repaint();
         }
         (1, i) if i >= ID_CHECK => {
             let i = i - ID_CHECK;
             if !locked(i) {
                 let on = !SELECTED[i].fetch_xor(true, Relaxed);
-                if let Some((other, v)) = linked(PLUGINS[i].name, on) {
-                    PLUGINS.iter().position(|p| p.name == other).inspect(|&o| SELECTED[o].store(v, Relaxed));
+                if drops_shell(PLUGINS[i].name, on) {
+                    SHELL.store(false, Relaxed); // the file manager stays, the bar may go: either way no shell replacement
                 }
             }
             repaint();
@@ -980,8 +998,15 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
         (1, ID_MAIN) => {
             let (rm, add) = diff();
             let mut text = String::new();
-            if !add.is_empty() {
-                text.push_str(&tf!("Будет установлено: {}.", "To be installed: {}.", ja: "インストールされるもの: {}。", pt: "Serão instalados: {}.", zh: "将安装：{}。", es: "Se instalará: {}.", names(&add)));
+            let (changed, new): (Vec<usize>, Vec<usize>) = add.iter().partition(|&&i| INSTALLED[i].load(Relaxed));
+            if !new.is_empty() {
+                text.push_str(&tf!("Будет установлено: {}.", "To be installed: {}.", ja: "インストールされるもの: {}。", pt: "Serão instalados: {}.", zh: "将安装：{}。", es: "Se instalará: {}.", names(&new)));
+            }
+            if !changed.is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&tf!("Будет изменено: {}.", "To be changed: {}.", ja: "変更されるもの: {}。", pt: "Serão alterados: {}.", zh: "将更改：{}。", es: "Se cambiará: {}.", names(&changed)));
             }
             if !rm.is_empty() {
                 if !text.is_empty() {
@@ -991,7 +1016,12 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
             }
             // what the big ones change gets its own warning
             for &i in add.iter().filter(|&&i| PLUGINS[i].name == RUST_EXPLORER || !PLUGINS[i].bulk) {
-                text.push_str(&format!("\n\n{}: {}", PLUGINS[i].name, PLUGINS[i].warn.get()));
+                let warn = match (PLUGINS[i].name == RUST_EXPLORER, SHELL.load(Relaxed), SHELL_NOW.load(Relaxed)) {
+                    (true, true, false) => RX_SHELL_WARN.get(),
+                    (true, false, true) => t!("Оболочкой снова станет Проводник; файловый менеджер останется.", "Explorer becomes the shell again; the file manager stays.", ja: "シェルはエクスプローラーに戻ります。ファイル マネージャーは残ります。", pt: "O Explorer volta a ser o shell; o gerenciador de arquivos fica.", zh: "资源管理器重新成为外壳；文件管理器保留。", es: "El Explorador vuelve a ser el shell; el gestor de archivos se queda."),
+                    _ => PLUGINS[i].warn.get(),
+                };
+                text.push_str(&format!("\n\n{}: {warn}", PLUGINS[i].name));
             }
             if !add.is_empty() {
                 text.push_str(t!("\n\nПеред установкой создаётся точка восстановления.", "\n\nA restore point is created before installing.", ja: "\n\nインストールの前に復元ポイントを作成します。", pt: "\n\nUm ponto de restauração é criado antes de instalar.", zh: "\n\n安装前会创建还原点。", es: "\n\nAntes de instalar se crea un punto de restauración."));
@@ -1001,7 +1031,7 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
                 (t!("Удалить приложения навсегда?", "Remove apps for good?", ja: "アプリを完全に削除しますか?", pt: "Remover os apps de vez?", zh: "永久删除应用？", es: "¿Quitar las aplicaciones para siempre?"), t!("Удалить навсегда", "Remove for good", ja: "完全に削除", pt: "Remover de vez", zh: "永久删除", es: "Quitar para siempre"), true)
             } else if add.is_empty() {
                 (t!("Удалить выбранное?", "Remove the selected?", ja: "選択したものを削除しますか?", pt: "Remover os selecionados?", zh: "移除所选项目？", es: "¿Quitar lo seleccionado?"), t!("Удалить", "Remove", ja: "削除", pt: "Remover", zh: "移除", es: "Quitar"), true)
-            } else if rm.is_empty() {
+            } else if rm.is_empty() && !new.is_empty() {
                 (t!("Установить выбранное?", "Install the selected?", ja: "選択したものをインストールしますか?", pt: "Instalar os selecionados?", zh: "安装所选项目？", es: "¿Instalar lo seleccionado?"), t!("Установить", "Install", ja: "インストール", pt: "Instalar", zh: "安装", es: "Instalar"), false)
             } else {
                 (t!("Применить изменения?", "Apply the changes?", ja: "変更を適用しますか?", pt: "Aplicar as alterações?", zh: "应用更改？", es: "¿Aplicar los cambios?"), t!("Применить", "Apply", ja: "適用", pt: "Aplicar", zh: "应用", es: "Aplicar"), false)

@@ -1,5 +1,6 @@
-//! rust-explorer: the file manager that replaces Explorer as folder handler and (with rs-shell) as the shell.
+//! rust-explorer: the file manager that takes over folders and drives, and, only when asked for, the Explorer shell too.
 use crate::*;
+use std::sync::atomic::AtomicU8;
 use windows_sys::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD, RRF_RT_REG_DWORD,
     RegCloseKey, RegFlushKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
@@ -12,12 +13,14 @@ pub(crate) fn rx_dir() -> PathBuf {
     program_files().join("rust-explorer")
 }
 
-// ---------- rust-explorer: file manager + Explorer replacement ----------
+// ---------- rust-explorer: file manager, optionally the Explorer replacement ----------
 //
 // Install: our files in Program Files, folders / drives opened from any program go to rust-explorer (HKCU class verbs of the
-// installing user), rs-shell --overlay starts at sign-in and, with the ReplaceExplorer switch, ends the shell Explorer once topbar
-// and the rust-explorer desktop are on screen. AutoRestartShell is set to 0 so Windows does not bring Explorer back.
-// Uninstall puts everything back and starts Explorer again. rs-shell itself hands the session back to Explorer if topbar dies.
+// installing user). That is all the file manager needs: Explorer stays the shell, with its own desktop and taskbar.
+// The shell part (`shell_on`, needs topbar): rs-shell --overlay starts at sign-in and, with the ReplaceExplorer switch, ends the
+// shell Explorer once topbar and the rust-explorer desktop are on screen; AutoRestartShell 0 keeps Windows from bringing it back.
+// Uninstall (or switching the shell part off) puts everything back and starts Explorer again. rs-shell itself hands the session
+// back to Explorer if topbar dies.
 pub(crate) const RX_STATE: &str = r"HKLM\SOFTWARE\plugin-launcher\rust-explorer";
 pub(crate) const WINLOGON_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon";
 pub(crate) const RX_SWITCH: &str = r"HKCU\Software\rs-shell";
@@ -131,13 +134,41 @@ pub(crate) fn rx_lnk() -> PathBuf {
     program_data().join(r"plugin-launcher\rs-overlay.lnk")
 }
 
-pub(crate) fn rx_install() -> Result<(), String> {
-    if !bar_dir().join("topbar.exe").is_file() {
-        return Err(t!("сначала установите topbar: без него после отключения Explorer не будет панели", "install topbar first: without it there will be no bar after Explorer is disabled", ja: "先に topbar をインストールしてください。ないとエクスプローラーを無効にした後にバーがなくなります", pt: "instale a topbar primeiro: sem ela não haverá barra depois que o Explorer for desativado", zh: "请先安装 topbar：否则禁用 Explorer 后将没有任务栏", es: "instala primero la topbar: sin ella no habrá barra cuando se desactive el Explorador").into());
+/// What the next `rx_install` does with the shell (see `set_rx_shell`): 0 keep, 1 file manager only, 2 replace the shell.
+static RX_SHELL: AtomicU8 = AtomicU8::new(0);
+
+/// Before installing rust-explorer: `Some(true)` = replace the Explorer shell too, `Some(false)` = file manager only,
+/// `None` = keep whatever is installed (an update), which on a fresh install means the file manager only.
+pub(crate) fn set_rx_shell(v: Option<bool>) {
+    RX_SHELL.store(v.map_or(0, |s| 1 + s as u8), Relaxed);
+}
+
+/// rust-explorer is the shell now: rs-shell's switch is on (it ends Explorer at sign-in).
+pub(crate) fn rx_shell_on() -> bool {
+    reg_dword(RX_SWITCH, "ReplaceExplorer") == Some(1)
+}
+
+/// Anything of the shell part is in the system: the switch, or the saved originals it restores.
+fn shell_applied() -> bool {
+    rx_shell_on() || run("reg", &["query", RX_STATE]).is_ok()
+}
+
+fn shell_wanted() -> bool {
+    match RX_SHELL.load(Relaxed) {
+        1 => false,
+        2 => true,
+        _ => rx_dir().join("rust-explorer.exe").is_file() && rx_shell_on(),
     }
-    // An older installation may already have applied the tweaks without saving the originals.
-    let fresh = !rx_dir().join("rust-explorer.exe").is_file()
-        && trim_read((RX_STATE, "AutoRestartShell"))?.is_none();
+}
+
+pub(crate) fn rx_install() -> Result<(), String> {
+    let shell = shell_wanted();
+    if shell && !bar_dir().join("topbar.exe").is_file() {
+        return Err(t!("для замены оболочки Проводника нужен topbar: без него не будет панели", "replacing the Explorer shell needs topbar: without it there would be no bar", ja: "エクスプローラーのシェルを置き換えるには topbar が必要です。ないとバーがなくなります", pt: "substituir o shell do Explorer requer a topbar: sem ela não haveria barra", zh: "替换资源管理器外壳需要 topbar：没有它就没有任务栏", es: "reemplazar el shell del Explorador requiere la topbar: sin ella no habría barra").into());
+    }
+    // An older installation may already have applied the tweaks without saving the originals: Explorer's restart is off then.
+    let fresh = trim_read((RX_STATE, "AutoRestartShell"))?.is_none() && reg_dword(WINLOGON_KEY, "AutoRestartShell") != Some(0);
+    let was_shell = shell_applied();
     with_payload(&["rust-explorer.exe", "rs-shell.exe"], |d| {
         for n in ["rs-shell.exe", "rust-explorer.exe"] {
             let _ = run("taskkill", &["/f", "/im", n]); // an update: a running exe cannot be overwritten
@@ -146,11 +177,6 @@ pub(crate) fn rx_install() -> Result<(), String> {
         let (fm, sh) = (rx_dir().join("rust-explorer.exe"), rx_dir().join("rs-shell.exe"));
         put(&d.join("rust-explorer.exe"), &fm)?;
         put(&d.join("rs-shell.exe"), &sh)?;
-        // what Windows had, saved once (an update must not overwrite it with our own 0)
-        if reg_dword(RX_STATE, "AutoRestartShell").is_none() {
-            let v = reg_dword(WINLOGON_KEY, "AutoRestartShell").unwrap_or(1);
-            run("reg", &["add", RX_STATE, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &v.to_string(), "/f"])?;
-        }
         // folders and drives opened by other programs, the desktop, Win+R: rust-explorer. DelegateExecute is emptied on purpose:
         // while it is set, Windows ignores the command and uses Explorer's built-in handler.
         // Another file manager's verbs (Directory Opus, Total Commander) are exported first, once, and imported back on uninstall.
@@ -165,44 +191,82 @@ pub(crate) fn rx_install() -> Result<(), String> {
             run("reg", &["add", &c, "/ve", "/t", "REG_SZ", "/d", &format!("\"{}\" \"%1\"", fm.display()), "/f"])?;
             run("reg", &["add", &c, "/v", "DelegateExecute", "/t", "REG_SZ", "/d", "", "/f"])?;
         }
-        // A logon task starts the overlay right at sign-in; Explorer runs the Run key only after its own startup delay (~20 s of
-        // plain Windows on screen). Limited run level: the shell side must never run elevated. Fallback: the Run key.
-        let task = format!("{} Register-ScheduledTask -TaskName rs-overlay -Force -Action (New-ScheduledTaskAction -Execute '{}' -Argument '--overlay') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), sh.display());
-        let task_ok = run("powershell", &["-NoProfile", "-Command", &task]).is_ok();
-        if task_ok {
-            let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
-        } else {
-            WARN.lock().unwrap().push(t!("задача rs-overlay не создана: запуск через Run, с задержкой Windows", "rs-overlay task was not created: it starts via Run, with a Windows startup delay", ja: "rs-overlay タスクを作成できませんでした: Windows の起動遅延付きで Run 経由で起動します", pt: "a tarefa rs-overlay não foi criada: ela inicia pelo Run, com o atraso de inicialização do Windows", zh: "rs-overlay 计划任务未创建：它将通过 Run 启动，会有 Windows 启动延迟", es: "no se creó la tarea rs-overlay: se inicia mediante Run, con el retraso de inicio de Windows").into());
-            run("reg", &["add", RUN_KEY, "/v", "rs-overlay", "/t", "REG_SZ", "/d", &format!("\"{}\" --overlay", sh.display()), "/f"])?;
-        }
-        run("reg", &["add", RX_SWITCH, "/v", "ReplaceExplorer", "/t", "REG_DWORD", "/d", "1", "/f"])?;
-        run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", "0", "/f"])?;
-        if fresh {
-            apply_service_trim();
-        }
         // the bar's Start panel and the search list Start Menu shortcuts only: without one rust-explorer has no entry (and no icon) there
         soft(t!("ярлык «Rust Explorer» в меню Пуск не создан", "Start menu shortcut 'Rust Explorer' was not created", ja: "スタート メニューのショートカット「Rust Explorer」を作成できませんでした", pt: "O atalho 'Rust Explorer' do menu Iniciar não foi criado", zh: "开始菜单快捷方式「Rust Explorer」未创建", es: "no se creó el acceso directo «Rust Explorer» del menú Inicio"), shortcut(&start_lnk("Rust Explorer"), &fm, ""));
-        // Start it now, with the user's normal token. The logon task does exactly that (the user's limited token, --overlay);
-        // `explorer.exe <shortcut>` is only the fallback: with Explorer not the shell it shows "File system error
-        // (-2147219195)" instead of opening the shortcut.
-        let lnk = rx_lnk();
-        let _ = fs::create_dir_all(lnk.parent().unwrap());
-        soft(t!("overlay не запущен сейчас: он стартует при следующем входе", "overlay is not running now: it starts at the next logon", ja: "オーバーレイは現在動作していません: 次回のログオン時に起動します", pt: "o overlay não está em execução agora: ele inicia no próximo logon", zh: "rs-overlay 当前未运行：它会在下次登录时启动", es: "el overlay no está en marcha ahora: se iniciará en el próximo inicio de sesión"), shortcut(&lnk, &sh, "--overlay"));
-        if !(task_ok && run("schtasks", &["/run", "/tn", "rs-overlay"]).is_ok()) {
-            let _ = Command::new("explorer.exe").arg(&lnk).spawn();
+        match (shell, was_shell) {
+            (true, _) => shell_on(&sh, fresh),
+            (false, true) => shell_off(), // the switch went off: Explorer gets the session back, the file manager stays
+            (false, false) => Ok(()),
         }
-        Ok(())
     })
 }
 
-pub(crate) fn rx_uninstall() -> Result<(), String> {
+/// The shell part: rs-shell --overlay at every sign-in ends the shell Explorer once topbar and our desktop are up.
+fn shell_on(sh: &Path, fresh: bool) -> Result<(), String> {
+    // what Windows had, saved once (an update must not overwrite it with our own 0)
+    if reg_dword(RX_STATE, "AutoRestartShell").is_none() {
+        let v = reg_dword(WINLOGON_KEY, "AutoRestartShell").unwrap_or(1);
+        run("reg", &["add", RX_STATE, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &v.to_string(), "/f"])?;
+    }
+    // A logon task starts the overlay right at sign-in; Explorer runs the Run key only after its own startup delay (~20 s of
+    // plain Windows on screen). Limited run level: the shell side must never run elevated. Fallback: the Run key.
+    let task = format!("{} Register-ScheduledTask -TaskName rs-overlay -Force -Action (New-ScheduledTaskAction -Execute '{}' -Argument '--overlay') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), sh.display());
+    let task_ok = run("powershell", &["-NoProfile", "-Command", &task]).is_ok();
+    if task_ok {
+        let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
+    } else {
+        WARN.lock().unwrap().push(t!("задача rs-overlay не создана: запуск через Run, с задержкой Windows", "rs-overlay task was not created: it starts via Run, with a Windows startup delay", ja: "rs-overlay タスクを作成できませんでした: Windows の起動遅延付きで Run 経由で起動します", pt: "a tarefa rs-overlay não foi criada: ela inicia pelo Run, com o atraso de inicialização do Windows", zh: "rs-overlay 计划任务未创建：它将通过 Run 启动，会有 Windows 启动延迟", es: "no se creó la tarea rs-overlay: se inicia mediante Run, con el retraso de inicio de Windows").into());
+        run("reg", &["add", RUN_KEY, "/v", "rs-overlay", "/t", "REG_SZ", "/d", &format!("\"{}\" --overlay", sh.display()), "/f"])?;
+    }
+    run("reg", &["add", RX_SWITCH, "/v", "ReplaceExplorer", "/t", "REG_DWORD", "/d", "1", "/f"])?;
+    run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", "0", "/f"])?;
+    if fresh {
+        apply_service_trim();
+    }
+    // Start it now, with the user's normal token. The logon task does exactly that (the user's limited token, --overlay);
+    // `explorer.exe <shortcut>` is only the fallback: with Explorer not the shell it shows "File system error
+    // (-2147219195)" instead of opening the shortcut.
+    let lnk = rx_lnk();
+    let _ = fs::create_dir_all(lnk.parent().unwrap());
+    soft(t!("overlay не запущен сейчас: он стартует при следующем входе", "overlay is not running now: it starts at the next logon", ja: "オーバーレイは現在動作していません: 次回のログオン時に起動します", pt: "o overlay não está em execução agora: ele inicia no próximo logon", zh: "rs-overlay 当前未运行：它会在下次登录时启动", es: "el overlay no está en marcha ahora: se iniciará en el próximo inicio de sesión"), shortcut(&lnk, sh, "--overlay"));
+    if !(task_ok && run("schtasks", &["/run", "/tn", "rs-overlay"]).is_ok()) {
+        let _ = Command::new("explorer.exe").arg(&lnk).spawn();
+    }
+    Ok(())
+}
+
+/// The shell part off, the file manager kept: services and Explorer's restart as they were, Explorer back on screen.
+/// A failed service restore stops here with everything in place, so trying again works.
+pub(crate) fn shell_off() -> Result<(), String> {
     restore_service_trim()?;
+    shell_release()
+}
+
+fn shell_release() -> Result<(), String> {
     // Windows may restart its shell again; our hooks off; then the shell back, unelevated, only if none is running
     let back = reg_dword(RX_STATE, "AutoRestartShell").unwrap_or(1);
     let r = run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &back.to_string(), "/f"]);
     let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "rs-overlay", "/f"]);
     let _ = run("reg", &["delete", RX_SWITCH, "/f"]);
+    // rs-shell and our desktop window go; a folder window the user has open in rust-explorer stays
+    let _ = run("taskkill", &["/f", "/im", "rs-shell.exe"]);
+    let _ = run("powershell", &["-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"Name='rust-explorer.exe'\" | Where-Object { $_.CommandLine -match '--desktop' } | Invoke-CimMethod -MethodName Terminate | Out-Null"]);
+    let _ = run("powershell", &["-NoProfile", "-Command", EXPLORER_BACK]);
+    let _ = fs::remove_file(rx_lnk());
+    if r.is_ok() {
+        let _ = run("reg", &["delete", RX_STATE, "/f"]);
+    }
+    r
+}
+
+pub(crate) fn rx_uninstall() -> Result<(), String> {
+    let r = if shell_applied() {
+        restore_service_trim()?; // the services could not be put back: everything stays for another try
+        shell_release()
+    } else {
+        Ok(())
+    };
     for (i, k) in RX_FOLDERS.iter().enumerate() {
         let _ = run("reg", &["delete", k, "/f"]); // only our HKCU override; the system's verbs under HKLM stay
         let bak = rx_folders_bak(i);
@@ -213,12 +277,10 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
     for n in ["rs-shell.exe", "rust-explorer.exe"] {
         let _ = run("taskkill", &["/f", "/im", n]);
     }
-    let _ = run("powershell", &["-NoProfile", "-Command", r#"if (-not (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?(\s+/NoUACCheck)?\s*$' })) { runas /trustlevel:0x20000 C:\Windows\explorer.exe }"#]);
-    let _ = fs::remove_file(rx_lnk());
     let _ = fs::remove_file(start_lnk("Rust Explorer"));
     let _ = fs::remove_dir_all(rx_dir());
-    if r.is_ok() {
-        let _ = run("reg", &["delete", RX_STATE, "/f"]);
-    }
     r
 }
+
+/// Starts the shell Explorer again, unelevated, only if none is running (a folder window is not the shell).
+const EXPLORER_BACK: &str = r#"if (-not (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?(\s+/NoUACCheck)?\s*$' })) { runas /trustlevel:0x20000 C:\Windows\explorer.exe }"#;
