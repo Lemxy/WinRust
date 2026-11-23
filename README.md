@@ -4,7 +4,7 @@
 
 **A Windows shell written in Rust: faster and lighter than the stock one.** Small native programs (no .NET, no Electron) that replace parts of Windows: the taskbar, File Explorer, file search, Task Manager, plus a disk cleaner, a disk map and a photo viewer. One installer puts them in, one button takes them all out.
 
-English | [Русский](README.ru.md)
+English | [Русский](README.ru.md) | [日本語](README.ja.md) | [Português (Brasil)](README.pt-BR.md)
 
 <p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
 
@@ -20,9 +20,11 @@ Windows Search is optional: on a stripped Windows (for example a debloated LTSC 
 
 If UAC asks for **another administrator's** password, the per-user settings (startup entries, scheduled tasks, PowerShell profile, search permissions) still go to the user who is signed in, not to the administrator you typed. If the installer cannot tell who that is, it stops before changing anything.
 
-**Update:** download the new `WinRust.exe` from the releases page, run it as administrator and select the components you want to update or install. An existing `rust-explorer` stays selected by default for updates. Your settings and the saved original Windows values stay.
+**Automatic updates:** after the first install, a `WinRust-update` scheduled task (runs as SYSTEM, no UAC prompt) checks the latest release at boot and once a day. It downloads only the programs that changed, checks each file against a manifest signed with the project's key (a tampered or unsigned release is refused) and replaces only files that are already installed. A running program switches to the new version the next time it starts (sign-in or reboot). Log: `%ProgramData%\plugin-launcher\install.log` (`autoupdate:` lines). To turn it off, disable the `WinRust-update` task in Task Scheduler; **Remove all** deletes it.
 
-The installer is in English. The **Русский** button in its corner (or "WinRust apps in Русский" in the bar's right-click menu) switches every WinRust program to Russian.
+**Manual update:** download the new `WinRust.exe` from the releases page, run it as administrator and select the components you want to update or install. An existing `rust-explorer` stays selected by default for updates. Your settings and the saved original Windows values stay.
+
+The installer is in English. The language button in its corner (or the gear on the bar → **Bar settings → Language**) switches every WinRust program to the chosen language: English, Русский, 日本語 or Português (Brasil). The choice is stored in `%ProgramData%\WinRust\lang.txt` (`en`, `ru`, `ja`, `pt`).
 
 ## Remove
 
@@ -36,14 +38,14 @@ On uninstall, `rust-explorer` restores the service startup values and the svchos
 
 | Plugin | What you get | What it changes in Windows |
 |---|---|---|
-| **rust-search** | File search over all NTFS drives, Alt+Space | Disables the Windows Search service, blocks SearchHost.exe, hides the taskbar search box |
+| **rust-search** | File search over all NTFS drives, Alt+Space. With topbar, Win+R opens its Run mode: history, folder completion (Tab), Ctrl+Shift+Enter runs as administrator | Disables the Windows Search service, blocks SearchHost.exe, hides the taskbar search box |
 | **rtaskmgr-win32** | Task Manager (Ctrl+Shift+Esc opens it) | `taskmgr.exe` is redirected to it (the system file is untouched). Also installs the **rs-du** disk cleaner. The **Speed** page has opt-in, reversible switches: Game / Work profiles (stop background services, close launchers or sync apps, start them again), clear the memory standby cache (now, or automatically while topbar runs), block the Windows Start menu, widgets and Phone Link processes, one weekly `winget upgrade` instead of third-party updaters, Defender exclusions for build caches and game libraries, faster NTFS (no last-access times, no 8.3 names), an ad-blocking hosts file. **Startup** also lists logon/boot tasks and third-party auto-start services, with how much each slowed the last boots (Windows' own boot log). **What's slow** shows driver time (DPC/interrupts), hung windows, slow disk and boot times. Uninstall turns all of it back |
-| **topbar** | A Windows 11-style bottom bar: windows, clock, volume, menus | Hides the stock taskbar. Also installs **reshell** (hotkeys: Win+1/2/3 and Win+\` switch desktops, Win+D shows the desktop, Win+I opens Settings, Win+E the file manager; brings the taskbar back if the bar dies), **rs-du**, and a block in your PowerShell profile (`zoxide`, `grep`=rg, `ll`=eza, `cat`=bat; does nothing if they are missing) |
-| **rust-explorer** | A file manager with tabs, and the desktop | Folders and drives open in it; **Explorer stops being the shell** (comes back by itself if topbar fails). On fresh installs, adjusts the startup settings of PcaSvc, InventorySvc, lfsvc, cbdhsvc and DoSvc, and the svchost grouping threshold, when their values can be backed up. Its own copier (several files at once on SSDs, unbuffered for big files, progress in the status line) and right-click **Compress to ZIP** (all cores) / **Extract here** (ZIP and 7z). Requires topbar |
+| **topbar** | A Windows 11-style bottom bar: windows, clock, volume, menus | Hides the stock taskbar. Also installs **reshell** (hotkeys: Win+Ctrl+1/2/3 and Win+\` switch desktops (Win+1..9 open the bar's app buttons), Win+D shows the desktop, Win+I opens Settings, Win+E the file manager; brings the taskbar back if the bar dies), **rs-du**, and a block in your PowerShell profile (`zoxide`, `grep`=rg, `ll`=eza, `cat`=bat; does nothing if they are missing). The gear menu has short pages: Theme, Colors and transparency (any colour of the bar and the WinRust windows, the bar's opacity), Templates (save your own looks and switch between them), the bar (bottom / left / right edge, size, auto-hide, buttons at the left end like Windows 10) and Reset everything to defaults |
+| **rust-explorer** | A file manager with tabs, and the desktop | Folders and drives open in it; **Explorer stops being the shell** (comes back by itself if topbar fails). On fresh installs, adjusts the startup settings of InventorySvc, lfsvc and DoSvc, and the svchost grouping threshold, when their values can be backed up. Its own copier (several files at once on SSDs, unbuffered for big files, progress in the status line) and right-click **Compress to ZIP** (all cores) / **Extract here** (ZIP and 7z), our own ZIP engine; a `.zip` opens like a folder (browse, copy out, open files from it). "Show in folder" from other programs selects the file (for the common folders: Downloads, Documents, Desktop, Pictures, Music, Videos and pinned ones, also when no window is open); the mouse back / forward buttons work; right click the desktop to hide its icons. Requires topbar |
 | **wiztree** | A disk-usage map ("WinRust Disk" in Start) | Nothing, apart from the file and a shortcut |
 | **photoview** | A fast photo viewer | Adds it to "Open with" (it does not become the default) |
 | **rust-settings** | Settings in Rust: display (resolution, refresh rate), sound (volume), power plan and drive space, per-app volume and device choice, night light, display arrangement by dragging, network adapters, Wi-Fi on every adapter (password or 802.1X), VPN and proxy, Bluetooth, apps, Windows Update, disk cleanup, theme, about | Nothing, apart from the file and a shortcut. Win+I and the bar menus open this window instead of Windows Settings (only a few rare pages still open the system ones) |
-| **debloat** | Off: telemetry, Copilot, Recall, Start ads, Edge in the background | Services and registry policies; old values are saved and restored on uninstall. **Command line only:** `install debloat --yes` |
+| **debloat** | Off: telemetry, diagnostics, Copilot, Recall, Start ads, Edge in the background | Services and registry policies; old values are saved and restored on uninstall. **Command line only:** `install debloat --yes` |
 | **purge** | Removes the bundled junk like Tiny11 does: Clipchamp, News, Weather, Xbox overlays, Teams, Cortana, Widgets, Skype and more, plus telemetry tasks | **IRREVERSIBLE, no undo.** Apps are removed for all users and from the image; the Store, Settings, Start and runtimes stay. Run `purge.exe` first: it only lists. **Command line only:** `install purge --yes` (OneDrive and Edge: `purge.exe --apply --onedrive --edge`) |
 | chrome-rs | A browser | Not installable yet |
 
@@ -51,7 +53,7 @@ Every change is reversible: uninstall puts back the values that were there befor
 
 ## Styles
 
-The gear at the left end of the bar opens **Style**. The choice applies at once to the bar, the file manager (rust-explorer) and the search window (Alt+Space):
+The gear at the left end of the bar opens **Bar settings**; a style picked on its **Theme** page applies at once to the bar, the file manager (rust-explorer) and the search window (Alt+Space):
 
 | Style | Look |
 |---|---|
@@ -60,6 +62,11 @@ The gear at the left end of the bar opens **Style**. The choice applies at once 
 | **Floating dock** | A pill-shaped bar in the middle; maximized windows get the whole screen, the dock slides away over them and comes back at the bottom edge |
 | **Tiling** | A thin bar at the top, amber accent, rounded like Normal; "Tile the windows" puts the open windows side by side |
 | **White road** | Light ivory with gold: faint low-poly triangles, some traced in gold, behind the bar, its panels and rust-settings |
+| **Ruby** | Deep garnet with a bright ruby accent: a smooth top-to-bottom gradient with a soft gloss, behind the bar and its panels |
+| **Windows 98** (BETA) | Classic grey with a navy accent, square corners, Tahoma. Colours, corners and font only: no 3D bevels yet |
+| **Windows 7** (BETA) | Aero-like glass blue with white text |
+
+The gear menu also sets the bar position (bottom, left or right: a side bar shows icons only and the panels open next to it) and auto-hide.
 
 The choice is stored in `%ProgramData%\WinRust\style.txt`.
 
@@ -109,7 +116,7 @@ src/            the installer (plugin-launcher.exe)
   main.rs         the plugin table PLUGINS: name, texts, install/uninstall pair, icon
   install/        what each plugin changes and how it is undone (one file per plugin)
   cli.rs, ui.rs   the command line and the window; both call the same install functions
-common/         winrust-common: language switch (t!/tf!), UI styles and palettes, reg.exe output parser, NTFS MFT reader
+common/         winrust-common: language switch (t!/tf!: English, Russian, Japanese, Brazilian Portuguese), UI styles and palettes, reg.exe output parser, NTFS MFT reader
 plugins/        sources of every plugin, each its own crate
 ReShell/        reshell (desktop hotkeys, topbar safety net), ships with topbar
 payload.txt     the exes embedded into the installer, and where the build puts them
@@ -139,9 +146,10 @@ From a terminal **with administrator rights**:
 ```
 plugin-launcher list
 plugin-launcher install <plugin>... --yes (one or more names, or `all` for the default components; without --yes it only prints warnings)
-plugin-launcher update <plugin>          (reinstall from payload\ next to the exe)
+plugin-launcher update <plugin>|all        (reinstall from payload\ next to the exe)
 plugin-launcher uninstall <plugin>
 plugin-launcher rollback --yes           (remove everything)
+plugin-launcher autoupdate               (one update check now: what the WinRust-update task runs)
 ```
 
 To include `rust-explorer` in a fresh bulk install, run `plugin-launcher install all rust-explorer --yes`. If `topbar` is already installed, you can install `rust-explorer` on its own.

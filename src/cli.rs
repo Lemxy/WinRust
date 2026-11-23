@@ -7,6 +7,7 @@ use crate::*;
 //   plugin-launcher install <plugin>... --yes   (several names, or `all` for the defaults; without --yes it only prints warnings)
 //   plugin-launcher uninstall <plugin>
 //   plugin-launcher rollback --yes
+//   plugin-launcher autoupdate               (what the WinRust-update task runs as SYSTEM: src/update)
 // Exit code 0 = done, 1 = failed, 2 = bad arguments or --yes missing. Run it from an elevated terminal: the manifest
 // demands admin, and from a normal one Windows opens a separate elevated console whose output is lost.
 
@@ -26,7 +27,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let yes = args.iter().any(|a| a == "--yes");
     let words: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--yes").collect();
     let find = |n: &str| PLUGINS.iter().position(|p| p.name == n);
-    let usage = "usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin> | uninstall <plugin> | rollback --yes";
+    let usage = "usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin>|all | uninstall <plugin> | rollback --yes";
     let result = match words.as_slice() {
         ["list"] => {
             for p in PLUGINS {
@@ -71,6 +72,20 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             }
             return if failed { 1 } else { 0 };
         }
+        // every installed plugin in table order (one UAC prompt for all); one that fails does not stop the rest
+        ["update", "all"] => {
+            let mut failed = false;
+            for i in (0..PLUGINS.len()).filter(|&i| PLUGINS[i].actions.is_some() && (PLUGINS[i].installed)()) {
+                match install_plugin(i) {
+                    Ok(m) => say(&m),
+                    Err(e) => {
+                        failed = true;
+                        say(&format!("error: {}: {e}", PLUGINS[i].name));
+                    }
+                }
+            }
+            return if failed { 1 } else { 0 };
+        }
         ["update", n] => match find(n) {
             None => return { say(&format!("unknown plugin: {n}")); 2 },
             Some(i) if !(PLUGINS[i].installed)() => return { say(&format!("{n} is not installed (use install)")); 2 },
@@ -81,6 +96,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             Some(i) if !(PLUGINS[i].installed)() => return { say(&format!("{n} is not installed")); 0 },
             Some(i) => uninstall_plugin(i),
         },
+        ["autoupdate"] => autoupdate(),
         ["rollback"] if yes => rollback(),
         ["rollback"] => return { say("Removes every installed plugin. Repeat with --yes."); 2 },
         _ => return { say(usage); 2 },

@@ -11,7 +11,7 @@ fn main() {
     let root = env::var("CARGO_MANIFEST_DIR").unwrap();
     let list = fs::read_to_string(Path::new(&root).join("payload.txt")).expect("payload.txt");
     let names: Vec<&str> = list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(|l| l.split('=').next().unwrap().trim()).collect();
-    let mut code = format!("const PAYLOAD: [(&str, &[u8]); {}] = [\n", names.len());
+    let mut code = format!("pub(crate) const PAYLOAD: [(&str, &[u8]); {}] = [\n", names.len());
     for n in &names {
         let p = Path::new(&root).join("payload").join(n);
         assert!(p.is_file(), r"payload\{n} is missing: run scripts\build-all.ps1 (or scripts\build-plugins.ps1) first");

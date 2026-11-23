@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "plugin-launcher"
-version = "0.5.0"
+version = "0.5.6"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -13,8 +13,17 @@ test = false # the embedded manifest demands admin: a test exe could not start f
 name = "install-selection"
 path = "src/selection.rs"
 
+[[test]]
+name = "update-manifest"
+path = "src/update/manifest.rs"
+[[test]]
+name = "update-swap"
+path = "src/update/swap.rs"
+
 [dependencies]
 winrust-common = { path = "common" }
+ed25519-dalek = "2.1.1" # signed update manifests (src/update)
+sha2 = "0.10.8"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_GdiPlus", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
@@ -35,6 +44,7 @@ members = [
     "plugins/debloat",
     "plugins/purge",
     "plugins/rust-settings",
+    "tools/winrust-sign",
 ]
 # Stay separate projects with their own target\ and Cargo.lock, because they need panic = "unwind" (the profile below is
 # shared by every member): rust-search's service threads must not take the process down, chrome-rs catches panics per page.
