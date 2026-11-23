@@ -10,6 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed},
 };
 
+pub mod caption;
 pub mod desktop;
 pub mod fg;
 pub mod journal;
