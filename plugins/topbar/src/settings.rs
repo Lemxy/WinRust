@@ -126,9 +126,13 @@ pub(crate) unsafe fn bar_page() {
     });
 }
 
-/// Bar transparency from the colours page (the window is layered; 100 % = opaque).
+/// Bar transparency from the colours page (the window is layered; 100 % = opaque). With the blur the see-through part
+/// is per pixel (glass.rs) and the window itself stays whole, or the text would fade along with the background.
 pub(crate) unsafe fn apply_opacity(hwnd: HWND) {
-    SetLayeredWindowAttributes(hwnd, 0, (255 * i18n::style::bar_opacity() as u32 / 100) as u8, LWA_ALPHA);
+    let blur = glass::blur_on();
+    let a = if blur { 255 } else { (255 * i18n::style::bar_opacity() as u32 / 100) as u8 };
+    SetLayeredWindowAttributes(hwnd, 0, a, LWA_ALPHA);
+    glass::set_accent(hwnd, blur);
 }
 
 /// The user's own look: every colour of the bar and the WinRust windows, and the bar's transparency. Each colour opens
@@ -152,6 +156,8 @@ pub(crate) unsafe fn colors_page() {
     items.extend(colors.iter().enumerate().map(|(i, n)| fly::MItem::new(*n).swatch(now[i]).on(cur[i] != u32::MAX)));
     items.push(fly::MItem::head(t!("Непрозрачность панели", "Bar opacity", ja: "バーの不透明度", pt: "Opacidade da barra", zh: "任务栏不透明度", es: "Opacidad de la barra")));
     items.extend(PCT.iter().map(|&v| fly::MItem::new(if v == 100 { t!("100 %, без прозрачности", "100 %, solid", ja: "100 %、不透明", pt: "100 %, sólida", zh: "100 %，不透明", es: "100 %, opaca").to_string() } else { format!("{v} %") }).on(i18n::style::bar_opacity() == v)));
+    let blur_row = 3 + colors.len() + PCT.len();
+    items.push(fly::MItem::new(t!("Размытие под панелью", "Blur behind the bar", ja: "バーの背後をぼかす", pt: "Desfoque atrás da barra", zh: "任务栏背后模糊", es: "Desenfoque detrás de la barra")).on(i18n::style::bar_blur()).sep());
     items.push(fly::MItem::new(t!("Вернуть цвета темы", "Back to the theme's colors", ja: "テーマの色に戻す", pt: "Voltar às cores do tema", zh: "恢复主题颜色", es: "Volver a los colores del tema")).danger().sep());
     let (c0, o0) = (2, 3 + colors.len()); // first colour row, first opacity row
     gear_page("\u{E790}", t!("Цвета и прозрачность", "Colors and transparency", ja: "色と透明度", pt: "Cores e transparência", zh: "颜色与透明度", es: "Colores y transparencia"), t!("Поверх выбранной темы", "On top of the chosen theme", ja: "選択したテーマの上に適用", pt: "Sobre o tema escolhido", zh: "在所选主题之上", es: "Sobre el tema elegido"), items, move |i| {
@@ -172,6 +178,12 @@ pub(crate) unsafe fn colors_page() {
             }
         } else if let Some(&v) = i.checked_sub(o0).and_then(|k| PCT.get(k)) {
             i18n::style::set_bar_opacity(v);
+        } else if i == blur_row {
+            let on = !i18n::style::bar_blur();
+            i18n::style::set_bar_blur(on);
+            if on && i18n::style::bar_opacity() == 100 {
+                i18n::style::set_bar_opacity(85); // a solid bar shows no blur at all
+            }
         } else {
             i18n::style::reset_custom();
         }
