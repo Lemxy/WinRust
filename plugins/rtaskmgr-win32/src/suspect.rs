@@ -22,18 +22,18 @@ pub enum Sig {
 
 pub fn label(sev: u8) -> &'static str {
     match sev {
-        3 => t!("⚠ Высокая", "⚠ High"),
-        2 => t!("▲ Средняя", "▲ Medium"),
-        1 => t!("● Низкая", "● Low"),
+        3 => t!("⚠ Высокая", "⚠ High", ja: "⚠ 高", pt: "⚠ Alta"),
+        2 => t!("▲ Средняя", "▲ Medium", ja: "▲ 中", pt: "▲ Média"),
+        1 => t!("● Низкая", "● Low", ja: "● 低", pt: "● Baixa"),
         _ => "",
     }
 }
 
 pub fn sev_word(sev: u8) -> &'static str {
     match sev {
-        3 => t!("Высокая", "High"),
-        2 => t!("Средняя", "Medium"),
-        _ => t!("Низкая", "Low"),
+        3 => t!("Высокая", "High", ja: "高", pt: "Alta"),
+        2 => t!("Средняя", "Medium", ja: "中", pt: "Média"),
+        _ => t!("Низкая", "Low", ja: "低", pt: "Baixa"),
     }
 }
 
@@ -45,10 +45,10 @@ const SYSTEM_NAMES: [&str; 12] = [
 
 /// Папки, откуда легитимные программы обычно не работают постоянно.
 static RISKY_DIRS: std::sync::LazyLock<[(&'static str, &'static str); 4]> = std::sync::LazyLock::new(|| [
-    (r"\temp\", t!("временной папки", "a temporary folder")),
-    (r"\downloads\", t!("папки «Загрузки»", "the Downloads folder")),
-    (r"\$recycle.bin\", t!("корзины", "the Recycle Bin")),
-    (r"\users\public\", t!("общей папки Public", "the shared Public folder")),
+    (r"\temp\", t!("временной папки", "a temporary folder", ja: "一時フォルダー", pt: "uma pasta temporária")),
+    (r"\downloads\", t!("папки «Загрузки»", "the Downloads folder", ja: "ダウンロード フォルダー", pt: "a pasta Downloads")),
+    (r"\$recycle.bin\", t!("корзины", "the Recycle Bin", ja: "ごみ箱", pt: "a Lixeira")),
+    (r"\users\public\", t!("общей папки Public", "the shared Public folder", ja: "共有の「パブリック」フォルダー", pt: "a pasta Público compartilhada")),
 ]);
 
 pub struct Facts<'a> {
@@ -75,27 +75,27 @@ pub fn assess(f: &Facts) -> Vec<Reason> {
         let e = exe.to_lowercase().replace('/', "\\");
         let in_windows = e.starts_with(&f.windir.to_lowercase());
         if SYSTEM_NAMES.contains(&name.as_str()) && !in_windows {
-            add(3, tf!("Имя совпадает с системным процессом «{}», но файл лежит не в папке Windows: {}", "The name matches the system process '{}' but the file is not in the Windows folder: {}", f.name, short(exe)));
+            add(3, tf!("Имя совпадает с системным процессом «{}», но файл лежит не в папке Windows: {}", "The name matches the system process '{}' but the file is not in the Windows folder: {}", ja: "名前がシステム プロセス '{}' と一致しますが、ファイルが Windows フォルダーにありません: {}", pt: "O nome coincide com o do processo do sistema '{}', mas o arquivo não está na pasta do Windows: {}", f.name, short(exe)));
         }
         if !f.exists {
-            add(3, t!("Файла процесса нет на диске — его удалили после запуска (так ведёт себя вредоносный код, а иногда и установщики)", "The process file is gone from disk - it was deleted after launch (malware does this, and sometimes installers)").into());
+            add(3, t!("Файла процесса нет на диске — его удалили после запуска (так ведёт себя вредоносный код, а иногда и установщики)", "The process file is gone from disk - it was deleted after launch (malware does this, and sometimes installers)", ja: "プロセスのファイルがディスクから消えています - 起動後に削除されました (マルウェアが行う手口で、インストーラーでも起こることがあります)", pt: "O arquivo do processo sumiu do disco - foi excluído após a execução (malware faz isso, e às vezes instaladores também)").into());
         }
         let risky = RISKY_DIRS.iter().find(|(d, _)| e.contains(d));
         if let Some((_, what)) = risky {
-            add(2, tf!("Запущен из {what}: {} — постоянные программы обычно стоят в Program Files или AppData\\Local\\Programs", "Started from {what}: {} - permanent programs usually live in Program Files or AppData\\Local\\Programs", short(exe)));
+            add(2, tf!("Запущен из {what}: {} — постоянные программы обычно стоят в Program Files или AppData\\Local\\Programs", "Started from {what}: {} - permanent programs usually live in Program Files or AppData\\Local\\Programs", ja: "{what}から起動されました: {} - 常駐するプログラムは通常 Program Files または AppData\\Local\\Programs にあります", pt: "Iniciado de {what}: {} - programas permanentes costumam ficar em Program Files ou AppData\\Local\\Programs", short(exe)));
         }
         if !in_windows {
             match f.sig {
-                Sig::Invalid => add(2, t!("Цифровая подпись файла недействительна или не вызывает доверия", "The file's digital signature is invalid or not trusted").into()),
-                Sig::Unsigned if risky.is_some() => add(2, t!("Файл не подписан, а запущен из временной или пользовательской папки", "The file is unsigned and runs from a temporary or user folder").into()),
-                Sig::Unsigned => add(1, t!("Файл не имеет цифровой подписи (издатель не подтверждён) — для самописных и портативных программ это нормально", "The file has no digital signature (publisher not verified) - normal for home-made and portable programs").into()),
+                Sig::Invalid => add(2, t!("Цифровая подпись файла недействительна или не вызывает доверия", "The file's digital signature is invalid or not trusted", ja: "ファイルのデジタル署名が無効、または信頼されていません", pt: "A assinatura digital do arquivo é inválida ou não é confiável").into()),
+                Sig::Unsigned if risky.is_some() => add(2, t!("Файл не подписан, а запущен из временной или пользовательской папки", "The file is unsigned and runs from a temporary or user folder", ja: "ファイルは署名されておらず、一時フォルダーまたはユーザー フォルダーから実行されています", pt: "O arquivo não é assinado e é executado de uma pasta temporária ou de usuário").into()),
+                Sig::Unsigned => add(1, t!("Файл не имеет цифровой подписи (издатель не подтверждён) — для самописных и портативных программ это нормально", "The file has no digital signature (publisher not verified) - normal for home-made and portable programs", ja: "ファイルにデジタル署名がありません (発行元が未確認) - 自作やポータブル プログラムでは普通のことです", pt: "O arquivo não tem assinatura digital (editor não verificado) - normal para programas caseiros e portáteis").into()),
                 _ => {}
             }
         }
     }
     match (name.as_str(), parent.as_deref()) {
-        ("svchost.exe", Some(p)) if p != "services.exe" => add(3, tf!("svchost.exe запущен не службой services.exe, а процессом «{}»", "svchost.exe was started not by services.exe but by the process '{}'", f.parent.unwrap_or(""))),
-        ("lsass.exe", Some(p)) if p != "wininit.exe" => add(3, tf!("lsass.exe запущен не wininit.exe, а процессом «{}»", "lsass.exe was started not by wininit.exe but by the process '{}'", f.parent.unwrap_or(""))),
+        ("svchost.exe", Some(p)) if p != "services.exe" => add(3, tf!("svchost.exe запущен не службой services.exe, а процессом «{}»", "svchost.exe was started not by services.exe but by the process '{}'", ja: "svchost.exe は services.exe ではなくプロセス '{}' によって起動されました", pt: "O svchost.exe foi iniciado não pelo services.exe, mas pelo processo '{}'", f.parent.unwrap_or(""))),
+        ("lsass.exe", Some(p)) if p != "wininit.exe" => add(3, tf!("lsass.exe запущен не wininit.exe, а процессом «{}»", "lsass.exe was started not by wininit.exe but by the process '{}'", ja: "lsass.exe は wininit.exe ではなくプロセス '{}' によって起動されました", pt: "O lsass.exe foi iniciado não pelo wininit.exe, mas pelo processo '{}'", f.parent.unwrap_or(""))),
         _ => {}
     }
     out.sort_by_key(|r| std::cmp::Reverse(r.sev));

@@ -44,16 +44,16 @@ fn rules() -> Vec<Item> {
     let mut v: Vec<Item> = vec![];
     let mut add = |risk, label: &str, note, paths: Vec<PathBuf>| v.push(Item { risk, how: How::Wipe, label: label.into(), note, paths, bytes: 0 });
 
-    add(Risk::Safe, t!("Временные файлы", "Temporary files"), t!("Мусор от программ и установщиков. Программы создадут нужное заново.", "Junk left by programs and installers. Programs will recreate what they need."),
+    add(Risk::Safe, t!("Временные файлы", "Temporary files", ja: "一時ファイル", pt: "Arquivos temporários"), t!("Мусор от программ и установщиков. Программы создадут нужное заново.", "Junk left by programs and installers. Programs will recreate what they need.", ja: "プログラムやインストーラーが残した不要ファイルです。必要なものはプログラムが再作成します。", pt: "Lixo deixado por programas e instaladores. Os programas recriam o que precisarem."),
         [var("TEMP").into_iter().collect::<Vec<_>>(), at(&win, &["Temp"])].concat());
-    add(Risk::Safe, t!("Отчёты об ошибках и дампы падений", "Error reports and crash dumps"), t!("Данные о сбоях программ для разработчиков. Вам они не нужны.", "Program crash data for developers. You do not need it."),
+    add(Risk::Safe, t!("Отчёты об ошибках и дампы падений", "Error reports and crash dumps", ja: "エラーレポートとクラッシュダンプ", pt: "Relatórios de erros e despejos de falhas"), t!("Данные о сбоях программ для разработчиков. Вам они не нужны.", "Program crash data for developers. You do not need it.", ja: "開発者向けのプログラムのクラッシュデータです。通常は不要です。", pt: "Dados de falhas de programas para desenvolvedores. Você não precisa deles."),
         [at(&pdata, &["Microsoft/Windows/WER/ReportArchive", "Microsoft/Windows/WER/ReportQueue"]), at(&local, &["CrashDumps"]), at(&win, &["Minidump"])].concat());
-    add(Risk::Safe, t!("Кеш обновлений Windows", "Windows Update cache"), t!("Уже установленные обновления. Что понадобится, Windows скачает заново.", "Updates that are already installed. Windows re-downloads what it needs."),
+    add(Risk::Safe, t!("Кеш обновлений Windows", "Windows Update cache", ja: "Windows Update のキャッシュ", pt: "Cache do Windows Update"), t!("Уже установленные обновления. Что понадобится, Windows скачает заново.", "Updates that are already installed. Windows re-downloads what it needs.", ja: "インストール済みの更新プログラムです。必要なものは Windows が再ダウンロードします。", pt: "Atualizações já instaladas. O Windows baixa de novo o que precisar."),
         at(&win, &["SoftwareDistribution/Download", "ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache"]));
-    add(Risk::Safe, t!("Кеш интернета Windows", "Windows internet cache"), t!("Временные копии страниц и картинок для системных программ.", "Temporary copies of pages and images for system programs."), at(&local, &["Microsoft/Windows/INetCache"]));
+    add(Risk::Safe, t!("Кеш интернета Windows", "Windows internet cache", ja: "Windows のインターネット キャッシュ", pt: "Cache de internet do Windows"), t!("Временные копии страниц и картинок для системных программ.", "Temporary copies of pages and images for system programs.", ja: "システム プログラム用のページと画像の一時コピーです。", pt: "Cópias temporárias de páginas e imagens para programas do sistema."), at(&local, &["Microsoft/Windows/INetCache"]));
 
-    let web = t!("Копии страниц и картинок. Сайты первый раз откроются чуть медленнее. Пароли, закладки и история не затрагиваются.", "Copies of pages and images. Sites open a little slower the first time. Passwords, bookmarks and history are not touched.");
-    for (name, rel) in [("Google Chrome", "Google/Chrome/User Data"), ("Microsoft Edge", "Microsoft/Edge/User Data"), (t!("Яндекс Браузер", "Yandex Browser"), "Yandex/YandexBrowser/User Data"), ("Brave", "BraveSoftware/Brave-Browser/User Data")] {
+    let web = t!("Копии страниц и картинок. Сайты первый раз откроются чуть медленнее. Пароли, закладки и история не затрагиваются.", "Copies of pages and images. Sites open a little slower the first time. Passwords, bookmarks and history are not touched.", ja: "ページと画像のコピーです。初回はサイトの表示が少し遅くなります。パスワード、ブックマーク、履歴は削除されません。", pt: "Cópias de páginas e imagens. Os sites abrem um pouco mais devagar na primeira vez. Senhas, favoritos e histórico não são afetados.");
+    for (name, rel) in [("Google Chrome", "Google/Chrome/User Data"), ("Microsoft Edge", "Microsoft/Edge/User Data"), (t!("Яндекс Браузер", "Yandex Browser", ja: "Yandex ブラウザー", pt: "Yandex Browser"), "Yandex/YandexBrowser/User Data"), ("Brave", "BraveSoftware/Brave-Browser/User Data")] {
         let base = local.as_ref().map(|l| l.join(rel)).unwrap_or_default();
         let ps = subdirs(&base, |n| n == "Default" || n.starts_with("Profile ")).into_iter()
             .flat_map(|p| ["Cache/Cache_Data", "Code Cache", "GPUCache", "Service Worker/CacheStorage"].map(|c| p.join(c))).collect();
@@ -61,18 +61,18 @@ fn rules() -> Vec<Item> {
     }
     let ff = local.as_ref().map(|l| l.join("Mozilla/Firefox/Profiles")).unwrap_or_default();
     add(Risk::Rebuild, "Firefox", web, if ff.as_os_str().is_empty() { vec![] } else { subdirs(&ff, |_| true).into_iter().map(|p| p.join("cache2")).collect() });
-    add(Risk::Rebuild, t!("Telegram: кеш медиа", "Telegram: media cache"), t!("Картинки и видео из чатов. Скачаются снова, когда откроете чат.", "Pictures and videos from chats. They download again when you open a chat."), at(&roam, &["Telegram Desktop/tdata/user_data/media_cache", "Telegram Desktop/tdata/user_data/cache"]));
-    add(Risk::Rebuild, "Discord", t!("Кеш картинок и интерфейса. Создастся заново.", "Image and UI cache. It will be recreated."), at(&roam, &["discord/Cache", "discord/Code Cache", "discord/GPUCache"]));
-    add(Risk::Rebuild, "Microsoft Teams", t!("Кеш интерфейса и вложений. Создастся заново.", "UI and attachment cache. It will be recreated."), at(&roam, &["Microsoft/Teams/Cache", "Microsoft/Teams/blob_storage", "Microsoft/Teams/GPUCache", "Microsoft/Teams/tmp"]));
-    add(Risk::Rebuild, "Visual Studio Code", t!("Кеш редактора. Создастся заново.", "Editor cache. It will be recreated."), at(&roam, &["Code/Cache", "Code/CachedData", "Code/GPUCache", "Code/Code Cache"]));
-    add(Risk::Rebuild, t!("Кеш шейдеров видеокарты (NVIDIA, AMD, DirectX)", "GPU shader cache (NVIDIA, AMD, DirectX)"), t!("Игры пересоберут его сами, первый запуск игры может чуть подтормаживать.", "Games rebuild it themselves, the first launch of a game may stutter a little."),
+    add(Risk::Rebuild, t!("Telegram: кеш медиа", "Telegram: media cache", ja: "Telegram: メディア キャッシュ", pt: "Telegram: cache de mídia"), t!("Картинки и видео из чатов. Скачаются снова, когда откроете чат.", "Pictures and videos from chats. They download again when you open a chat.", ja: "チャットの画像と動画です。チャットを開くと再ダウンロードされます。", pt: "Fotos e vídeos dos chats. Eles são baixados de novo ao abrir um chat."), at(&roam, &["Telegram Desktop/tdata/user_data/media_cache", "Telegram Desktop/tdata/user_data/cache"]));
+    add(Risk::Rebuild, "Discord", t!("Кеш картинок и интерфейса. Создастся заново.", "Image and UI cache. It will be recreated.", ja: "画像と UI のキャッシュです。再作成されます。", pt: "Cache de imagens e da interface. Será recriado."), at(&roam, &["discord/Cache", "discord/Code Cache", "discord/GPUCache"]));
+    add(Risk::Rebuild, "Microsoft Teams", t!("Кеш интерфейса и вложений. Создастся заново.", "UI and attachment cache. It will be recreated.", ja: "UI と添付ファイルのキャッシュです。再作成されます。", pt: "Cache da interface e de anexos. Será recriado."), at(&roam, &["Microsoft/Teams/Cache", "Microsoft/Teams/blob_storage", "Microsoft/Teams/GPUCache", "Microsoft/Teams/tmp"]));
+    add(Risk::Rebuild, "Visual Studio Code", t!("Кеш редактора. Создастся заново.", "Editor cache. It will be recreated.", ja: "エディターのキャッシュです。再作成されます。", pt: "Cache do editor. Será recriado."), at(&roam, &["Code/Cache", "Code/CachedData", "Code/GPUCache", "Code/Code Cache"]));
+    add(Risk::Rebuild, t!("Кеш шейдеров видеокарты (NVIDIA, AMD, DirectX)", "GPU shader cache (NVIDIA, AMD, DirectX)", ja: "GPU シェーダー キャッシュ (NVIDIA、AMD、DirectX)", pt: "Cache de shaders da GPU (NVIDIA, AMD, DirectX)"), t!("Игры пересоберут его сами, первый запуск игры может чуть подтормаживать.", "Games rebuild it themselves, the first launch of a game may stutter a little.", ja: "ゲームが自動的に再構築します。ゲームの初回起動時に少しカクつくことがあります。", pt: "Os jogos o recriam sozinhos; a primeira abertura de um jogo pode engasgar um pouco."),
         at(&local, &["NVIDIA/DXCache", "NVIDIA/GLCache", "D3DSCache", "AMD/DxCache", "AMD/DxcCache"]));
-    add(Risk::Rebuild, t!("Steam: кеш браузера", "Steam: browser cache"), t!("Кеш встроенного браузера Steam. Игры не затрагиваются.", "Cache of Steam's built-in browser. Games are not touched."), at(&local, &["Steam/htmlcache"]));
-    add(Risk::Rebuild, t!("Кеши программистов (cargo, npm, pip, NuGet)", "Developer caches (cargo, npm, pip, NuGet)"), t!("Скачанные пакеты. Загрузятся снова при следующей сборке.", "Downloaded packages. They download again on the next build."),
+    add(Risk::Rebuild, t!("Steam: кеш браузера", "Steam: browser cache", ja: "Steam: ブラウザー キャッシュ", pt: "Steam: cache do navegador"), t!("Кеш встроенного браузера Steam. Игры не затрагиваются.", "Cache of Steam's built-in browser. Games are not touched.", ja: "Steam 内蔵ブラウザーのキャッシュです。ゲームには影響しません。", pt: "Cache do navegador integrado do Steam. Os jogos não são afetados."), at(&local, &["Steam/htmlcache"]));
+    add(Risk::Rebuild, t!("Кеши программистов (cargo, npm, pip, NuGet)", "Developer caches (cargo, npm, pip, NuGet)", ja: "開発者向けキャッシュ (cargo、npm、pip、NuGet)", pt: "Caches de desenvolvedor (cargo, npm, pip, NuGet)"), t!("Скачанные пакеты. Загрузятся снова при следующей сборке.", "Downloaded packages. They download again on the next build.", ja: "ダウンロード済みのパッケージです。次回のビルドで再ダウンロードされます。", pt: "Pacotes baixados. Eles são baixados de novo na próxima compilação."),
         [at(&home, &[".cargo/registry/cache", ".cargo/registry/src"]), at(&local, &["npm-cache", "pip/cache", "NuGet/v3-cache"]), at(&roam, &["npm-cache"])].concat());
     if let Some(w) = win.as_ref().and_then(|w| w.parent()) {
-        v.push(Item { risk: Risk::Ask, how: How::Remove, label: t!("Windows.old (прежняя версия Windows)", "Windows.old (previous Windows version)").into(),
-            note: t!("Нужна только для отката на старую Windows.", "Only needed to roll back to the old Windows."), paths: vec![w.join("Windows.old")], bytes: 0 });
+        v.push(Item { risk: Risk::Ask, how: How::Remove, label: t!("Windows.old (прежняя версия Windows)", "Windows.old (previous Windows version)", ja: "Windows.old (以前の Windows)", pt: "Windows.old (versão anterior do Windows)").into(),
+            note: t!("Нужна только для отката на старую Windows.", "Only needed to roll back to the old Windows.", ja: "以前の Windows に戻すときにのみ必要です。", pt: "Necessário apenas para voltar ao Windows anterior."), paths: vec![w.join("Windows.old")], bytes: 0 });
     }
     v
 }
@@ -109,8 +109,8 @@ fn old_downloads() -> Option<Item> {
         let p = e.path();
         e.metadata().is_ok_and(|m| m.is_file() && quiet_for(&m, 90)) && p.extension().is_some_and(|x| EXT.contains(&x.to_string_lossy().to_lowercase().as_str()))
     }).map(|e| e.path()).collect();
-    Some(Item { risk: Risk::Ask, how: How::Quarantine, label: tf!("Старые установщики и архивы в «Загрузках» ({} шт., старше 90 дней)", "Old installers and archives in Downloads ({} items, older than 90 days)", paths.len()),
-        note: t!("Скорее всего, программы уже установлены.", "Most likely the programs are already installed."), paths, bytes: 0 })
+    Some(Item { risk: Risk::Ask, how: How::Quarantine, label: tf!("Старые установщики и архивы в «Загрузках» ({} шт., старше 90 дней)", "Old installers and archives in Downloads ({} items, older than 90 days)", ja: "ダウンロード フォルダー内の古いインストーラーとアーカイブ ({} 個、90 日以上前)", pt: "Instaladores e arquivos antigos em Downloads ({} itens, com mais de 90 dias)", paths.len()),
+        note: t!("Скорее всего, программы уже установлены.", "Most likely the programs are already installed.", ja: "おそらくそのプログラムはすでにインストール済みです。", pt: "Provavelmente os programas já estão instalados."), paths, bytes: 0 })
 }
 
 /// Biggest forgotten videos/archives/installers in the user's own folders (not cloud folders, not AppData).
@@ -126,7 +126,7 @@ fn big_old(recs: &HashMap<u32, Rec>, tot: &HashMap<u32, u64>, drive: char, skip:
         let p = PathBuf::from(path_of(recs, id, drive).0);
         let low = p.to_string_lossy().to_lowercase();
         if !low[3..].starts_with("users\\") || NO.iter().any(|k| low.contains(k)) || skip.contains(&p) || !p.metadata().is_ok_and(|m| quiet_for(&m, 180)) { continue; }
-        out.push(Item { risk: Risk::Ask, how: How::Quarantine, label: p.to_string_lossy().into(), note: t!("Большой файл, который давно не открывали.", "A large file that has not been opened for a long time."), paths: vec![p], bytes: s });
+        out.push(Item { risk: Risk::Ask, how: How::Quarantine, label: p.to_string_lossy().into(), note: t!("Большой файл, который давно не открывали.", "A large file that has not been opened for a long time.", ja: "長期間開かれていない大きなファイルです。", pt: "Um arquivo grande que não é aberto há muito tempo."), paths: vec![p], bytes: s });
         if out.len() == 15 { break; }
     }
     out
@@ -238,8 +238,8 @@ pub fn restore(drive: char) {
 pub fn clean(recs: &HashMap<u32, Rec>, tot: &HashMap<u32, u64>, drive: char, apply: bool, ask: bool, all: bool, safe_only: bool) {
     let mut items = rules();
     let (proj, pb) = projects(recs, tot, drive);
-    items.push(Item { risk: Risk::Rebuild, how: How::Remove, label: t!("Папки сборки проектов (target, node_modules)", "Project build folders (target, node_modules)").into(), note: t!("Пересоберутся при следующей сборке или npm install.", "They are rebuilt on the next build or npm install."), paths: proj, bytes: pb });
-    items.push(Item { risk: Risk::Ask, how: How::Wipe, label: t!("Корзина", "Recycle Bin").into(), note: t!("Файлы, которые вы уже удалили.", "Files you have already deleted."), paths: vec![PathBuf::from(format!("{drive}:\\$Recycle.Bin"))], bytes: 0 }); // per-user subfolders need admin
+    items.push(Item { risk: Risk::Rebuild, how: How::Remove, label: t!("Папки сборки проектов (target, node_modules)", "Project build folders (target, node_modules)", ja: "プロジェクトのビルド フォルダー (target、node_modules)", pt: "Pastas de compilação de projetos (target, node_modules)").into(), note: t!("Пересоберутся при следующей сборке или npm install.", "They are rebuilt on the next build or npm install.", ja: "次回のビルドまたは npm install で再作成されます。", pt: "São recriadas na próxima compilação ou npm install."), paths: proj, bytes: pb });
+    items.push(Item { risk: Risk::Ask, how: How::Wipe, label: t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira").into(), note: t!("Файлы, которые вы уже удалили.", "Files you have already deleted.", ja: "すでに削除したファイルです。", pt: "Arquivos que você já excluiu."), paths: vec![PathBuf::from(format!("{drive}:\\$Recycle.Bin"))], bytes: 0 }); // per-user subfolders need admin
     let dl = old_downloads();
     let skip = dl.as_ref().map(|d| d.paths.clone()).unwrap_or_default();
     items.extend(dl);
@@ -258,23 +258,23 @@ pub fn clean(recs: &HashMap<u32, Rec>, tot: &HashMap<u32, u64>, drive: char, app
         if last != Some(i.risk) {
             last = Some(i.risk);
             println!("\n{}{}{rst}", col(i.risk), match i.risk {
-                Risk::Safe => t!("БЕЗОПАСНО: Windows и программы создадут это заново сами", "SAFE: Windows and programs recreate this on their own"),
-                Risk::Rebuild => t!("МОЖНО УДАЛИТЬ: пересоздастся, но первое время может работать чуть медленнее", "CAN BE DELETED: it is recreated, but may run a little slower for a while"),
-                Risk::Ask => t!("ТОЛЬКО ПО ВАШЕМУ ВЫБОРУ: проверьте, что это вам не нужно", "YOUR CHOICE ONLY: make sure you do not need this"),
+                Risk::Safe => t!("БЕЗОПАСНО: Windows и программы создадут это заново сами", "SAFE: Windows and programs recreate this on their own", ja: "安全: Windows とプログラムが自動的に再作成します", pt: "SEGURO: o Windows e os programas recriam isso sozinhos"),
+                Risk::Rebuild => t!("МОЖНО УДАЛИТЬ: пересоздастся, но первое время может работать чуть медленнее", "CAN BE DELETED: it is recreated, but may run a little slower for a while", ja: "削除可能: 再作成されますが、しばらく動作が少し遅くなることがあります", pt: "PODE EXCLUIR: é recriado, mas pode ficar um pouco mais lento por um tempo"),
+                Risk::Ask => t!("ТОЛЬКО ПО ВАШЕМУ ВЫБОРУ: проверьте, что это вам не нужно", "YOUR CHOICE ONLY: make sure you do not need this", ja: "ご自身で判断: 不要かどうか確認してください", pt: "SÓ VOCÊ DECIDE: confirme que você não precisa disso"),
             });
         }
-        let fate = match (i.risk, i.how) { (Risk::Ask, How::Quarantine) => t!(" Уйдёт в карантин на 30 дней, можно вернуть (rs-du --restore).", " It goes to quarantine for 30 days and can be restored (rs-du --restore)."), (Risk::Ask, _) => t!(" Удалится навсегда.", " It is deleted permanently."), _ => "" };
+        let fate = match (i.risk, i.how) { (Risk::Ask, How::Quarantine) => t!(" Уйдёт в карантин на 30 дней, можно вернуть (rs-du --restore).", " It goes to quarantine for 30 days and can be restored (rs-du --restore).", ja: "30 日間は隔離され、復元できます (rs-du --restore)。", pt: " Vai para a quarentena por 30 dias e pode ser restaurado (rs-du --restore)."), (Risk::Ask, _) => t!(" Удалится навсегда.", " It is deleted permanently.", ja: "完全に削除されます。", pt: " É excluído permanentemente."), _ => "" };
         println!("{:>3}. {:>9}  {}\n{:>16}{}{fate}", n + 1, human(i.bytes), i.label, "", i.note);
     }
     let mut sel: Vec<bool> = items.iter().map(|i| all || if safe_only { i.risk == Risk::Safe } else { i.risk != Risk::Ask }).collect();
     let sum = |sel: &[bool]| -> u64 { items.iter().zip(sel).filter(|(_, s)| **s).map(|(i, _)| i.bytes).sum() };
-    println!("{}", tf!("\nМожно освободить: {} безопасно, {} всего ({} мест)", "\nYou can free: {} safely, {} in total ({} places)", human(sum(&sel)), human(items.iter().map(|i| i.bytes).sum()), items.len()));
+    println!("{}", tf!("\nМожно освободить: {} безопасно, {} всего ({} мест)", "\nYou can free: {} safely, {} in total ({} places)", ja: "\n解放できる容量: 安全なもの {}、合計 {} ({} 件)", pt: "\nVocê pode liberar: {} com segurança, {} no total ({} locais)", human(sum(&sel)), human(items.iter().map(|i| i.bytes).sum()), items.len()));
     let line = |p: &str| { print!("{p}"); let _ = std::io::stdout().flush(); let mut l = String::new(); let _ = std::io::stdin().read_line(&mut l); l };
-    if !apply && !ask { println!("{}", t!("(только просмотр; --apply удалит безопасное, --apply --all всё, --apply --safe только зелёное)", "(preview only; --apply deletes the safe items, --apply --all everything, --apply --safe only the green ones)")); return; }
+    if !apply && !ask { println!("{}", t!("(только просмотр; --apply удалит безопасное, --apply --all всё, --apply --safe только зелёное)", "(preview only; --apply deletes the safe items, --apply --all everything, --apply --safe only the green ones)", ja: "(プレビューのみ。--apply で安全な項目を削除、--apply --all ですべて、--apply --safe で緑の項目のみ)", pt: "(apenas visualização; --apply exclui os itens seguros, --apply --all tudo, --apply --safe só os verdes)")); return; }
     if !apply {
-        select(&line(t!("Enter = очистить безопасное (зелёное и жёлтое), a = всё, 12,13 = безопасное + эти номера, n = отмена: ", "Enter = clean the safe items (green and yellow), a = everything, 12,13 = safe + these numbers, n = cancel:")), &mut sel);
+        select(&line(t!("Enter = очистить безопасное (зелёное и жёлтое), a = всё, 12,13 = безопасное + эти номера, n = отмена: ", "Enter = clean the safe items (green and yellow), a = everything, 12,13 = safe + these numbers, n = cancel:", ja: "Enter = 安全な項目 (緑と黄) を削除、a = すべて、12,13 = 安全な項目 + 指定番号、n = キャンセル:", pt: "Enter = limpar os itens seguros (verdes e amarelos), a = tudo, 12,13 = seguros + esses números, n = cancelar:")), &mut sel);
     }
-    if !sel.contains(&true) { if ask { line(t!("Ничего не удалено. Нажмите Enter, чтобы закрыть.", "Nothing was deleted. Press Enter to close.")); } return; }
+    if !sel.contains(&true) { if ask { line(t!("Ничего не удалено. Нажмите Enter, чтобы закрыть.", "Nothing was deleted. Press Enter to close.", ja: "何も削除されませんでした。Enter キーを押すと閉じます。", pt: "Nada foi excluído. Pressione Enter para fechar.")); } return; }
 
     purge(drive, false);
     let log = env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("rs-du")).unwrap_or_default();
@@ -288,17 +288,17 @@ pub fn clean(recs: &HashMap<u32, Rec>, tot: &HashMap<u32, u64>, drive: char, app
             match i.how {
                 How::Wipe => wipe(p),
                 How::Remove => remove(p),
-                How::Quarantine => { seq += 1; if !quarantine(p, stamp, seq) { println!("{}", tf!("не удалось убрать: {}", "could not remove: {}", p.display())); } }
+                How::Quarantine => { seq += 1; if !quarantine(p, stamp, seq) { println!("{}", tf!("не удалось убрать: {}", "could not remove: {}", ja: "削除できませんでした: {}", pt: "não foi possível remover: {}", p.display())); } }
             }
         }
         let left: u64 = i.paths.iter().map(|p| size_of(p)).sum();
         let gone = i.bytes.saturating_sub(left);
         if i.how == How::Quarantine { held += gone } else { freed += gone }
-        if left > 0 && i.how != How::Quarantine { println!("{}", tf!("частично осталось {} (занято программой или нет прав): {}", "partially left {} (in use by a program or no rights): {}", human(left), i.label)); }
+        if left > 0 && i.how != How::Quarantine { println!("{}", tf!("частично осталось {} (занято программой или нет прав): {}", "partially left {} (in use by a program or no rights): {}", ja: "{} が残りました (プログラムが使用中、または権限がありません): {}", pt: "{} restaram parcialmente (em uso por um programa ou sem permissão): {}", human(left), i.label)); }
     }
-    println!("{}", tf!("\nОсвобождено: {}. В карантине: {} (место вернётся через {QUAR_DAYS} дней или после rs-du --purge).", "\nFreed: {}. In quarantine: {} (the space returns in {QUAR_DAYS} days or after rs-du --purge).", human(freed), human(held)));
-    println!("{}", tf!("Список: {}", "List: {}", log.join("clean-log.txt").display()));
-    if ask { line(t!("Нажмите Enter, чтобы закрыть.", "Press Enter to close.")); }
+    println!("{}", tf!("\nОсвобождено: {}. В карантине: {} (место вернётся через {QUAR_DAYS} дней или после rs-du --purge).", "\nFreed: {}. In quarantine: {} (the space returns in {QUAR_DAYS} days or after rs-du --purge).", ja: "\n解放: {}。隔離中: {} ({QUAR_DAYS} 日後、または rs-du --purge の後に容量が戻ります)。", pt: "\nLiberado: {}. Em quarentena: {} (o espaço volta em {QUAR_DAYS} dias ou após rs-du --purge).", human(freed), human(held)));
+    println!("{}", tf!("Список: {}", "List: {}", ja: "一覧: {}", pt: "Lista: {}", log.join("clean-log.txt").display()));
+    if ask { line(t!("Нажмите Enter, чтобы закрыть.", "Press Enter to close.", ja: "Enter キーを押すと閉じます。", pt: "Pressione Enter para fechar.")); }
 }
 
 #[cfg(test)]

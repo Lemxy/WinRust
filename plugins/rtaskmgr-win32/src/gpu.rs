@@ -139,7 +139,7 @@ fn locations() -> Vec<(String, String)> {
             if prop(0 /*SPDRP_DEVICEDESC*/, &mut desc) && prop(0x10 /*SPDRP_BUSNUMBER*/, &mut bus) && prop(0x1C /*SPDRP_ADDRESS*/, &mut addr) {
                 let w: Vec<u16> = desc.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
                 let (b, a) = (u32::from_le_bytes(bus), u32::from_le_bytes(addr));
-                out.push((String::from_utf16_lossy(&w), tf!("PCI-шина {b}, устройство {}, функция {}", "PCI bus {b}, device {}, function {}", (a >> 16) & 0xFFFF, a & 0xFFFF)));
+                out.push((String::from_utf16_lossy(&w), tf!("PCI-шина {b}, устройство {}, функция {}", "PCI bus {b}, device {}, function {}", ja: "PCI バス {b}、デバイス {}、機能 {}", pt: "Barramento PCI {b}, dispositivo {}, função {}", (a >> 16) & 0xFFFF, a & 0xFFFF)));
             }
         }
         SetupDiDestroyDeviceInfoList(set);
@@ -172,7 +172,9 @@ pub fn adapters() -> Vec<Adapter> {
                 let name = String::from_utf16_lossy(&w);
                 let u64_at = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
                 let flags = u32::from_le_bytes([d[304], d[305], d[306], d[307]]);
-                if flags & 2 == 0 && !name.to_lowercase().contains("basic render") {
+                // shortcut: one card can show up under several LUIDs (virtual displays); identical twin cards get merged too
+                let dup = out.iter().any(|a: &Adapter| a.name == name && a.dedicated == u64_at(272) && a.shared == u64_at(288));
+                if flags & 2 == 0 && !dup && !name.to_lowercase().contains("basic render") {
                     out.push(Adapter {
                         location: locs.iter().find(|l| l.0.eq_ignore_ascii_case(&name)).map(|l| l.1.clone()).unwrap_or_default(),
                         dx: directx_level(ad),

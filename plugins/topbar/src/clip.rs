@@ -53,6 +53,8 @@ pub fn start() {
 }
 
 unsafe fn run() {
+    // physical pixels on every monitor: with system awareness a secondary monitor at another scale is cut short (#77)
+    windows_sys::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(-4isize as _);
     let (vx, vy, w, h) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
     if w <= 0 || h <= 0 {
         return;

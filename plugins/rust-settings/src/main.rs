@@ -222,7 +222,7 @@ fn monitor_text() -> String {
 
 fn topo_text() -> String {
     if display::connected() < 2 {
-        return t!("Один экран", "Single display").into();
+        return t!("Один экран", "Single display", ja: "単一ディスプレイ", pt: "Tela única").into();
     }
     display::topology().map_or("?".into(), |t| topo_name(t).into())
 }
@@ -230,17 +230,17 @@ fn topo_text() -> String {
 fn topo_name(t: display::Topo) -> &'static str {
     use display::Topo::*;
     match t {
-        Extend => t!("Расширить", "Extend"),
-        Duplicate => t!("Повторять", "Duplicate"),
-        PcOnly => t!("Только этот ПК", "PC screen only"),
-        SecondOnly => t!("Только второй экран", "Second screen only"),
+        Extend => t!("Расширить", "Extend", ja: "拡張", pt: "Estender"),
+        Duplicate => t!("Повторять", "Duplicate", ja: "複製", pt: "Duplicar"),
+        PcOnly => t!("Только этот ПК", "PC screen only", ja: "PC 画面のみ", pt: "Somente a tela do PC"),
+        SecondOnly => t!("Только второй экран", "Second screen only", ja: "2 番目の画面のみ", pt: "Somente a segunda tela"),
     }
 }
 
 fn primary_text() -> String {
     match display::monitor_info() {
-        Some((_, _, _, true)) => t!("Этот дисплей основной", "This is the main display").into(),
-        Some(_) => t!("Сделать основным", "Make main").into(),
+        Some((_, _, _, true)) => t!("Этот дисплей основной", "This is the main display", ja: "これがメイン ディスプレイです", pt: "Esta é a tela principal").into(),
+        Some(_) => t!("Сделать основным", "Make main", ja: "メインにする", pt: "Tornar principal").into(),
         None => "?".into(),
     }
 }
@@ -259,7 +259,7 @@ fn orient_text() -> String {
 }
 
 fn orient_names() -> [&'static str; 4] {
-    [t!("Альбомная", "Landscape"), t!("Книжная", "Portrait"), t!("Альбомная (перевёрнутая)", "Landscape (flipped)"), t!("Книжная (перевёрнутая)", "Portrait (flipped)")]
+    [t!("Альбомная", "Landscape", ja: "横", pt: "Paisagem"), t!("Книжная", "Portrait", ja: "縦", pt: "Retrato"), t!("Альбомная (перевёрнутая)", "Landscape (flipped)", ja: "横 (反転)", pt: "Paisagem (invertida)"), t!("Книжная (перевёрнутая)", "Portrait (flipped)", ja: "縦 (反転)", pt: "Retrato (invertido)")]
 }
 
 /// Rows whose value is picked from a list (the others act on a click). Screen modes need a second screen.
@@ -381,11 +381,11 @@ fn night_labels() -> Vec<String> {
     ext::NIGHT_STEPS
         .iter()
         .map(|&k| match k {
-            0 => t!("Выкл.", "Off").to_string(),
-            5500 => tf!("Слабый · {} K", "Low · {} K", k),
-            4800 => tf!("Средний · {} K", "Medium · {} K", k),
-            4200 => tf!("Сильный · {} K", "Strong · {} K", k),
-            _ => tf!("Максимальный · {} K", "Maximum · {} K", k),
+            0 => t!("Выкл.", "Off", ja: "オフ", pt: "Desligado").to_string(),
+            5500 => tf!("Слабый · {} K", "Low · {} K", ja: "弱 · {} K", pt: "Fraco · {} K", k),
+            4800 => tf!("Средний · {} K", "Medium · {} K", ja: "中 · {} K", pt: "Médio · {} K", k),
+            4200 => tf!("Сильный · {} K", "Strong · {} K", ja: "強 · {} K", pt: "Forte · {} K", k),
+            _ => tf!("Максимальный · {} K", "Maximum · {} K", ja: "最大 · {} K", pt: "Máximo · {} K", k),
         })
         .collect()
 }
@@ -448,11 +448,11 @@ fn bars(q: u32) -> u32 {
 fn wifi_note(n: &wifi::Net) -> String {
     use wifi::Sec::*;
     match (n.connected, &n.profile, n.sec) {
-        (true, ..) => t!("Подключено  ·  правый клик: отключить, забыть", "Connected  ·  right click: disconnect, forget").into(),
-        (_, Some(_), _) => t!("Сохранена", "Saved").into(),
-        (_, _, None) if n.eap.is_some() => t!("Корпоративная (802.1X)  ·  имя и пароль", "Enterprise (802.1X)  ·  user name and password").into(),
-        (_, _, None) => t!("Корпоративная, сертификатом: не поддерживается", "Enterprise with certificates: not supported").into(),
-        (_, _, Some(Open | Owe)) => t!("Открытая сеть", "Open network").into(),
+        (true, ..) => t!("Подключено  ·  правый клик: отключить, забыть", "Connected  ·  right click: disconnect, forget", ja: "接続済み  ·  右クリック: 切断、削除", pt: "Conectado  ·  botão direito: desconectar, esquecer").into(),
+        (_, Some(_), _) => t!("Сохранена", "Saved", ja: "保存済み", pt: "Salva").into(),
+        (_, _, None) if n.eap.is_some() => t!("Корпоративная (802.1X)  ·  имя и пароль", "Enterprise (802.1X)  ·  user name and password", ja: "エンタープライズ (802.1X)  ·  ユーザー名とパスワード", pt: "Empresarial (802.1X)  ·  nome de usuário e senha").into(),
+        (_, _, None) => t!("Корпоративная, сертификатом: не поддерживается", "Enterprise with certificates: not supported", ja: "証明書を使うエンタープライズ: 非対応", pt: "Empresarial com certificados: sem suporte").into(),
+        (_, _, Some(Open | Owe)) => t!("Открытая сеть", "Open network", ja: "オープン ネットワーク", pt: "Rede aberta").into(),
         (_, _, Some(s)) => {
             let kind = match s {
                 Wep { .. } => "WEP",
@@ -460,7 +460,7 @@ fn wifi_note(n: &wifi::Net) -> String {
                 Wpa3 => "WPA3",
                 _ => "WPA2",
             };
-            tf!("Защищена  ·  {}", "Secured  ·  {}", kind)
+            tf!("Защищена  ·  {}", "Secured  ·  {}", ja: "セキュリティ保護あり  ·  {}", pt: "Protegida  ·  {}", kind)
         }
     }
 }
@@ -470,7 +470,7 @@ fn network_rows() -> Vec<Row> {
     let mut rows = vec![];
     let adapters = net::adapters();
     if !adapters.is_empty() {
-        rows.push(Row::Header(t!("Подключения", "Connections").into()));
+        rows.push(Row::Header(t!("Подключения", "Connections", ja: "接続", pt: "Conexões").into()));
     }
     for a in adapters {
         let open = EXPANDED.with_borrow(|e| e.as_deref() == Some(a.name.as_str()));
@@ -482,29 +482,29 @@ fn network_rows() -> Vec<Row> {
     RADIO.set(radio);
     if let Some((_, hw)) = radio {
         rows.push(Row::Header("Wi-Fi".into()));
-        let label = if hw { "Wi-Fi".into() } else { t!("Wi-Fi выключен кнопкой на устройстве", "Wi-Fi is off by the hardware switch").into() };
+        let label = if hw { "Wi-Fi".into() } else { t!("Wi-Fi выключен кнопкой на устройстве", "Wi-Fi is off by the hardware switch", ja: "Wi-Fi がハードウェア スイッチでオフになっています", pt: "O Wi-Fi está desligado pela chave de hardware").into() };
         rows.push(Row::Switch(label, radio_on, Op::Radio));
         for n in wifi::list().into_iter().take(12) {
             let note = wifi_note(&n);
             rows.push(Row::Wifi(n, note));
         }
         if radio.is_some_and(|r| r.0 && r.1) {
-            rows.push(Row::Cycle(t!("Другая сеть…", "Other network…").into(), String::new, Op::Hidden));
+            rows.push(Row::Cycle(t!("Другая сеть…", "Other network…", ja: "その他のネットワーク…", pt: "Outra rede…").into(), String::new, Op::Hidden));
         }
     }
     rows.push(Row::Header("VPN".into()));
     let vpns = ext::vpns();
     if vpns.is_empty() {
-        rows.push(Row::Info(t!("VPN-подключения", "VPN connections").into(), t!("не настроены", "none set up").into()));
+        rows.push(Row::Info(t!("VPN-подключения", "VPN connections", ja: "VPN 接続", pt: "Conexões VPN").into(), t!("не настроены", "none set up", ja: "未設定", pt: "nenhuma configurada").into()));
     }
     for v in vpns {
-        let state = if v.on { t!("Подключено", "Connected") } else { t!("Отключено", "Disconnected") };
+        let state = if v.on { t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado") } else { t!("Отключено", "Disconnected", ja: "切断", pt: "Desconectado") };
         rows.push(Row::Item(v.name.clone(), state.into(), Cmd::Vpn(v)));
     }
-    rows.push(Row::Header(t!("Прокси-сервер", "Proxy").into()));
-    rows.push(toggle_row(t!("Использовать прокси-сервер", "Use a proxy server"), ext::INET, "ProxyEnable", 1, 0));
-    rows.push(Row::Cycle(t!("Адрес прокси-сервера", "Proxy address").into(), ext::proxy_text, Op::Proxy));
-    rows.push(Row::Cycle(t!("Скрипт настройки (PAC)", "Setup script (PAC)").into(), ext::pac_text, Op::Pac));
+    rows.push(Row::Header(t!("Прокси-сервер", "Proxy", ja: "プロキシ", pt: "Proxy").into()));
+    rows.push(toggle_row(t!("Использовать прокси-сервер", "Use a proxy server", ja: "プロキシ サーバーを使う", pt: "Usar um servidor proxy"), ext::INET, "ProxyEnable", 1, 0));
+    rows.push(Row::Cycle(t!("Адрес прокси-сервера", "Proxy address", ja: "プロキシ アドレス", pt: "Endereço do proxy").into(), ext::proxy_text, Op::Proxy));
+    rows.push(Row::Cycle(t!("Скрипт настройки (PAC)", "Setup script (PAC)", ja: "セットアップ スクリプト (PAC)", pt: "Script de configuração (PAC)").into(), ext::pac_text, Op::Pac));
     rows
 }
 
@@ -514,22 +514,22 @@ fn toggle_row(label: &str, key: &'static str, name: &'static str, on_when: u32, 
 
 fn display_rows() -> Vec<Row> {
     let head = |s: &str| Row::Header(s.into());
-    let mut rows = vec![head(t!("Дисплеи", "Displays"))];
+    let mut rows = vec![head(t!("Дисплеи", "Displays", ja: "ディスプレイ", pt: "Telas"))];
     if display::layout().len() > 1 {
         rows.extend((0..4).map(Row::Arrange));
     }
     rows.extend([
-        Row::Cycle(t!("Дисплей", "Display").into(), monitor_text, Op::Monitor),
-        Row::Cycle(t!("Несколько экранов", "Multiple displays").into(), topo_text, Op::Topology),
-        Row::Cycle(t!("Основной дисплей", "Main display").into(), primary_text, Op::Primary),
-        head(t!("Выбранный дисплей", "Selected display")),
-        Row::Cycle(t!("Разрешение", "Resolution").into(), res_text, Op::Res),
-        Row::Cycle(t!("Частота обновления", "Refresh rate").into(), hz_text, Op::Hz),
-        Row::Cycle(t!("Масштаб", "Scale").into(), scale_text, Op::Scale),
-        Row::Cycle(t!("Ориентация", "Orientation").into(), orient_text, Op::Orient),
-        Row::Switch(t!("HDR", "HDR").into(), hdr_on, Op::Hdr),
-        head(t!("Цвет", "Colour")),
-        Row::Cycle(t!("Ночной свет", "Night light").into(), ext::night_text, Op::Night),
+        Row::Cycle(t!("Дисплей", "Display", ja: "ディスプレイ", pt: "Tela").into(), monitor_text, Op::Monitor),
+        Row::Cycle(t!("Несколько экранов", "Multiple displays", ja: "複数のディスプレイ", pt: "Várias telas").into(), topo_text, Op::Topology),
+        Row::Cycle(t!("Основной дисплей", "Main display", ja: "メイン ディスプレイ", pt: "Tela principal").into(), primary_text, Op::Primary),
+        head(t!("Выбранный дисплей", "Selected display", ja: "選択したディスプレイ", pt: "Tela selecionada")),
+        Row::Cycle(t!("Разрешение", "Resolution", ja: "解像度", pt: "Resolução").into(), res_text, Op::Res),
+        Row::Cycle(t!("Частота обновления", "Refresh rate", ja: "リフレッシュ レート", pt: "Taxa de atualização").into(), hz_text, Op::Hz),
+        Row::Cycle(t!("Масштаб", "Scale", ja: "拡大縮小", pt: "Escala").into(), scale_text, Op::Scale),
+        Row::Cycle(t!("Ориентация", "Orientation", ja: "向き", pt: "Orientação").into(), orient_text, Op::Orient),
+        Row::Switch(t!("HDR", "HDR", ja: "HDR", pt: "HDR").into(), hdr_on, Op::Hdr),
+        head(t!("Цвет", "Colour", ja: "色", pt: "Cor")),
+        Row::Cycle(t!("Ночной свет", "Night light", ja: "夜間モード", pt: "Luz noturna").into(), ext::night_text, Op::Night),
     ]);
     rows
 }
@@ -537,19 +537,19 @@ fn display_rows() -> Vec<Row> {
 fn sound_rows() -> Vec<Row> {
     let head = |s: &str| Row::Header(s.into());
     let mut rows = vec![
-        head(t!("Вывод", "Output")),
-        Row::Cycle(t!("Устройство вывода", "Output device").into(), out_dev_text, Op::OutDev),
-        Row::Slider(t!("Громкость", "Volume").into(), audio::Src::Out),
-        Row::Switch(t!("Без звука", "Mute").into(), sound_muted, Op::Mute),
-        head(t!("Ввод", "Input")),
-        Row::Cycle(t!("Устройство ввода", "Input device").into(), in_dev_text, Op::InDev),
-        Row::Slider(t!("Микрофон", "Microphone").into(), audio::Src::Mic),
-        Row::Switch(t!("Микрофон выключен", "Microphone muted").into(), mic_muted, Op::MicMute),
-        head(t!("Громкость приложений", "Volume per app")),
+        head(t!("Вывод", "Output", ja: "出力", pt: "Saída")),
+        Row::Cycle(t!("Устройство вывода", "Output device", ja: "出力デバイス", pt: "Dispositivo de saída").into(), out_dev_text, Op::OutDev),
+        Row::Slider(t!("Громкость", "Volume", ja: "音量", pt: "Volume").into(), audio::Src::Out),
+        Row::Switch(t!("Без звука", "Mute", ja: "ミュート", pt: "Silenciar").into(), sound_muted, Op::Mute),
+        head(t!("Ввод", "Input", ja: "入力", pt: "Entrada")),
+        Row::Cycle(t!("Устройство ввода", "Input device", ja: "入力デバイス", pt: "Dispositivo de entrada").into(), in_dev_text, Op::InDev),
+        Row::Slider(t!("Микрофон", "Microphone", ja: "マイク", pt: "Microfone").into(), audio::Src::Mic),
+        Row::Switch(t!("Микрофон выключен", "Microphone muted", ja: "マイクをミュート中", pt: "Microfone silenciado").into(), mic_muted, Op::MicMute),
+        head(t!("Громкость приложений", "Volume per app", ja: "アプリごとの音量", pt: "Volume por app")),
     ];
     let apps = audio::apps();
     if apps.is_empty() {
-        rows.push(Row::Info(t!("Приложения со звуком", "Apps with sound").into(), t!("сейчас нет", "none right now").into()));
+        rows.push(Row::Info(t!("Приложения со звуком", "Apps with sound", ja: "音を出しているアプリ", pt: "Apps com som").into(), t!("сейчас нет", "none right now", ja: "現在なし", pt: "nenhum no momento").into()));
     }
     rows.extend(apps.into_iter().map(|(pid, name)| Row::Slider(name, audio::Src::App(pid))));
     rows
@@ -560,19 +560,19 @@ fn power_rows() -> Vec<Row> {
     let bin = ext::bin_bytes();
     [
         vec![
-            head(t!("Питание", "Power")),
-            Row::Cycle(t!("Батарея", "Battery").into(), power::battery_text, Op::Nop),
-            Row::Cycle(t!("Схема питания", "Power plan").into(), power::plan_text, Op::Plan),
-            Row::Cycle(t!("Отключать экран через", "Turn screen off after").into(), screen_text, Op::Screen),
-            Row::Cycle(t!("Переходить в сон через", "Sleep after").into(), sleep_text, Op::Sleep),
-            head(t!("Хранилище", "Storage")),
-            toggle_row(t!("Контроль памяти (автоочистка)", "Storage Sense (auto cleanup)"), STORAGE_SENSE, "01", 1, 0),
+            head(t!("Питание", "Power", ja: "電源", pt: "Energia")),
+            Row::Cycle(t!("Батарея", "Battery", ja: "バッテリー", pt: "Bateria").into(), power::battery_text, Op::Nop),
+            Row::Cycle(t!("Схема питания", "Power plan", ja: "電源プラン", pt: "Plano de energia").into(), power::plan_text, Op::Plan),
+            Row::Cycle(t!("Отключать экран через", "Turn screen off after", ja: "ディスプレイの電源を切るまでの時間", pt: "Desligar a tela após").into(), screen_text, Op::Screen),
+            Row::Cycle(t!("Переходить в сон через", "Sleep after", ja: "スリープするまでの時間", pt: "Suspender após").into(), sleep_text, Op::Sleep),
+            head(t!("Хранилище", "Storage", ja: "ストレージ", pt: "Armazenamento")),
+            toggle_row(t!("Контроль памяти (автоочистка)", "Storage Sense (auto cleanup)", ja: "ストレージ センサー (自動クリーンアップ)", pt: "Sensor de Armazenamento (limpeza automática)"), STORAGE_SENSE, "01", 1, 0),
         ],
-        power::drives().into_iter().map(|(l, free, total)| Row::Info(tf!("Диск {}:", "Drive {}:", l), tf!("{} свободно из {}", "{} free of {}", power::size(free), power::size(total)))).collect(),
+        power::drives().into_iter().map(|(l, free, total)| Row::Info(tf!("Диск {}:", "Drive {}:", ja: "ドライブ {}:", pt: "Unidade {}:", l), tf!("{} свободно из {}", "{} free of {}", ja: "{} 空き / {}", pt: "{} livres de {}", power::size(free), power::size(total)))).collect(),
         vec![
-            head(t!("Очистка диска", "Disk cleanup")),
-            Row::Item(t!("Временные файлы (старше суток)", "Temporary files (older than a day)").into(), ext::temp_text(), Cmd::CleanTemp),
-            Row::Item(t!("Корзина", "Recycle Bin").into(), if bin == 0 { t!("пуста", "empty").into() } else { power::size(bin) }, Cmd::EmptyBin),
+            head(t!("Очистка диска", "Disk cleanup", ja: "ディスク クリーンアップ", pt: "Limpeza de disco")),
+            Row::Item(t!("Временные файлы (старше суток)", "Temporary files (older than a day)", ja: "一時ファイル (1 日以上前)", pt: "Arquivos temporários (com mais de um dia)").into(), ext::temp_text(), Cmd::CleanTemp),
+            Row::Item(t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira").into(), if bin == 0 { t!("пуста", "empty", ja: "空", pt: "vazia").into() } else { power::size(bin) }, Cmd::EmptyBin),
         ],
     ]
     .into_iter()
@@ -583,28 +583,28 @@ fn power_rows() -> Vec<Row> {
 fn bt_rows() -> Vec<Row> {
     let s = bt::state();
     let head = |x: &str| Row::Header(x.into());
-    let label = if s.bt.is_some() { "Bluetooth".into() } else { t!("Bluetooth: адаптера нет", "Bluetooth: no adapter").into() };
-    let mut rows = vec![head("Bluetooth"), Row::Switch(label, bt_on, Op::Bt), Row::Switch(t!("Режим «в самолёте»", "Airplane mode").into(), air_on, Op::Air)];
+    let label = if s.bt.is_some() { "Bluetooth".into() } else { t!("Bluetooth: адаптера нет", "Bluetooth: no adapter", ja: "Bluetooth: アダプターなし", pt: "Bluetooth: sem adaptador").into() };
+    let mut rows = vec![head("Bluetooth"), Row::Switch(label, bt_on, Op::Bt), Row::Switch(t!("Режим «в самолёте»", "Airplane mode", ja: "機内モード", pt: "Modo avião").into(), air_on, Op::Air)];
     if s.bt == Some(true) {
-        rows.push(head(t!("Сопряжённые устройства", "Paired devices")));
+        rows.push(head(t!("Сопряжённые устройства", "Paired devices", ja: "ペアリング済みデバイス", pt: "Dispositivos pareados")));
         if s.paired.is_empty() {
-            rows.push(Row::Info(t!("Устройства", "Devices").into(), t!("нет", "none").into()));
+            rows.push(Row::Info(t!("Устройства", "Devices", ja: "デバイス", pt: "Dispositivos").into(), t!("нет", "none", ja: "なし", pt: "nenhum").into()));
         }
         for d in &s.paired {
-            let st = if d.connected { t!("Подключено", "Connected") } else { t!("Сопряжено", "Paired") };
+            let st = if d.connected { t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado") } else { t!("Сопряжено", "Paired", ja: "ペアリング済み", pt: "Pareado") };
             rows.push(Row::Item(d.name.clone(), st.into(), Cmd::BtUnpair(d.id.clone())));
         }
-        rows.push(head(t!("Устройства поблизости", "Nearby devices")));
-        rows.push(Row::Item(t!("Найти устройства", "Find devices").into(), if s.scanning { t!("поиск…", "searching…").into() } else { String::new() }, Cmd::BtScan));
+        rows.push(head(t!("Устройства поблизости", "Nearby devices", ja: "近くのデバイス", pt: "Dispositivos próximos")));
+        rows.push(Row::Item(t!("Найти устройства", "Find devices", ja: "デバイスを検索", pt: "Procurar dispositivos").into(), if s.scanning { t!("поиск…", "searching…", ja: "検索中…", pt: "procurando…").into() } else { String::new() }, Cmd::BtScan));
         for d in s.nearby.iter().filter(|d| !s.paired.iter().any(|p| p.id == d.id)) {
-            rows.push(Row::Item(d.name.clone(), t!("Сопрячь", "Pair").into(), Cmd::BtPair(d.id.clone())));
+            rows.push(Row::Item(d.name.clone(), t!("Сопрячь", "Pair", ja: "ペアリング", pt: "Parear").into(), Cmd::BtPair(d.id.clone())));
         }
     }
     rows
 }
 
 fn apps_rows(list: &[ext::App]) -> Vec<Row> {
-    let mut rows = vec![Row::Header(tf!("Установленные программы: {}", "Installed programs: {}", list.len()))];
+    let mut rows = vec![Row::Header(tf!("Установленные программы: {}", "Installed programs: {}", ja: "インストール済みのプログラム: {}", pt: "Programas instalados: {}", list.len()))];
     rows.extend(list.iter().take(400).map(|a| Row::Item(a.name.clone(), a.version.clone(), Cmd::Uninstall(a.uninstall.clone()))));
     rows
 }
@@ -613,21 +613,21 @@ fn wu_rows() -> Vec<Row> {
     let s = wu::state();
     let status = match (&s.busy, &s.found) {
         (Some(b), _) => b.clone(),
-        (_, None) => t!("Ещё не проверялось", "Not checked yet").into(),
-        (_, Some(f)) if f.is_empty() => t!("Всё установлено", "Up to date").into(),
-        (_, Some(f)) => tf!("Доступно обновлений: {}", "Updates available: {}", f.len()),
+        (_, None) => t!("Ещё не проверялось", "Not checked yet", ja: "まだ確認していません", pt: "Ainda não verificado").into(),
+        (_, Some(f)) if f.is_empty() => t!("Всё установлено", "Up to date", ja: "最新の状態です", pt: "Atualizado").into(),
+        (_, Some(f)) => tf!("Доступно обновлений: {}", "Updates available: {}", ja: "利用可能な更新プログラム: {}", pt: "Atualizações disponíveis: {}", f.len()),
     };
-    let mut rows = vec![Row::Header(t!("Центр обновления Windows", "Windows Update").into()), Row::Info(t!("Состояние", "Status").into(), status)];
+    let mut rows = vec![Row::Header(t!("Центр обновления Windows", "Windows Update", ja: "Windows Update", pt: "Windows Update").into()), Row::Info(t!("Состояние", "Status", ja: "状態", pt: "Status").into(), status)];
     if !s.note.is_empty() {
-        rows.push(Row::Info(t!("Результат", "Result").into(), s.note.clone()));
+        rows.push(Row::Info(t!("Результат", "Result", ja: "結果", pt: "Resultado").into(), s.note.clone()));
     }
     for title in s.found.iter().flatten().take(30) {
-        rows.push(Row::Info(t!("Обновление", "Update").into(), title.clone()));
+        rows.push(Row::Info(t!("Обновление", "Update", ja: "更新", pt: "Atualizar").into(), title.clone()));
     }
     if s.busy.is_none() {
-        rows.push(Row::Item(t!("Проверить наличие обновлений", "Check for updates").into(), String::new(), Cmd::Check));
+        rows.push(Row::Item(t!("Проверить наличие обновлений", "Check for updates", ja: "更新プログラムのチェック", pt: "Verificar atualizações").into(), String::new(), Cmd::Check));
         if s.found.as_ref().is_some_and(|f| !f.is_empty()) {
-            rows.push(Row::Item(t!("Скачать и установить", "Download and install").into(), t!("нужны права администратора", "needs administrator rights").into(), Cmd::Install));
+            rows.push(Row::Item(t!("Скачать и установить", "Download and install", ja: "ダウンロードしてインストール", pt: "Baixar e instalar").into(), t!("нужны права администратора", "needs administrator rights", ja: "管理者権限が必要です", pt: "requer direitos de administrador").into(), Cmd::Install));
         }
     }
     rows
@@ -655,33 +655,33 @@ fn pages() -> Vec<Page> {
     let ram = if unsafe { GlobalMemoryStatusEx(&mut mem) } != 0 { gb(mem.ullTotalPhys) } else { "?".into() };
     let head = |s: &str| Row::Header(s.into());
     vec![
-        Page { title: t!("Экран", "Display").into(), rows: display_rows() },
-        Page { title: t!("Звук", "Sound").into(), rows: sound_rows() },
-        Page { title: t!("Питание и диски", "Power & storage").into(), rows: power_rows() },
-        Page { title: t!("Сеть", "Network").into(), rows: network_rows() },
+        Page { title: t!("Экран", "Display", ja: "ディスプレイ", pt: "Tela").into(), rows: display_rows() },
+        Page { title: t!("Звук", "Sound", ja: "サウンド", pt: "Som").into(), rows: sound_rows() },
+        Page { title: t!("Питание и диски", "Power & storage", ja: "電源とストレージ", pt: "Energia e armazenamento").into(), rows: power_rows() },
+        Page { title: t!("Сеть", "Network", ja: "ネットワーク", pt: "Rede").into(), rows: network_rows() },
         Page { title: "Bluetooth".into(), rows: bt_rows() },
-        Page { title: t!("Приложения", "Apps").into(), rows: vec![] }, // read when the page opens
-        Page { title: t!("Центр обновления", "Windows Update").into(), rows: wu_rows() },
+        Page { title: t!("Приложения", "Apps", ja: "アプリ", pt: "Apps").into(), rows: vec![] }, // read when the page opens
+        Page { title: t!("Центр обновления", "Windows Update", ja: "Windows Update", pt: "Windows Update").into(), rows: wu_rows() },
         Page {
-            title: t!("Персонализация", "Personalization").into(),
+            title: t!("Персонализация", "Personalization", ja: "個人用設定", pt: "Personalização").into(),
             rows: vec![
-                head(t!("Оформление", "Appearance")),
-                toggle_row(t!("Тёмная тема для приложений", "Dark theme for apps"), PERSONALIZE, "AppsUseLightTheme", 0, 1),
-                toggle_row(t!("Тёмная тема для системы", "Dark theme for the system"), PERSONALIZE, "SystemUsesLightTheme", 0, 1),
-                toggle_row(t!("Эффекты прозрачности", "Transparency effects"), PERSONALIZE, "EnableTransparency", 1, 1),
-                toggle_row(t!("Акцентный цвет на заголовках окон", "Accent color on title bars"), r"Software\Microsoft\Windows\DWM", "ColorPrevalence", 1, 0),
+                head(t!("Оформление", "Appearance", ja: "外観", pt: "Aparência")),
+                toggle_row(t!("Тёмная тема для приложений", "Dark theme for apps", ja: "アプリのダーク テーマ", pt: "Tema escuro para apps"), PERSONALIZE, "AppsUseLightTheme", 0, 1),
+                toggle_row(t!("Тёмная тема для системы", "Dark theme for the system", ja: "システムのダーク テーマ", pt: "Tema escuro para o sistema"), PERSONALIZE, "SystemUsesLightTheme", 0, 1),
+                toggle_row(t!("Эффекты прозрачности", "Transparency effects", ja: "透明効果", pt: "Efeitos de transparência"), PERSONALIZE, "EnableTransparency", 1, 1),
+                toggle_row(t!("Акцентный цвет на заголовках окон", "Accent color on title bars", ja: "タイトル バーにアクセント カラーを表示", pt: "Cor de destaque nas barras de título"), r"Software\Microsoft\Windows\DWM", "ColorPrevalence", 1, 0),
             ],
         },
         Page {
-            title: t!("О системе", "About").into(),
+            title: t!("О системе", "About", ja: "バージョン情報", pt: "Sobre").into(),
             rows: vec![
-                head(t!("Устройство", "Device")),
-                Row::Info(t!("Имя компьютера", "Computer name").into(), std::env::var("COMPUTERNAME").unwrap_or_default()),
-                Row::Info(t!("Оперативная память", "Memory").into(), ram),
+                head(t!("Устройство", "Device", ja: "デバイス", pt: "Dispositivo")),
+                Row::Info(t!("Имя компьютера", "Computer name", ja: "コンピューター名", pt: "Nome do computador").into(), std::env::var("COMPUTERNAME").unwrap_or_default()),
+                Row::Info(t!("Оперативная память", "Memory", ja: "メモリ", pt: "Memória").into(), ram),
                 head("Windows"),
-                Row::Info(t!("Выпуск", "Edition").into(), os_name(&reg("ProductName"), build)),
-                Row::Info(t!("Версия", "Version").into(), reg("DisplayVersion")),
-                Row::Info(t!("Сборка", "Build").into(), reg("CurrentBuild")),
+                Row::Info(t!("Выпуск", "Edition", ja: "エディション", pt: "Edição").into(), os_name(&reg("ProductName"), build)),
+                Row::Info(t!("Версия", "Version", ja: "バージョン", pt: "Versão").into(), reg("DisplayVersion")),
+                Row::Info(t!("Сборка", "Build", ja: "ビルド", pt: "Compilação").into(), reg("CurrentBuild")),
             ],
         },
     ]
@@ -1041,7 +1041,7 @@ unsafe fn paint(hwnd: HWND) {
                         }
                         let tl = inner.left + p(34);
                         text(mem, body, &nw.ssid, RECT { left: tl, top: r.top + p(7), right: inner.right - p(52), bottom: r.top + p(29) }, t.fg, DT_LEFT);
-                        let sub = if busy { t!("Подключение…", "Connecting…").into() } else { note.clone() };
+                        let sub = if busy { t!("Подключение…", "Connecting…", ja: "接続中…", pt: "Conectando…").into() } else { note.clone() };
                         text(mem, small, &sub, RECT { left: tl, top: r.top + p(27), right: inner.right - p(52), bottom: r.bottom - p(7) }, if busy || nw.connected { t.accent } else { t.dim }, DT_LEFT);
                         if nw.connected {
                             text(mem, icon_s, "\u{E73E}", inner, t.accent, DT_RIGHT);
@@ -1053,8 +1053,8 @@ unsafe fn paint(hwnd: HWND) {
                         let armed = a.armed.as_deref() == Some(label.as_str());
                         let lw = text_width(mem, body, label).min((inner.right - inner.left) * 3 / 5);
                         text(mem, body, label, RECT { right: inner.left + lw, ..inner }, if armed { winrust_common::style::BAD } else { t.fg }, DT_LEFT);
-                        let value = if armed { t!("Нажмите ещё раз", "Click again").to_string() } else { value.clone() };
-                        let ink = if armed { winrust_common::style::BAD } else if matches!(cmd, Cmd::Vpn(v) if v.on) || value == t!("Подключено", "Connected") { t.accent } else { t.dim };
+                        let value = if armed { t!("Нажмите ещё раз", "Click again", ja: "もう一度クリック", pt: "Clique de novo").to_string() } else { value.clone() };
+                        let ink = if armed { winrust_common::style::BAD } else if matches!(cmd, Cmd::Vpn(v) if v.on) || value == t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado") { t.accent } else { t.dim };
                         text(mem, body, &value, RECT { left: inner.left + lw + p(16), right: inner.right - p(22), ..inner }, ink, DT_RIGHT);
                         text(mem, icon_s, "\u{E76C}", inner, t.dim, DT_RIGHT);
                     }
@@ -1108,7 +1108,7 @@ unsafe fn paint(hwnd: HWND) {
             let rad = rd(14) * 2;
             if a.pending > 0 {
                 shape(mem, r, t.accent, rad);
-                let msg = tf!("Оставить этот режим? Enter: оставить, Esc или {} с: вернуть", "Keep this mode? Enter keeps it, Esc or {} s goes back", a.pending);
+                let msg = tf!("Оставить этот режим? Enter: оставить, Esc или {} с: вернуть", "Keep this mode? Enter keeps it, Esc or {} s goes back", ja: "このモードを維持しますか? Enter で維持、Esc または {} 秒後に元に戻ります", pt: "Manter este modo? Enter mantém, Esc ou {} s volta ao anterior", a.pending);
                 text(mem, body, &msg, RECT { left: r.left + p(18), right: r.right - p(18), ..r }, rgb(255, 255, 255), DT_LEFT);
             } else if let Some(pr) = &a.prompt {
                 shape(mem, r, t.sep, rad);
@@ -1116,13 +1116,13 @@ unsafe fn paint(hwnd: HWND) {
                 shape(mem, inset(e, -p(2)), t.accent, rd(8) * 2);
                 shape(mem, e, t.bg, rd(6) * 2);
                 let ask = match pr {
-                    Prompt::Ssid => t!("Имя скрытой сети", "Hidden network name").into(),
-                    Prompt::Proxy(false) => t!("Прокси: адрес:порт (пусто: убрать)", "Proxy: host:port (empty: remove)").into(),
-                    Prompt::Proxy(true) => t!("Адрес скрипта PAC (пусто: убрать)", "PAC script address (empty: remove)").into(),
-                    Prompt::EapUser(n) => tf!("Имя пользователя для «{}» (домен\\имя)", "User name for \"{}\" (domain\\name)", n.ssid),
-                    Prompt::EapPass(n, _) => tf!("Пароль «{}»", "Password for \"{}\"", n.ssid),
-                    Prompt::Key(n, true) => tf!("Пароль «{}» (пусто: открытая)", "Password for \"{}\" (empty: open)", n.ssid),
-                    Prompt::Key(n, false) => tf!("Пароль «{}»", "Password for \"{}\"", n.ssid),
+                    Prompt::Ssid => t!("Имя скрытой сети", "Hidden network name", ja: "非表示のネットワーク名", pt: "Nome da rede oculta").into(),
+                    Prompt::Proxy(false) => t!("Прокси: адрес:порт (пусто: убрать)", "Proxy: host:port (empty: remove)", ja: "プロキシ: ホスト:ポート (空欄で削除)", pt: "Proxy: host:porta (vazio: remover)").into(),
+                    Prompt::Proxy(true) => t!("Адрес скрипта PAC (пусто: убрать)", "PAC script address (empty: remove)", ja: "PAC スクリプトのアドレス (空欄で削除)", pt: "Endereço do script PAC (vazio: remover)").into(),
+                    Prompt::EapUser(n) => tf!("Имя пользователя для «{}» (домен\\имя)", "User name for \"{}\" (domain\\name)", ja: "「{}」のユーザー名 (ドメイン\\名前)", pt: "Nome de usuário para \"{}\" (domínio\\nome)", n.ssid),
+                    Prompt::EapPass(n, _) => tf!("Пароль «{}»", "Password for \"{}\"", ja: "「{}」のパスワード", pt: "Senha de \"{}\"", n.ssid),
+                    Prompt::Key(n, true) => tf!("Пароль «{}» (пусто: открытая)", "Password for \"{}\" (empty: open)", ja: "「{}」のパスワード (空欄: オープン)", pt: "Senha de \"{}\" (vazio: aberta)", n.ssid),
+                    Prompt::Key(n, false) => tf!("Пароль «{}»", "Password for \"{}\"", ja: "「{}」のパスワード", pt: "Senha de \"{}\"", n.ssid),
                 };
                 let label = a.msg.clone().unwrap_or(ask);
                 text(mem, body, &label, RECT { left: r.left + p(18), right: e.left - p(14), ..r }, if a.msg.is_some() { winrust_common::style::BAD } else { t.fg }, DT_LEFT);
@@ -1352,7 +1352,7 @@ unsafe fn run_cmd(hwnd: HWND, label: &str, cmd: Cmd) {
             // destructive ones need a second click on the same row
             Cmd::Uninstall(c) => {
                 if once_more(label) {
-                    say(if ext::uninstall(&c) { tf!("Запущено удаление «{}»", "Uninstalling \"{}\"", label) } else { tf!("Не удалось запустить удаление «{}»", "Could not start uninstalling \"{}\"", label) });
+                    say(if ext::uninstall(&c) { tf!("Запущено удаление «{}»", "Uninstalling \"{}\"", ja: "「{}」をアンインストールしています", pt: "Desinstalando \"{}\"", label) } else { tf!("Не удалось запустить удаление «{}»", "Could not start uninstalling \"{}\"", ja: "「{}」のアンインストールを開始できませんでした", pt: "Não foi possível iniciar a desinstalação de \"{}\"", label) });
                 }
             }
             Cmd::BtUnpair(id) => {
@@ -1368,24 +1368,24 @@ unsafe fn run_cmd(hwnd: HWND, label: &str, cmd: Cmd) {
                         if v.on {
                             std::thread::spawn(move || {
                                 ext::hang_up(&name);
-                                note(tf!("VPN «{}» отключён", "VPN \"{}\" disconnected", name));
+                                note(tf!("VPN «{}» отключён", "VPN \"{}\" disconnected", ja: "VPN「{}」を切断しました", pt: "VPN \"{}\" desconectada", name));
                             });
                         } else {
-                            say(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", name));
-                            std::thread::spawn(move || note(ext::dial(&name, v.pbk.as_deref()).map_or_else(|e| e, |_| tf!("VPN «{}» подключён", "VPN \"{}\" connected", name))));
+                            say(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", ja: "「{}」に接続中…", pt: "Conectando a \"{}\"…", name));
+                            std::thread::spawn(move || note(ext::dial(&name, v.pbk.as_deref()).map_or_else(|e| e, |_| tf!("VPN «{}» подключён", "VPN \"{}\" connected", ja: "VPN「{}」に接続しました", pt: "VPN \"{}\" conectada", name))));
                         }
                     }
                     Cmd::CleanTemp => {
-                        say(t!("Очистка…", "Cleaning…").into());
+                        say(t!("Очистка…", "Cleaning…", ja: "クリーンアップ中…", pt: "Limpando…").into());
                         ext::clean_temp(note);
                     }
                     Cmd::EmptyBin => {
                         if ext::empty_bin(hwnd) {
-                            say(t!("Корзина очищена", "Recycle Bin emptied").into());
+                            say(t!("Корзина очищена", "Recycle Bin emptied", ja: "ごみ箱を空にしました", pt: "Lixeira esvaziada").into());
                         }
                     }
                     Cmd::BtPair(id) => {
-                        say(t!("Сопряжение…", "Pairing…").into());
+                        say(t!("Сопряжение…", "Pairing…", ja: "ペアリング中…", pt: "Pareando…").into());
                         bt::pair(id, ping);
                     }
                     Cmd::BtScan => {
@@ -1510,7 +1510,7 @@ unsafe fn edit_text(ed: isize) -> String {
 unsafe fn start_wait(hwnd: HWND, ssid: String, profile: String, new: bool) {
     unsafe {
         APP.with_borrow_mut(|a| {
-            a.msg = Some(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", ssid));
+            a.msg = Some(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", ja: "「{}」に接続中…", pt: "Conectando a \"{}\"…", ssid));
             a.connecting = Some((ssid, profile, new));
         });
         SetTimer(hwnd, 3, 30_000, None);
@@ -1541,7 +1541,7 @@ unsafe fn submit_prompt(hwnd: HWND) {
         let mut s = edit_text(ed);
         match APP.with_borrow_mut(|a| a.prompt.take()) {
             Some(Prompt::Ssid) if s.trim().is_empty() || s.len() > 32 => {
-                APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Ssid), Some(t!("Имя сети: от 1 до 32 байт", "Network name: 1 to 32 bytes").into())));
+                APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Ssid), Some(t!("Имя сети: от 1 до 32 байт", "Network name: 1 to 32 bytes", ja: "ネットワーク名: 1 ～ 32 バイト", pt: "Nome da rede: de 1 a 32 bytes").into())));
             }
             Some(Prompt::Ssid) => {
                 let n = wifi::Net { raw: s.as_bytes().to_vec(), ssid: s.clone(), quality: 0, connected: false, profile: None, sec: Some(wifi::Sec::Wpa2 { tkip: false }), eap: None, iface: std::mem::zeroed() };
@@ -1554,10 +1554,10 @@ unsafe fn submit_prompt(hwnd: HWND) {
                     close_prompt(hwnd);
                     refresh_page(hwnd);
                 } else {
-                    APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Proxy(pac)), Some(t!("Неверный адрес", "Not a valid address").into())));
+                    APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Proxy(pac)), Some(t!("Неверный адрес", "Not a valid address", ja: "無効なアドレスです", pt: "Endereço inválido").into())));
                 }
             }
-            Some(Prompt::EapUser(n)) if s.trim().is_empty() => APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::EapUser(n)), Some(t!("Введите имя пользователя", "Enter the user name").into()))),
+            Some(Prompt::EapUser(n)) if s.trim().is_empty() => APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::EapUser(n)), Some(t!("Введите имя пользователя", "Enter the user name", ja: "ユーザー名を入力してください", pt: "Digite o nome de usuário").into()))),
             Some(Prompt::EapUser(n)) => open_prompt(hwnd, Prompt::EapPass(n, s.trim().to_string())),
             Some(Prompt::EapPass(n, user)) => match wifi::add_eap_and_connect(&n.ssid, &n.raw, n.eap.unwrap_or("WPA2"), &user, &s, false, Some(&n.iface)) {
                 Ok(profile) => {
@@ -1588,7 +1588,7 @@ unsafe fn wifi_click(hwnd: HWND, n: wifi::Net) {
     unsafe {
         close_prompt(hwnd);
         match (&n.profile, n.sec) {
-            _ if n.connected => APP.with_borrow_mut(|a| a.msg = Some(t!("Отключить или забыть: правая кнопка мыши", "Disconnect or forget: right click").into())),
+            _ if n.connected => APP.with_borrow_mut(|a| a.msg = Some(t!("Отключить или забыть: правая кнопка мыши", "Disconnect or forget: right click", ja: "切断または削除: 右クリック", pt: "Desconectar ou esquecer: botão direito").into())),
             (Some(p), _) => {
                 if wifi::connect(p, &n.iface) {
                     start_wait(hwnd, n.ssid.clone(), p.clone(), false);
@@ -1597,7 +1597,7 @@ unsafe fn wifi_click(hwnd: HWND, n: wifi::Net) {
             (None, Some(s)) if !s.needs_key() => drop(add_network(hwnd, &n, s, "", false)),
             (None, Some(_)) => open_prompt(hwnd, Prompt::Key(n, false)),
             (None, None) if n.eap.is_some() => open_prompt(hwnd, Prompt::EapUser(n)),
-            (None, None) => APP.with_borrow_mut(|a| a.msg = Some(t!("Эта сеть входит сертификатом: такие сети не поддерживаются", "This network signs in with a certificate: not supported").into())),
+            (None, None) => APP.with_borrow_mut(|a| a.msg = Some(t!("Эта сеть входит сертификатом: такие сети не поддерживаются", "This network signs in with a certificate: not supported", ja: "このネットワークは証明書でサインインします: 非対応です", pt: "Esta rede entra com um certificado: sem suporte").into())),
         }
         SetTimer(hwnd, 2, 1500, None); // look again soon: the list changes as the connection goes
     }
@@ -1614,7 +1614,7 @@ unsafe fn wifi_menu(hwnd: HWND, x: i32, y: i32) {
         });
         let Some(n) = hit else { return };
         let Some(profile) = n.profile.clone() else { return };
-        let (on, off, forget) = (wide(t!("Подключить", "Connect")), wide(t!("Отключить", "Disconnect")), wide(t!("Забыть сеть", "Forget network")));
+        let (on, off, forget) = (wide(t!("Подключить", "Connect", ja: "接続", pt: "Conectar")), wide(t!("Отключить", "Disconnect", ja: "切断", pt: "Desconectar")), wide(t!("Забыть сеть", "Forget network", ja: "ネットワークを削除", pt: "Esquecer rede")));
         let m = CreatePopupMenu();
         AppendMenuW(m, MF_STRING, 1, if n.connected { off.as_ptr() } else { on.as_ptr() });
         AppendMenuW(m, MF_STRING, 2, forget.as_ptr());
@@ -1690,7 +1690,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             if new {
                                 wifi::forget(&prof); // a wrong password is not kept: the next click asks again
                             }
-                            tf!("Не удалось подключиться к «{}»: {}", "Could not connect to \"{}\": {}", ssid, wifi::reason_text(reason))
+                            tf!("Не удалось подключиться к «{}»: {}", "Could not connect to \"{}\": {}", ja: "「{}」に接続できませんでした: {}", pt: "Não foi possível conectar a \"{}\": {}", ssid, wifi::reason_text(reason))
                         });
                         APP.with_borrow_mut(|a| a.msg = m);
                     }
@@ -1716,7 +1716,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_TIMER if wp == 3 => {
                 KillTimer(hwnd, 3);
                 if let Some((ssid, ..)) = APP.with_borrow_mut(|a| a.connecting.take()) {
-                    APP.with_borrow_mut(|a| a.msg = Some(tf!("«{}» не ответила за 30 с", "\"{}\" did not answer in 30 s", ssid)));
+                    APP.with_borrow_mut(|a| a.msg = Some(tf!("«{}» не ответила за 30 с", "\"{}\" did not answer in 30 s", ja: "「{}」が 30 秒以内に応答しませんでした", pt: "\"{}\" não respondeu em 30 s", ssid)));
                     InvalidateRect(hwnd, null(), 0);
                 }
                 0
@@ -1841,7 +1841,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         let others: Vec<_> = mons.iter().enumerate().filter(|(j, _)| *j != d.idx).map(|(_, m)| *m).collect();
                         let (x, y) = display::snap(d.cur.0, d.cur.1, m.w, m.h, &others);
                         if (x, y) != (m.x, m.y) && !display::move_monitor(d.idx, x, y) {
-                            APP.with_borrow_mut(|a| a.msg = Some(t!("Windows не приняла такое расположение", "Windows did not accept that arrangement").into()));
+                            APP.with_borrow_mut(|a| a.msg = Some(t!("Windows не приняла такое расположение", "Windows did not accept that arrangement", ja: "Windows がその配置を受け付けませんでした", pt: "O Windows não aceitou essa disposição").into()));
                         }
                     } else {
                         display::select_monitor(d.idx); // a click picks the display the rows below act on
@@ -2003,7 +2003,7 @@ fn main() {
         let (inst, class) = (GetModuleHandleW(null()), wide("WinRustSettings"));
         let wc = WNDCLASSW { style: 0, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
         RegisterClassW(&wc);
-        let hwnd = CreateWindowExW(0, class.as_ptr(), wide(t!("Параметры", "Settings")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 940 * dpi / 96, 620 * dpi / 96, null_mut(), null_mut(), inst, null());
+        let hwnd = CreateWindowExW(0, class.as_ptr(), wide(t!("Параметры", "Settings", ja: "設定", pt: "Configurações")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 940 * dpi / 96, 620 * dpi / 96, null_mut(), null_mut(), inst, null());
         frame(hwnd);
         MAIN.store(hwnd as isize, std::sync::atomic::Ordering::Relaxed);
         wifi::watch(hwnd);

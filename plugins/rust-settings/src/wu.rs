@@ -37,7 +37,8 @@ fn session() -> windows::core::Result<IUpdateSession> {
 }
 
 fn search(s: &IUpdateSession) -> windows::core::Result<IUpdateCollection> {
-    unsafe { s.CreateUpdateSearcher()?.Search(&BSTR::from("IsInstalled=0 and IsHidden=0 and Type='Software'"))?.Updates() }
+    // no Type filter: drivers and firmware too, as Windows Update itself offers them (#100)
+    unsafe { s.CreateUpdateSearcher()?.Search(&BSTR::from("IsInstalled=0 and IsHidden=0"))?.Updates() }
 }
 
 fn titles(c: &IUpdateCollection) -> Vec<String> {
@@ -46,7 +47,7 @@ fn titles(c: &IUpdateCollection) -> Vec<String> {
 
 fn err_text(e: &windows::core::Error) -> String {
     if e.code().0 as u32 == 0x8007_0005 {
-        t!("Нужны права администратора", "Administrator rights are needed").into()
+        t!("Нужны права администратора", "Administrator rights are needed", ja: "管理者権限が必要です", pt: "São necessários direitos de administrador").into()
     } else {
         e.message()
     }
@@ -72,26 +73,26 @@ fn start(what: &str, done: impl FnOnce() + Send + 'static, job: impl FnOnce() ->
 
 /// Looks for updates.
 pub fn check(done: impl FnOnce() + Send + 'static) {
-    start(t!("Поиск обновлений…", "Checking for updates…"), done, || match session().and_then(|s| search(&s)) {
+    start(t!("Поиск обновлений…", "Checking for updates…", ja: "更新プログラムを確認しています…", pt: "Verificando atualizações…"), done, || match session().and_then(|s| search(&s)) {
         Ok(c) => {
             let t = titles(&c);
-            let note = if t.is_empty() { t!("Обновлений нет: установлены все", "You're up to date").into() } else { tf!("Найдено обновлений: {}", "Updates found: {}", t.len()) };
+            let note = if t.is_empty() { t!("Обновлений нет: установлены все", "You're up to date", ja: "最新の状態です", pt: "Você está atualizado").into() } else { tf!("Найдено обновлений: {}", "Updates found: {}", ja: "見つかった更新プログラム: {}", pt: "Atualizações encontradas: {}", t.len()) };
             with(|s| s.found = Some(t));
             note
         }
-        Err(e) => tf!("Не удалось проверить: {}", "Could not check: {}", err_text(&e)),
+        Err(e) => tf!("Не удалось проверить: {}", "Could not check: {}", ja: "確認できませんでした: {}", pt: "Não foi possível verificar: {}", err_text(&e)),
     });
 }
 
 /// Downloads and installs every update found by `check`.
 pub fn install(done: impl FnOnce() + Send + 'static) {
-    start(t!("Загрузка и установка обновлений…", "Downloading and installing updates…"), done, || {
+    start(t!("Загрузка и установка обновлений…", "Downloading and installing updates…", ja: "更新プログラムをダウンロードしてインストールしています…", pt: "Baixando e instalando atualizações…"), done, || {
         let run = || -> windows::core::Result<String> {
             unsafe {
                 let s = session()?;
                 let found = search(&s)?;
                 if found.Count()? == 0 {
-                    return Ok(t!("Обновлений нет: установлены все", "You're up to date").into());
+                    return Ok(t!("Обновлений нет: установлены все", "You're up to date", ja: "最新の状態です", pt: "Você está atualizado").into());
                 }
                 for i in 0..found.Count()? {
                     let u = found.get_Item(i)?;
@@ -105,7 +106,7 @@ pub fn install(done: impl FnOnce() + Send + 'static) {
                 let inst = s.CreateUpdateInstaller()?;
                 inst.SetUpdates(&found)?;
                 let r = inst.Install()?;
-                Ok(if r.RebootRequired()?.as_bool() { t!("Установлено. Нужна перезагрузка", "Installed. Restart to finish").into() } else { t!("Обновления установлены", "Updates installed").into() })
+                Ok(if r.RebootRequired()?.as_bool() { t!("Установлено. Нужна перезагрузка", "Installed. Restart to finish", ja: "インストールしました。完了するには再起動してください", pt: "Instalado. Reinicie para concluir").into() } else { t!("Обновления установлены", "Updates installed", ja: "更新プログラムをインストールしました", pt: "Atualizações instaladas").into() })
             }
         };
         match run() {
@@ -113,7 +114,7 @@ pub fn install(done: impl FnOnce() + Send + 'static) {
                 with(|s| s.found = Some(vec![]));
                 m
             }
-            Err(e) => tf!("Не удалось установить: {}", "Could not install: {}", err_text(&e)),
+            Err(e) => tf!("Не удалось установить: {}", "Could not install: {}", ja: "インストールできませんでした: {}", pt: "Não foi possível instalar: {}", err_text(&e)),
         }
     });
 }
