@@ -723,6 +723,7 @@ pub struct MItem {
     pub danger: bool,
     pub sep: bool,
     pub head: bool,  // a section caption: small dim text, not clickable
+    pub beta: bool,  // a red BETA at the right end
     pub swatch: u32, // a colour dot before the label (COLORREF), u32::MAX = none
 }
 
@@ -730,12 +731,16 @@ impl MItem {
     pub fn head(label: impl Into<String>) -> Self {
         MItem { head: true, ..MItem::new(label) }
     }
+    pub fn beta(mut self, on: bool) -> Self {
+        self.beta = on;
+        self
+    }
     pub fn swatch(mut self, c: u32) -> Self {
         self.swatch = c;
         self
     }
     pub fn new(label: impl Into<String>) -> Self {
-        MItem { icon: null_mut(), label: label.into(), hint: "", on: false, danger: false, sep: false, head: false, swatch: u32::MAX }
+        MItem { icon: null_mut(), label: label.into(), hint: "", on: false, danger: false, sep: false, head: false, beta: false, swatch: u32::MAX }
     }
     pub fn hint(mut self, h: &'static str) -> Self {
         self.hint = h;
@@ -1590,6 +1595,9 @@ unsafe fn paint(hw: HWND, k: Kind) {
                         rx -= sc(18);
                     }
                     SelectObject(dc, f_small);
+                    if it.beta {
+                        text(dc, "BETA", RECT { left: lx, right: rx, ..*rc }, rgb(255, 59, 48), DT_RIGHT);
+                    }
                     if !it.hint.is_empty() {
                         text(dc, it.hint, RECT { left: lx, right: rx, ..*rc }, mix(pal().dim, pal().bg, 0.25), DT_RIGHT);
                     }

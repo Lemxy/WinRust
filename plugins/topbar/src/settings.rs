@@ -46,6 +46,8 @@ pub(crate) fn style_name(s: i18n::style::Style) -> &'static str {
         Tiling => t!("Тайлинг", "Tiling", ja: "タイル表示", pt: "Lado a lado"),
         Road => t!("Белая дорога", "White road", ja: "白い道", pt: "Estrada branca"),
         Ruby => t!("Рубин", "Ruby", ja: "ルビー", pt: "Rubi"),
+        Win98 => "Windows 98",
+        Win7 => "Windows 7",
     }
 }
 
@@ -79,7 +81,7 @@ pub(crate) unsafe fn language_page() {
 pub(crate) unsafe fn theme_page() {
     let mut items = vec![back()];
     for (k, &s) in i18n::style::ALL.iter().enumerate() {
-        let it = fly::MItem::new(style_name(s)).swatch(i18n::style::PALS[k].accent).on(s == style());
+        let it = fly::MItem::new(style_name(s)).swatch(i18n::style::PALS[k].accent).on(s == style()).beta(s.beta());
         items.push(if k == 0 { it.sep() } else { it });
     }
     gear_page("\u{E790}", t!("Тема", "Theme", ja: "テーマ", pt: "Tema"), t!("Готовый вид панели и окон", "A ready-made look for the bar and windows", ja: "バーとウィンドウのできあいの外観", pt: "Uma aparência pronta para a barra e as janelas"), items, |i| {

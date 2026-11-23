@@ -37,15 +37,29 @@ pub(crate) unsafe fn lang_menu(bar: HWND) {
     });
 }
 
+/// The window in front is one of the bar's own (Start, a flyout).
+pub(crate) unsafe fn own_foreground() -> bool {
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
+    pid == std::process::id()
+}
+
 /// The next layout (or the previous one with `back`, Win+Shift+Space) for the app in front.
 pub(crate) unsafe fn next_lang(bar: HWND, back: bool) {
-    let (l, cur) = layouts();
+    let own = own_foreground(); // our Start in front: switch this thread (app_window() is the app behind it)
+    let (l, cur) = if own { (layouts().0, GetKeyboardLayout(0)) } else { layouts() };
     if l.len() < 2 {
         return; // one layout: nothing to switch to
     }
     let i = l.iter().position(|&k| k == cur);
     let n = l.len();
-    set_lang(bar, l[match (i, back) { (Some(i), false) => (i + 1) % n, (Some(i), true) => (i + n - 1) % n, (None, _) => 0 }]);
+    let next = l[match (i, back) { (Some(i), false) => (i + 1) % n, (Some(i), true) => (i + n - 1) % n, (None, _) => 0 }];
+    if own {
+        ActivateKeyboardLayout(next, 0);
+        InvalidateRect(bar, null(), 0);
+    } else {
+        set_lang(bar, next);
+    }
 }
 
 /// Asks the app in front to switch to layout `next` (the bar's own thread cannot change another app's language).

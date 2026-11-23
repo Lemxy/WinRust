@@ -23,7 +23,9 @@ Copy-Item "$root\target\release\plugin-launcher.exe" $exe -Force
 $sha = { param($p) (Get-FileHash $p -Algorithm SHA256).Hash.ToLower() }
 # manifest names are the payload.txt names; the asset gets dots for spaces (GitHub would rename it that way anyway)
 $lines = @('winrust-manifest 1', "version $Version", "$(& $sha $exe) WinRust.exe")
-foreach ($f in Get-ChildItem "$root\payload\*.exe") {
+# -OnlyInstaller: the manifest lists WinRust.exe alone (the plugins ride inside it), so the "update available" link and the
+# auto-updater still see the release without the plugin exes attached
+foreach ($f in $(if ($OnlyInstaller) { @() } else { Get-ChildItem "$root\payload\*.exe" })) {
     Copy-Item $f.FullName (Join-Path $dir ($f.Name -replace ' ', '.')) -Force
     $lines += "$(& $sha $f.FullName) $($f.Name)"
 }
@@ -32,7 +34,6 @@ $manifest = Join-Path $dir 'manifest.txt'
 & "$root\target\release\winrust-sign.exe" sign $manifest (Join-Path $dir 'manifest.sig')
 if ($LASTEXITCODE) { throw 'signing failed: is the key in %USERPROFILE%\.winrust\update-signing.key?' }
 $assets = @(Get-ChildItem $dir | ForEach-Object FullName)
-if ($OnlyInstaller) { $assets = @($exe) }
 & "$PSScriptRoot\publish.ps1" -Message "Release $Version"
 git tag $Version
 git push origin $Version

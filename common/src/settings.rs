@@ -13,6 +13,7 @@ use windows_sys::Win32::{
 };
 
 const SETTINGS: &str = "SystemSettings.exe";
+const ENROLL: &str = "CredentialEnrollmentManager.exe"; // the PIN / Windows Hello setup dialog
 const NO_WINDOW: u32 = 0x0800_0000;
 
 fn w(s: &str) -> Vec<u16> {
@@ -140,10 +141,16 @@ fn run(uri: &str) {
     }
     if started {
         // ends when Settings is closed, or when it hangs for good
+        // the PIN / Windows Hello dialog is a process of its own hosted by Explorer's immersive shell, and Settings looks hung
+        // while it waits on it: Explorer stays until both are gone (ending it under the dialog left it blank, #110)
         let mut bad = 0;
-        while bad < 5 && !proc::pids(SETTINGS).is_empty() {
+        loop {
+            let enrolling = !proc::pids(ENROLL).is_empty();
+            if !enrolling && (bad >= 5 || proc::pids(SETTINGS).is_empty()) {
+                break;
+            }
             sleep(Duration::from_secs(2));
-            bad = if any_hung() { bad + 1 } else { 0 };
+            bad = if !enrolling && any_hung() { bad + 1 } else { 0 };
         }
         kill_stale();
         proc::kill_shell_explorers();

@@ -154,20 +154,53 @@ fn to_bmp(src: &str, dst: &std::path::Path) {
     }
 }
 
-fn set_wallpaper() {
-    let Some(src) = reg(&["query", r"HKCU\Control Panel\Desktop", "/v", "WallPaper"]).map(|o| parse_run(&o)).and_then(|v| v.into_iter().next()) else { return };
-    let mut path = PathBuf::from(&src);
-    // without explorer's image transcoder the desktop paints only BMP: convert once and keep the copy
-    if !src.to_lowercase().ends_with(".bmp") {
-        let Ok(base) = std::env::var("LOCALAPPDATA") else { return };
-        let bmp = PathBuf::from(base).join("rs-shell").join("wallpaper.bmp");
-        let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-        if modified(&bmp) < modified(&PathBuf::from(&src)) {
-            let _ = std::fs::create_dir_all(bmp.parent().unwrap_or(&bmp));
-            to_bmp(&src, &bmp);
-        }
-        path = bmp;
+/// HKCU\Control Panel\Desktop\WallPaper through the registry API: `reg query` prints in the OEM code page, which garbled
+/// non-ASCII paths (a Cyrillic user name), and REG_EXPAND_SZ came back unexpanded.
+fn wallpaper_value() -> Option<String> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW};
+    let mut buf = vec![0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, wide(r"Control Panel\Desktop").as_ptr(), wide("WallPaper").as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+    if r != 0 { return None; }
+    buf.truncate((len as usize / 2).saturating_sub(1));
+    Some(String::from_utf16_lossy(&buf)).filter(|s| !s.trim().is_empty())
+}
+
+/// The picture to show: the WallPaper value, else Explorer's own decoded copy (Spotlight, slideshow and a moved or deleted
+/// source still leave it). None = a solid colour.
+fn wallpaper_source() -> Option<PathBuf> {
+    let transcoded = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Themes\TranscodedWallpaper"));
+    wallpaper_value().map(PathBuf::from).into_iter().chain(transcoded).find(|p| p.is_file())
+}
+
+/// Makes %LOCALAPPDATA%\rs-shell\wallpaper.bmp (what the rust-explorer desktop paints) and returns the file to show.
+/// A failed conversion leaves no stale or missing path behind: the old code then pointed Windows at a file that did not
+/// exist, and the desktop went black until the next reboot (#108, #111).
+fn wallpaper_bmp() -> Option<PathBuf> {
+    let src = wallpaper_source()?;
+    if src.extension().is_some_and(|e| e.eq_ignore_ascii_case("bmp")) {
+        let _ = std::fs::remove_file(bmp_copy()?); // the desktop must not keep painting an old conversion
+        let _ = std::fs::copy(&src, bmp_copy()?);
+        return Some(src);
     }
+    let bmp = bmp_copy()?;
+    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    if !bmp.is_file() || modified(&bmp) < modified(&src) {
+        let _ = std::fs::create_dir_all(bmp.parent()?);
+        let _ = std::fs::remove_file(&bmp);
+        to_bmp(&src.to_string_lossy(), &bmp);
+    }
+    bmp.is_file().then_some(bmp)
+}
+
+fn bmp_copy() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|b| PathBuf::from(b).join("rs-shell").join("wallpaper.bmp"))
+}
+
+/// Shell mode only: without explorer's transcoder the system desktop paints only BMP. Next to Explorer (`--overlay`) the
+/// system wallpaper is never touched: Explorer shows the original itself.
+fn set_wallpaper() {
+    let Some(path) = wallpaper_bmp() else { return };
     unsafe { SystemParametersInfoW(0x14, 0, wide(&path.to_string_lossy()).as_ptr() as _, 0) }; // SPI_SETDESKWALLPAPER
 }
 
@@ -320,7 +353,7 @@ fn overlay() {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
     let replace = replace_on();
     log(&format!("overlay start (replace explorer: {replace})"));
-    let wp = thread::spawn(set_wallpaper); // makes sure the BMP the desktop window paints exists (and refreshes the wallpaper)
+    let wp = thread::spawn(wallpaper_bmp); // the BMP the desktop window paints; the system wallpaper stays Explorer's
     if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
     // Win+I / Win+E / Win+D live in reshell: its Run entry may be missing (another account's HKCU), and without it Explorer's own Win+I
     // fails once the shell is gone. A second copy exits at once (one hook per session).
