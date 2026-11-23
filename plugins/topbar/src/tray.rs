@@ -32,6 +32,27 @@ fn own_icon(guid: &[u8; 16]) -> bool {
     matches!(guid[0], 0x73..=0x75) && guid[1..] == [0xAE, 0x20, 0x78, 0xE3, 0x23, 0x29, 0x42, 0x82, 0xC1, 0xE4, 0x1C, 0xB6, 0x7D, 0x5B, 0x9C]
 }
 
+/// The installer's OneDrive switch moved (it sends the style broadcast): the icon goes, or is asked back, right away
+/// instead of at the next sign-in.
+pub(crate) unsafe fn onedrive_recheck() {
+    thread_local! { static LAST: Cell<Option<bool>> = const { Cell::new(None) }; }
+    let hide = hide_onedrive();
+    if LAST.replace(Some(hide)).is_none_or(|was| was == hide) {
+        return; // the first look (at start), or no change: every other broadcast (theme, language) ends here
+    }
+    if hide {
+        TAPPS.with_borrow_mut(|t| {
+            t.retain(|x| x.key != "onedrive.exe" || {
+                DestroyIcon(x.icon);
+                false
+            })
+        });
+        InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0);
+    } else {
+        announce(); // OneDrive registers its icon again, with us this time
+    }
+}
+
 /// WM_COPYDATA (dwData 1) from Shell_NotifyIcon: u32 magic, u32 NIM_*, then the platform-neutral NOTIFYICONDATA
 /// (32-bit handles): hWnd@12 uID@16 uFlags@20 callback@24 hIcon@28 dwState@288 mask@292 version@808 guid@944.
 pub(crate) unsafe fn tray_msg(d: &[u8]) {
