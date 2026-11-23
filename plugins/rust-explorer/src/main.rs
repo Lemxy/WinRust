@@ -1547,6 +1547,12 @@ unsafe extern "system" fn edit_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> 
 
 unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        if !desk() {
+            // the chrome child decides what of the tab row is caption (HTTRANSPARENT): here nothing else is interactive
+            if let Some(r) = winrust_common::caption::handle(h, m, wp, lp, ui::CAP, |_, _| false) {
+                return r;
+            }
+        }
         if m == winrust_common::style::msg() {
             // the topbar switched the WinRust style, or a WinRust window the language: take it now (the desktop's list keeps
             // its see-through colours)
@@ -1966,6 +1972,7 @@ fn main() {
         } else {
             // where it was last closed, maximized again if it was (#71); a first start gets the default size
             let win = CreateWindowExW(0, cls.as_ptr(), ptr::null(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, ui::sc(1000), ui::sc(660), 0 as _, 0 as _, inst, ptr::null());
+            winrust_common::caption::install(win);
             match saved_place() {
                 // the same API that saved it: rcNormalPosition is in work-area coordinates, which CreateWindow does not use
                 Some((max, r)) => {
