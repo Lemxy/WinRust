@@ -100,7 +100,7 @@ const PLUGINS: &[Plugin] = &[
     },
     Plugin {
         name: "topbar",
-        desc: Tr("Нижняя панель в стиле Windows 11 вместо панели задач: окна, часы, меню. Стандартная панель скрывается. Вместе с ней ставятся хоткеи рабочих столов (Win+1/2/3, Win+`).", "A Windows 11-style bottom bar instead of the taskbar: windows, clock, menus. The stock taskbar is hidden. Desktop hotkeys (Win+1/2/3, Win+`) are installed with it.", "タスクバーの代わりに Windows 11 風の下部バー: ウィンドウ、時計、メニュー。標準のタスクバーは非表示になります。デスクトップのホットキー (Win+1/2/3、Win+`) も一緒にインストールされます。", "Uma barra inferior no estilo do Windows 11 no lugar da barra de tarefas: janelas, relógio, menus. A barra de tarefas padrão fica oculta. Os atalhos da área de trabalho (Win+1/2/3, Win+`) são instalados junto.", "取代任务栏的 Windows 11 风格底部栏：窗口、时钟、菜单。系统任务栏被隐藏。同时装上桌面快捷键（Win+1/2/3、Win+`）。", "Una barra inferior al estilo de Windows 11 en lugar de la barra de tareas: ventanas, reloj, menús. La barra de tareas original se oculta. Con ella se instalan los atajos de escritorios (Win+1/2/3, Win+`)."),
+        desc: Tr("Нижняя панель в стиле Windows 11 вместо панели задач: окна, часы, меню. Стандартная панель скрывается. Вместе с ней ставятся хоткеи рабочих столов (Win+1/2/3, Win+`). В шестерёнке — вид панели и псевдонимы PowerShell (по желанию).", "A Windows 11-style bottom bar instead of the taskbar: windows, clock, menus. The stock taskbar is hidden. Desktop hotkeys (Win+1/2/3, Win+`) are installed with it. Its gear has the bar's look and the optional PowerShell aliases.", "タスクバーの代わりに Windows 11 風の下部バー: ウィンドウ、時計、メニュー。標準のタスクバーは非表示になります。デスクトップのホットキー (Win+1/2/3、Win+`) も一緒にインストールされます。歯車からバーの外観と、任意の PowerShell エイリアスを設定できます。", "Uma barra inferior no estilo do Windows 11 no lugar da barra de tarefas: janelas, relógio, menus. A barra de tarefas padrão fica oculta. Os atalhos da área de trabalho (Win+1/2/3, Win+`) são instalados junto. Na engrenagem ficam a aparência da barra e os aliases opcionais do PowerShell.", "取代任务栏的 Windows 11 风格底部栏：窗口、时钟、菜单。系统任务栏被隐藏。同时装上桌面快捷键（Win+1/2/3、Win+`）。齿轮里可以设置任务栏外观和可选的 PowerShell 别名。", "Una barra inferior al estilo de Windows 11 en lugar de la barra de tareas: ventanas, reloj, menús. La barra de tareas original se oculta. Con ella se instalan los atajos de escritorios (Win+1/2/3, Win+`). En su engranaje están la apariencia de la barra y los alias opcionales de PowerShell."),
         warn: Tr("Панель задач Windows будет СКРЫТА и заменена панелью внизу экрана. Удаление плагина возвращает её.", "The Windows taskbar will be HIDDEN and replaced by a bar at the bottom of the screen. Uninstalling the plugin brings it back.", "Windows のタスクバーは非表示になり、画面下部のバーに置き換わります。プラグインをアンインストールすると元に戻ります。", "A barra de tarefas do Windows será OCULTADA e substituída por uma barra na parte inferior da tela. Desinstalar o plugin a traz de volta.", "Windows 任务栏将被隐藏，由屏幕底部的一条栏取而代之。卸载这个插件就会恢复。", "La barra de tareas de Windows se OCULTARÁ y la reemplazará una barra en la parte inferior de la pantalla. Al desinstalar el plugin, vuelve."),
         installed: || bar_dir().join("topbar.exe").is_file(),
         actions: Some((bar_install, bar_uninstall)),
@@ -182,6 +182,7 @@ fn refresh() {
         f.store((p.installed)(), Relaxed);
     }
     SHELL_NOW.store(rx_dir().join("rust-explorer.exe").is_file() && rx_shell_on(), Relaxed);
+    PS_NOW.store(ps_aliases_now(), Relaxed);
 }
 // Initialized when the window opens. Refreshing installed state preserves the user's checkbox choices.
 static SELECTED: [AtomicBool; PLUGINS.len()] = [const { AtomicBool::new(false) }; PLUGINS.len()];
@@ -189,6 +190,9 @@ static MSG: Mutex<(String, bool)> = Mutex::new((String::new(), true));
 // rust-explorer replacing the Explorer shell: what the settings switch asks for, and what is installed now
 static SHELL: AtomicBool = AtomicBool::new(false);
 static SHELL_NOW: AtomicBool = AtomicBool::new(false);
+// topbar's PowerShell aliases: wanted by its switch, and what the profile has now
+static PS_WANT: AtomicBool = AtomicBool::new(false);
+static PS_NOW: AtomicBool = AtomicBool::new(false);
 thread_local! { static SETTINGS: Cell<Option<usize>> = const { Cell::new(None) }; } // plugin whose settings panel is open
 thread_local! { static HOVER: Cell<Option<usize>> = const { Cell::new(None) }; }
 

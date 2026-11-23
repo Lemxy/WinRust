@@ -7,6 +7,8 @@ use crate::*;
 //   plugin-launcher install <plugin>... --yes   (several names, or `all` for the defaults; without --yes it only prints warnings)
 //   rust-explorer: --shell also replaces the Explorer shell (and installs topbar if it is missing), --no-shell gives the shell
 //   back and keeps the file manager; with neither, install = file manager only and update keeps what is there
+//   topbar: --ps-aliases writes the PowerShell profile block, --no-ps-aliases takes it out; with neither, install = none
+//   and update keeps what is there
 //   plugin-launcher uninstall <plugin>
 //   plugin-launcher rollback --yes
 //   plugin-launcher autoupdate               (what the WinRust-update task runs as SYSTEM: src/update)
@@ -33,6 +35,11 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         (s, ns) => (s || ns).then_some(s),
     };
     set_rx_shell(shell);
+    let ps = match (args.iter().any(|a| a == "--ps-aliases"), args.iter().any(|a| a == "--no-ps-aliases")) {
+        (true, true) => return { say(t!("--ps-aliases и --no-ps-aliases вместе: выберите одно", "--ps-aliases and --no-ps-aliases together: pick one", ja: "--ps-aliases と --no-ps-aliases は同時に指定できません: どちらかを選んでください", pt: "--ps-aliases e --no-ps-aliases juntos: escolha um", zh: "--ps-aliases 和 --no-ps-aliases 不能同时使用：请选一个", es: "--ps-aliases y --no-ps-aliases juntos: elige uno")); 2 },
+        (p, np) => (p || np).then_some(p),
+    };
+    set_ps_aliases(ps);
     // `--lang zh` (or `--lang=zh`) also switches the interface language, so one elevated command installs and enables
     // it: the components restarted below read lang.txt and start in it.
     let lang_arg = args.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--lang=") {
@@ -45,7 +52,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     for a in args {
         if skip {
             skip = false;
-        } else if matches!(a.as_str(), "--yes" | "--shell" | "--no-shell") || a.starts_with("--lang=") {
+        } else if matches!(a.as_str(), "--yes" | "--shell" | "--no-shell" | "--ps-aliases" | "--no-ps-aliases") || a.starts_with("--lang=") {
             continue;
         } else if a == "--lang" {
             skip = true;
@@ -59,7 +66,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         i18n::set_lang(l);
         say(&tf!("Язык: {}", "Language: {}", ja: "言語: {}", pt: "Idioma: {}", zh: "语言：{}", es: "Idioma: {}", l.name()));
     }
-    let usage = t!("использование: plugin-launcher list | install <плагин>...|all [--shell|--no-shell] --yes | update <плагин>|all [--shell|--no-shell] | uninstall <плагин> | rollback --yes [--lang en|ru|ja|pt|zh|es]", "usage: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] --yes | update <plugin>|all [--shell|--no-shell] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]", ja: "使い方: plugin-launcher list | install <プラグイン>...|all [--shell|--no-shell] --yes | update <プラグイン>|all [--shell|--no-shell] | uninstall <プラグイン> | rollback --yes [--lang en|ru|ja|pt|zh|es]", pt: "uso: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] --yes | update <plugin>|all [--shell|--no-shell] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]", zh: "用法：plugin-launcher list | install <插件>...|all [--shell|--no-shell] --yes | update <插件>|all [--shell|--no-shell] | uninstall <插件> | rollback --yes [--lang en|ru|ja|pt|zh|es]", es: "uso: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] --yes | update <plugin>|all [--shell|--no-shell] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]");
+    let usage = t!("использование: plugin-launcher list | install <плагин>...|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] --yes | update <плагин>|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] | uninstall <плагин> | rollback --yes [--lang en|ru|ja|pt|zh|es]", "usage: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] --yes | update <plugin>|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]", ja: "使い方: plugin-launcher list | install <プラグイン>...|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] --yes | update <プラグイン>|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] | uninstall <プラグイン> | rollback --yes [--lang en|ru|ja|pt|zh|es]", pt: "uso: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] --yes | update <plugin>|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]", zh: "用法：plugin-launcher list | install <插件>...|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] --yes | update <插件>|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] | uninstall <插件> | rollback --yes [--lang en|ru|ja|pt|zh|es]", es: "uso: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] --yes | update <plugin>|all [--shell|--no-shell] [--ps-aliases|--no-ps-aliases] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]");
     let result = match words.as_slice() {
         ["list"] => {
             for p in PLUGINS {
@@ -95,8 +102,10 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             // one that fails or is already there does not stop the rest
             let mut failed = false;
             for i in idx {
-                // an installed rust-explorer with --shell / --no-shell is installed again to switch
-                if (PLUGINS[i].installed)() && !(Some(i) == rx && shell.is_some()) {
+                // an installed rust-explorer with --shell / --no-shell (topbar with --ps-aliases / --no-ps-aliases) is installed
+                // again to switch
+                let switch = (Some(i) == rx && shell.is_some()) || (Some(i) == find(TOPBAR) && ps.is_some());
+                if (PLUGINS[i].installed)() && !switch {
                     say(&tf!("{} уже установлен", "{} is already installed", ja: "{} はインストール済みです", pt: "{} já está instalado", zh: "{} 已经安装", es: "{} ya está instalado", PLUGINS[i].name));
                     continue;
                 }

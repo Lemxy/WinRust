@@ -174,15 +174,19 @@ pub(crate) fn chosen() -> impl Iterator<Item = usize> {
     rows().filter(|&i| SELECTED[i].load(Relaxed))
 }
 
-/// What the button would do now: (to remove, to install). An installed rust-explorer whose shell switch moved is installed
-/// again: that is how the switch reaches the system.
+/// What the button would do now: (to remove, to install). An installed plugin whose install-time switches moved is
+/// installed again: that is how the switches reach the system.
 pub(crate) fn diff() -> (Vec<usize>, Vec<usize>) {
-    plan(&rows().collect::<Vec<_>>(), |i| INSTALLED[i].load(Relaxed), |i| SELECTED[i].load(Relaxed), |i| Some(i) == explorer_idx() && shell_moved())
+    plan(&rows().collect::<Vec<_>>(), |i| INSTALLED[i].load(Relaxed), |i| SELECTED[i].load(Relaxed), options_moved)
 }
 
-/// The "Replace Explorer" switch no longer matches the system.
-fn shell_moved() -> bool {
-    SHELL.load(Relaxed) != SHELL_NOW.load(Relaxed)
+/// An installed plugin's install-time switches no longer match the system: rust-explorer's shell, topbar's aliases.
+fn options_moved(i: usize) -> bool {
+    match PLUGINS[i].name {
+        RUST_EXPLORER => SHELL.load(Relaxed) != SHELL_NOW.load(Relaxed),
+        TOPBAR => PS_WANT.load(Relaxed) != PS_NOW.load(Relaxed),
+        _ => false,
+    }
 }
 
 /// The ticks as the custom page starts: what is installed, plus the recommended components on a fresh machine.
@@ -194,6 +198,7 @@ pub(crate) fn reset_selection() {
         SELECTED[i].store(INSTALLED[i].load(Relaxed), Relaxed); // an applied extra shows as on; a new one is never pre-ticked
     }
     SHELL.store(SHELL_NOW.load(Relaxed), Relaxed);
+    PS_WANT.store(PS_NOW.load(Relaxed), Relaxed);
 }
 
 /// What "Express" installs (the components not there yet), in install order.
@@ -299,16 +304,56 @@ pub(crate) fn opts(i: usize) -> Vec<Opt> {
         }
         TOPBAR => vec![
             Opt {
+                name: t!("Кнопки по центру", "Center the buttons", ja: "ボタンを中央に配置", pt: "Centralizar os botões", zh: "按钮居中", es: "Centrar los botones"),
+                note: t!("Выключено: «Пуск» и приложения слева, как в Windows 10", "Off: Start and the apps on the left, like Windows 10", ja: "オフ: スタートとアプリを左に (Windows 10 風)", pt: "Desligado: Iniciar e apps à esquerda, como no Windows 10", zh: "关闭时开始按钮和应用靠左，与 Windows 10 相同", es: "Apagado: Inicio y apps a la izquierda, como en Windows 10"),
+                on: !i18n::style::align_left(),
+                flip: || look(|| i18n::style::set_align_left(!i18n::style::align_left())),
+            },
+            Opt {
+                name: t!("Все значки трея на панели", "Every tray icon on the bar", ja: "すべてのトレイ アイコンをバーに表示", pt: "Todos os ícones da bandeja na barra", zh: "所有托盘图标都显示在任务栏上", es: "Todos los íconos de la bandeja en la barra"),
+                note: t!("Выключено: остальные за стрелкой, как в Windows", "Off: the rest wait behind the arrow, as in Windows", ja: "オフ: 残りは Windows と同じく矢印の中に", pt: "Desligado: o resto fica atrás da seta, como no Windows", zh: "关闭时其余图标收在箭头里，与 Windows 相同", es: "Apagado: el resto queda detrás de la flecha, como en Windows"),
+                on: i18n::style::tray_all(),
+                flip: || look(|| i18n::style::set_tray_all(!i18n::style::tray_all())),
+            },
+            Opt {
                 name: t!("Скрыть значок OneDrive", "Hide the OneDrive icon", ja: "OneDrive アイコンを隠す", pt: "Ocultar o ícone do OneDrive", zh: "隐藏 OneDrive 图标", es: "Ocultar el ícono de OneDrive"),
                 note: t!("Синхронизация продолжает работать", "Sync keeps working", ja: "同期は引き続き動作します", pt: "A sincronização continua funcionando", zh: "同步功能仍可正常使用", es: "La sincronización sigue funcionando"),
                 on: od_hidden(),
                 flip: || report(set_od_hidden(!od_hidden())),
             },
             Opt {
+                name: t!("Полупрозрачная панель", "See-through bar", ja: "半透明のバー", pt: "Barra translúcida", zh: "半透明任务栏", es: "Barra translúcida"),
+                note: t!("85 %; другие уровни — в шестерёнке панели", "85 %; other levels in the bar's own gear", ja: "85 %。ほかの段階はバーの歯車から", pt: "85 %; outros níveis na engrenagem da própria barra", zh: "85 %；其他级别在任务栏自己的齿轮里", es: "85 %; otros niveles en el engranaje de la propia barra"),
+                on: i18n::style::bar_opacity() < 100,
+                flip: || look(|| i18n::style::set_bar_opacity(if i18n::style::bar_opacity() < 100 { 100 } else { 85 })),
+            },
+            Opt {
+                name: t!("Размытие под панелью", "Blur behind the bar", ja: "バーの背後をぼかす", pt: "Desfoque atrás da barra", zh: "任务栏背后模糊", es: "Desenfoque detrás de la barra"),
+                note: t!("Размытие самой Windows, как у её панели задач", "Windows' own blur, as its taskbar has", ja: "Windows 自身のぼかし (タスクバーと同じ)", pt: "O desfoque do próprio Windows, como na barra de tarefas", zh: "Windows 自带的模糊效果，与其任务栏相同", es: "El desenfoque del propio Windows, como en su barra de tareas"),
+                on: i18n::style::bar_blur(),
+                flip: || look(|| {
+                    let on = !i18n::style::bar_blur();
+                    i18n::style::set_bar_blur(on);
+                    if on && i18n::style::bar_opacity() == 100 {
+                        i18n::style::set_bar_opacity(85); // nothing shows through a solid bar
+                    }
+                }),
+            },
+            Opt {
                 name: t!("Заменить Проводник", "Replace Explorer", ja: "エクスプローラーを置き換える", pt: "Substituir o Explorer", zh: "替换资源管理器", es: "Reemplazar el Explorador"),
                 note: t!("Оболочкой становится rust-explorer", "rust-explorer becomes the shell", ja: "rust-explorer がシェルになります", pt: "O rust-explorer passa a ser o shell", zh: "rust-explorer 将成为外壳", es: "rust-explorer pasa a ser el shell"),
                 on: SHELL.load(Relaxed),
                 flip: flip_shell,
+            },
+            Opt {
+                name: t!("Псевдонимы PowerShell", "PowerShell aliases", ja: "PowerShell のエイリアス", pt: "Aliases do PowerShell", zh: "PowerShell 别名", es: "Alias de PowerShell"),
+                note: t!("cat→bat, grep→rg, ll, zoxide в профиле, если они стоят", "cat→bat, grep→rg, ll, zoxide in your profile, if installed", ja: "cat→bat、grep→rg、ll、zoxide をプロファイルに (インストール済みなら)", pt: "cat→bat, grep→rg, ll, zoxide no perfil, se instalados", zh: "在配置文件中设置 cat→bat、grep→rg、ll、zoxide（若已安装）", es: "cat→bat, grep→rg, ll, zoxide en tu perfil, si están"),
+                on: PS_WANT.load(Relaxed),
+                flip: || {
+                    if !PS_WANT.fetch_xor(true, Relaxed) {
+                        tick(TOPBAR); // an install-time switch: the bar is installed (again) to apply it
+                    }
+                },
             },
         ],
         _ => vec![],
@@ -318,10 +363,18 @@ pub(crate) fn opts(i: usize) -> Vec<Opt> {
 /// The shell part needs the file manager and the bar: switching it on ticks both.
 fn flip_shell() {
     if !SHELL.fetch_xor(true, Relaxed) {
-        for n in shell_needs() {
-            PLUGINS.iter().position(|p| p.name == n).inspect(|&o| SELECTED[o].store(true, Relaxed));
-        }
+        shell_needs().into_iter().for_each(tick);
     }
+}
+
+fn tick(name: &str) {
+    PLUGINS.iter().position(|p| p.name == name).inspect(|&o| SELECTED[o].store(true, Relaxed));
+}
+
+/// A look switch of topbar: saved for the bar (and every WinRust window), which repaints on the broadcast.
+fn look(change: fn()) {
+    change();
+    i18n::style::broadcast();
 }
 
 /// rust-search's shortcuts: saved for rs-launcher, which picks them up from the broadcast. One of them always stays on.
@@ -917,6 +970,7 @@ pub(crate) fn apply(h: isize) -> Result<String, String> {
     let (rm, add) = diff();
     let update = rm.is_empty() && add.is_empty();
     set_rx_shell((!update).then(|| SHELL.load(Relaxed))); // an update keeps whatever is installed
+    set_ps_aliases((!update).then(|| PS_WANT.load(Relaxed)));
     let steps: Vec<(usize, bool)> = if update {
         ready().filter(|&i| INSTALLED[i].load(Relaxed)).map(|i| (i, true)).collect()
     } else {
@@ -1030,6 +1084,7 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
                 SELECTED[i].store(express_pick(PLUGINS[i].name, PLUGINS[i].bulk, INSTALLED[i].load(Relaxed)), Relaxed);
             }
             SHELL.store(SHELL_NOW.load(Relaxed), Relaxed);
+            PS_WANT.store(PS_NOW.load(Relaxed), Relaxed);
             let h = hwnd as isize;
             start(hwnd, STARTING, move || apply(h));
         }
