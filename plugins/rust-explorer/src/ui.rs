@@ -15,6 +15,9 @@ pub fn pill() -> u32 { if winrust_common::style::style().light() { mix(pal().bg,
 pub fn off() -> u32 { mix(pal().dim, pal().bg, 0.45) }
 
 pub const CHROME_H: i32 = 88;
+/// The window draws its own caption: the tab row is the title bar (as in a browser), the buttons sit at its right end.
+pub const CAP: winrust_common::caption::Caption = winrust_common::caption::Caption { height: 32, drag: 40, buttons: winrust_common::caption::MIN | winrust_common::caption::MAX | winrust_common::caption::CLOSE };
+const CAP_BTNS: i32 = 3 * 46 + 8; // what the caption buttons and a gap take from the tab row
 pub const STATUS_H: i32 = 26;
 pub const WM_UI: u32 = WM_APP + 4; // chrome -> window: wp = action (see Hit), lp = tab index
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported under the enabled features
@@ -409,7 +412,7 @@ fn rc(l: i32, t: i32, r: i32, b: i32) -> RECT { RECT { left: l, top: t, right: r
 
 fn layout(cw: i32, n: usize) -> Layout {
     let (ty0, ty1) = (sc(8), sc(36));
-    let tw = ((cw - sc(12) * 2 - sc(36)) / n.max(1) as i32 - sc(4)).clamp(sc(90), sc(220));
+    let tw = ((cw - sc(12) * 2 - sc(36) - sc(CAP_BTNS)) / n.max(1) as i32 - sc(4)).clamp(sc(90), sc(220));
     let tabs: Vec<RECT> = (0..n as i32).map(|i| { let l = sc(12) + i * (tw + sc(4)); rc(l, ty0, l + tw, ty1) }).collect();
     let close = tabs.iter().map(|t| rc(t.right - sc(26), (t.top + t.bottom) / 2 - sc(10), t.right - sc(6), (t.top + t.bottom) / 2 + sc(10))).collect();
     let px = tabs.last().map_or(sc(12), |t| t.right + sc(4));
@@ -613,6 +616,7 @@ unsafe fn paint_chrome(hwnd: HWND) {
     CRUMBS.set(crumbs);
 
     fill(dc, rc(0, cr.bottom - 1, cr.right, cr.bottom), pal().line, 0); // hairline under the chrome
+    winrust_common::caption::paint_buttons(dc, GetParent(hwnd), CAP, pal().bg, pal().text);
     BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
     for f in [f_txt, f_glyph, f_small] { DeleteObject(f); }
@@ -692,6 +696,15 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
         layout(r.right, ST.with(|c| c.try_borrow().map_or(1, |s| s.tabs.len())))
     };
     match m {
+        WM_NCHITTEST => {
+            // the tab row's free space and the caption buttons are the window's caption: the top-level window answers there
+            let mut p = POINT { x, y };
+            ScreenToClient(h, &mut p);
+            if p.y < sc(CAP.drag) && hit(&layout_now(), p.x, p.y) == NONE {
+                return HTTRANSPARENT as LRESULT;
+            }
+            return DefWindowProcW(h, m, wp, lp); // everything else is ours: falling through to the 0 below (HTNOWHERE) ate every click
+        }
         WM_PAINT => paint_chrome(h),
         WM_ERASEBKGND => return 1,
         WM_SIZE => { place_edit(h); InvalidateRect(h, ptr::null(), 0); } // the pill and the tabs re-flow: repaint it all
