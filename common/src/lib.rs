@@ -36,6 +36,7 @@ pub enum Lang {
     Ru,
     Ja,
     Pt,
+    Zh,
 }
 
 impl Lang {
@@ -46,6 +47,7 @@ impl Lang {
             Lang::Ru => "Русский",
             Lang::Ja => "日本語",
             Lang::Pt => "Português",
+            Lang::Zh => "简体中文",
         }
     }
     /// The language after this one: the switch button goes round them.
@@ -54,11 +56,12 @@ impl Lang {
             Lang::En => Lang::Ru,
             Lang::Ru => Lang::Ja,
             Lang::Ja => Lang::Pt,
-            Lang::Pt => Lang::En,
+            Lang::Pt => Lang::Zh,
+            Lang::Zh => Lang::En,
         }
     }
     fn code(self) -> &'static str {
-        ["en", "ru", "ja", "pt"][self as usize]
+        ["en", "ru", "ja", "pt", "zh"][self as usize]
     }
     fn parse(s: &str) -> Lang {
         let s = s.trim().to_ascii_lowercase();
@@ -66,6 +69,7 @@ impl Lang {
             Some("ru") => Lang::Ru,
             Some("ja") => Lang::Ja,
             Some("pt") => Lang::Pt,
+            Some("zh") => Lang::Zh,
             _ => Lang::En,
         }
     }
@@ -84,6 +88,7 @@ pub fn lang() -> Lang {
         1 => Lang::Ru,
         2 => Lang::Ja,
         3 => Lang::Pt,
+        4 => Lang::Zh,
         _ => {
             let l = file().and_then(|f| std::fs::read_to_string(f).ok()).map_or(Lang::En, |s| Lang::parse(&s));
             LANG.store(l as u8, Relaxed);
@@ -121,20 +126,30 @@ macro_rules! en {
 #[macro_export]
 macro_rules! dot {
     () => {
-        matches!($crate::lang!(), $crate::Lang::En | $crate::Lang::Ja)
+        matches!($crate::lang!(), $crate::Lang::En | $crate::Lang::Ja | $crate::Lang::Zh)
     };
 }
 
-/// `t!("русский", "english", ja: "日本語", pt: "português")`: a text in the current language.
-/// Without `ja:`/`pt:` Japanese and Portuguese show the English text.
+/// `t!("русский", "english", ja: "日本語", pt: "português", zh: "中文")`: a text in the current language.
+/// Without `ja:`/`pt:`/`zh:` Japanese, Portuguese and Chinese show the English text.
 #[macro_export]
 macro_rules! t {
+    ($ru:expr, $en:expr, ja: $ja:expr, pt: $pt:expr, zh: $zh:expr $(,)?) => {
+        match $crate::lang!() {
+            $crate::Lang::Ru => $ru,
+            $crate::Lang::En => $en,
+            $crate::Lang::Ja => $ja,
+            $crate::Lang::Pt => $pt,
+            $crate::Lang::Zh => $zh,
+        }
+    };
     ($ru:expr, $en:expr, ja: $ja:expr, pt: $pt:expr $(,)?) => {
         match $crate::lang!() {
             $crate::Lang::Ru => $ru,
             $crate::Lang::En => $en,
             $crate::Lang::Ja => $ja,
             $crate::Lang::Pt => $pt,
+            $crate::Lang::Zh => $en,
         }
     };
     ($ru:expr, $en:expr) => {
@@ -142,16 +157,26 @@ macro_rules! t {
     };
 }
 
-/// `tf!("русский {}", "english {}", ja: "日本語 {}", pt: "português {}", args...)`: format! in the current language
+/// `tf!("русский {}", "english {}", ja: "日本語 {}", pt: "português {}", args..., zh: "英语 {}")`: format! in the current language
 /// (all templates are checked at compile time). Without `ja:`/`pt:` they use the English one.
 #[macro_export]
 macro_rules! tf {
+    ($ru:literal, $en:literal, ja: $ja:literal, pt: $pt:literal, zh: $zh:literal $(, $a:expr)* $(,)?) => {
+        match $crate::lang!() {
+            $crate::Lang::Ru => format!($ru $(, $a)*),
+            $crate::Lang::En => format!($en $(, $a)*),
+            $crate::Lang::Ja => format!($ja $(, $a)*),
+            $crate::Lang::Pt => format!($pt $(, $a)*),
+            $crate::Lang::Zh => format!($zh $(, $a)*),
+        }
+    };
     ($ru:literal, $en:literal, ja: $ja:literal, pt: $pt:literal $(, $a:expr)* $(,)?) => {
         match $crate::lang!() {
             $crate::Lang::Ru => format!($ru $(, $a)*),
             $crate::Lang::En => format!($en $(, $a)*),
             $crate::Lang::Ja => format!($ja $(, $a)*),
             $crate::Lang::Pt => format!($pt $(, $a)*),
+            $crate::Lang::Zh => format!($en $(, $a)*),
         }
     };
     ($ru:literal, $en:literal $(, $a:expr)* $(,)?) => {
@@ -165,8 +190,8 @@ mod tests {
     fn tests_run_in_russian() {
         assert_eq!(t!("да", "yes"), "да");
         assert_eq!(tf!("{} шт", "{} pcs", 3), "3 шт");
-        assert_eq!(t!("да", "yes", ja: "はい", pt: "sim"), "да");
-        assert_eq!(tf!("{} шт", "{} pcs", ja: "{} 個", pt: "{} un.", 3), "3 шт");
+        assert_eq!(t!("да", "yes", ja: "はい", pt: "sim", zh: "是"), "да");
+        assert_eq!(tf!("{} шт", "{} pcs", ja: "{} 個", pt: "{} un.", 3, zh: "{} 个"), "3 шт");
     }
 
     #[test]

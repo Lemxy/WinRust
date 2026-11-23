@@ -174,17 +174,17 @@ fn labels(path: &str) -> (String, String) {
 /// (title, subtitle) for a Run mode row.
 fn run_labels(line: &str, src: Option<run::Src>) -> (String, String) {
     use winrust_common::t;
-    let desc = |i: usize| t!(run::KNOWN[i].1, run::KNOWN[i].2, ja: run::KNOWN[i].3, pt: run::KNOWN[i].4);
+    let desc = |i: usize| t!(run::KNOWN[i].1, run::KNOWN[i].2, ja: run::KNOWN[i].3, pt: run::KNOWN[i].4, zh: "run::KNOWN[i].2");
     let known = run::describe(line).map(desc); // a typed or recent command we know gets its description too
     match src {
-        Some(run::Src::Typed) => (line.to_string(), known.unwrap_or(t!("Выполнить", "Run", ja: "実行", pt: "Executar")).into()),
+        Some(run::Src::Typed) => (line.to_string(), known.unwrap_or(t!("Выполнить", "Run", ja: "実行", pt: "Executar", zh: "运行")).into()),
         Some(run::Src::Folder) => {
             let (dir, name) = line.trim_end_matches('\\').rsplit_once('\\').unwrap_or(("", line));
             (format!("{name}{}", if line.ends_with('\\') { "\\" } else { "" }), dir.to_string())
         }
         Some(run::Src::Known(i)) => (line.to_string(), desc(i).into()),
-        Some(run::Src::Program) => (line.to_string(), t!("Программа", "Program", ja: "プログラム", pt: "Programa").into()),
-        _ => (line.to_string(), known.map_or(t!("Недавнее", "Recent", ja: "最近", pt: "Recentes").into(), |d| format!("{}  \u{00B7}  {d}", t!("Недавнее", "Recent", ja: "最近", pt: "Recentes")))),
+        Some(run::Src::Program) => (line.to_string(), t!("Программа", "Program", ja: "プログラム", pt: "Programa", zh: "程序").into()),
+        _ => (line.to_string(), known.map_or(t!("Недавнее", "Recent", ja: "最近", pt: "Recentes", zh: "最近").into(), |d| format!("{}  \u{00B7}  {d}", t!("Недавнее", "Recent", ja: "最近", pt: "Recentes", zh: "最近")))),
     }
 }
 
@@ -351,7 +351,7 @@ unsafe fn run_selected(h: HWND, admin: bool) {
     if ShellExecuteExW(&mut ei) != 0 {
         run::remember(&line);
     } else if GetLastError() != ERROR_CANCELLED {
-        note(&winrust_common::tf!("Не удалось найти «{}». Проверьте имя и попробуйте ещё раз.", "Windows cannot find '{}'. Make sure you typed the name correctly, and then try again.", ja: "Windows が '{}' を見つけられません。名前が正しいか確認して、もう一度お試しください。", pt: "O Windows não encontrou '{}'. Verifique se digitou o nome corretamente e tente novamente.", file), MB_ICONERROR);
+        note(&winrust_common::tf!("Не удалось найти «{}». Проверьте имя и попробуйте ещё раз.", "Windows cannot find '{}'. Make sure you typed the name correctly, and then try again.", ja: "Windows が '{}' を見つけられません。名前が正しいか確認して、もう一度お試しください。", pt: "O Windows não encontrou '{}'. Verifique se digitou o nome corretamente e tente novamente.", zh: "Windows 找不到「{}」。请确认名称拼写正确后重试。", file), MB_ICONERROR);
     }
 }
 
@@ -1342,7 +1342,7 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
     let area = RECT { left: p(58), top: mid - p(18), right: w - p(24), bottom: mid + p(18) };
     let shown = String::from_utf16_lossy(&v.text);
     if v.text.is_empty() {
-        let hint = if v.run { winrust_common::t!("Программа, папка, документ или сайт", "Type a program, folder, document or website", ja: "プログラム、フォルダー、ドキュメント、Web サイトを入力", pt: "Digite um programa, pasta, documento ou site") } else { "Search files and apps" };
+        let hint = if v.run { winrust_common::t!("Программа, папка, документ или сайт", "Type a program, folder, document or website", ja: "プログラム、フォルダー、ドキュメント、Web サイトを入力", pt: "Digite um programa, pasta, documento ou site", zh: "输入程序、文件夹、文档或网址") } else { "Search files and apps" };
         text(dc, v.fonts[F_INPUT], c_faint(), area, hint, DT_SINGLELINE | DT_VCENTER);
     } else {
         let mut size: SIZE = zeroed();
@@ -1393,7 +1393,7 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
         c_faint(),
         RECT { left: p(PAD + 16), top: foot_y + p(4), right: w - p(PAD + 14), bottom: foot_y + p(FOOT_H) },
         &if v.run {
-            winrust_common::t!("{21B5} выполнить     Ctrl+Shift+{21B5} от администратора     Tab дополнить     Esc закрыть", "{21B5} run     Ctrl+Shift+{21B5} as administrator     Tab complete     Esc close", ja: "{21B5} 実行     Ctrl+Shift+{21B5} 管理者として実行     Tab 補完     Esc 閉じる", pt: "{21B5} executar     Ctrl+Shift+{21B5} como administrador     Tab completar     Esc fechar").to_string()
+            winrust_common::t!("{21B5} выполнить     Ctrl+Shift+{21B5} от администратора     Tab дополнить     Esc закрыть", "{21B5} run     Ctrl+Shift+{21B5} as administrator     Tab complete     Esc close", ja: "{21B5} 実行     Ctrl+Shift+{21B5} 管理者として実行     Tab 補完     Esc 閉じる", pt: "{21B5} executar     Ctrl+Shift+{21B5} como administrador     Tab completar     Esc fechar", zh: "{21B5} 运行     Ctrl+Shift+{21B5} 以管理员运行     Tab 补全     Esc 关闭").to_string()
         } else if v.renaming {
             "Type the new name     \u{21B5} rename     Esc cancel".to_string()
         } else {

@@ -1,0 +1,79 @@
+# WinRust 简体中文版 — GitHub Actions 构建
+#
+# 用法：
+#   1. Fork https://github.com/Lemxy/WinRust
+#   2. 把本文件放到 .github/workflows/build-zh.yml
+#   3. 应用中文改动（tools/add-zh.py + zh-map.json）
+#   4. push 后 Actions 自动出包，在 Artifacts 下载
+#
+# 为什么用 CI 而不是本地编：
+#   本地工具链（mingw / MSVC BuildTools）容易装不全，
+#   windows-latest runner 是官方维护的完整环境，
+#   产物与作者自己 release 的完全一致（纯静态 CRT，零依赖）。
+
+name: build-zh
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:   # 支持手动触发
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            plugins/rust-search
+
+      # 关键：官方 build-all.ps1 会先编所有插件放进 payload\，
+      # 再编 launcher 把插件全部内嵌成一个 exe。
+      - name: Build all (plugins + installer)
+        run: powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
+
+      - name: Verify zero CRT dependency
+        shell: pwsh
+        run: |
+          $exe = "target\release\plugin-launcher.exe"
+          if (-not (Test-Path $exe)) { throw "build output missing: $exe" }
+          $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host "built: $exe ($size MB)"
+
+      - name: Rename to zh build
+        shell: pwsh
+        run: |
+          Copy-Item target\release\plugin-launcher.exe WinRust-zh.exe
+          Write-Host "== SHA256 =="
+          (Get-FileHash WinRust-zh.exe -Algorithm SHA256).Hash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinRust-zh
+          path: WinRust-zh.exe
+          retention-days: 30
+
+      # 打 tag 时自动发 Release，方便给别人下载
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: WinRust-zh.exe
+          body: |
+            基于官方 ${{ github.ref_name }} 的社区简体中文版。
+
+            - 全部 UI 文案已汉化（763 条 / 894 处）
+            - 其余与官方一致
+            - 语言切换：`%ProgramData%\WinRust\lang.txt` 写入 `zh`
+            - ⚠️ 不含官方自动更新签名，请手动跟进版本

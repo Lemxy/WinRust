@@ -320,11 +320,11 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
 
     // title
     ui.text("WinRust", [M, 30.0, w - M - 120.0, 64.0], 28.0, 700, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    let sub = if n_inst == 0 { t!("Оболочка Windows на Rust", "A Windows shell in Rust", ja: "Rust 製の Windows シェル", pt: "Um shell do Windows em Rust").to_string() } else { tf!("Установлено {n_inst} из {N_READY}", "{n_inst} of {N_READY} installed", ja: "{N_READY} 個中 {n_inst} 個をインストール済み", pt: "{n_inst} de {N_READY} instalados") };
+    let sub = if n_inst == 0 { t!("Оболочка Windows на Rust", "A Windows shell in Rust", ja: "Rust 製の Windows シェル", pt: "Um shell do Windows em Rust", zh: "Rust 编写的 Windows 外壳").to_string() } else { tf!("Установлено {n_inst} из {N_READY}", "{n_inst} of {N_READY} installed", ja: "{N_READY} 個中 {n_inst} 個をインストール済み", pt: "{n_inst} de {N_READY} instalados", zh: "已安装 {n_inst}/{N_READY}") };
     let sub = format!("{} · {sub}", update::current());
     ui.text(&sub, [M, 64.0, w - M, 84.0], 13.0, 400, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     if let Some(v) = update::NEWER.lock().unwrap().clone() {
-        let s = tf!("Доступно обновление {} · Скачать", "Update available: {} · Download", ja: "新しいバージョン {} があります · ダウンロード", pt: "Atualização disponível: {} · Baixar", v);
+        let s = tf!("Доступно обновление {} · Скачать", "Update available: {} · Download", ja: "新しいバージョン {} があります · ダウンロード", pt: "Atualização disponível: {} · Baixar", zh: "有可用更新：{} · 下载", v);
         ui.text(&s, update_box(w), 13.0, 600, if hot(ID_UPDATE) { TEXT } else { ACCENT }, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
     }
     // shows the language you would switch to; the other WinRust programs pick the choice up when they start
@@ -332,17 +332,17 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
 
     // list caption
     let n_sel_ready = chosen().filter(|&i| PLUGINS[i].bulk).count();
-    ui.text(t!("Компоненты", "Components", ja: "コンポーネント", pt: "Componentes"), [M + 4.0, SEC_Y, w - M, SEC_Y + 22.0], 13.0, 600, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    ui.text(t!("Компоненты", "Components", ja: "コンポーネント", pt: "Componentes", zh: "组件"), [M + 4.0, SEC_Y, w - M, SEC_Y + 22.0], 13.0, 600, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     if !busy {
-        let label = if n_sel_ready == N_READY { t!("Снять все", "Select none", ja: "すべて選択解除", pt: "Desmarcar tudo") } else { t!("Выбрать все", "Select all", ja: "すべて選択", pt: "Selecionar tudo") };
+        let label = if n_sel_ready == N_READY { t!("Снять все", "Select none", ja: "すべて選択解除", pt: "Desmarcar tudo", zh: "取消全选") } else { t!("Выбрать все", "Select all", ja: "すべて選択", pt: "Selecionar tudo", zh: "全选") };
         ui.text(label, all_box(w), 13.0, 400, if hot(ID_ALL) { TEXT } else { ACCENT }, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
     }
 
     // the grouped lists
     ui.round([M, LIST_TOP, w - M, LIST_TOP + LIST_H], 12.0, PANEL, PANEL);
     if N_EXTRA > 0 {
-        ui.text(t!("Дополнительно", "Extras", ja: "オプション", pt: "Extras"), [M + 4.0, EXTRA_SEC_Y, w - M, EXTRA_SEC_Y + 22.0], 13.0, 600, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        ui.text(t!("Только по вашему выбору", "Only when you choose", ja: "選択したときのみ", pt: "Somente quando você escolher"), [M + 4.0, EXTRA_SEC_Y, w - M - 4.0, EXTRA_SEC_Y + 22.0], 12.0, 400, lerp(DIM, BG, 0.3), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+        ui.text(t!("Дополнительно", "Extras", ja: "オプション", pt: "Extras", zh: "附加功能"), [M + 4.0, EXTRA_SEC_Y, w - M, EXTRA_SEC_Y + 22.0], 13.0, 600, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        ui.text(t!("Только по вашему выбору", "Only when you choose", ja: "選択したときのみ", pt: "Somente quando você escolher", zh: "仅在您选择时"), [M + 4.0, EXTRA_SEC_Y, w - M - 4.0, EXTRA_SEC_Y + 22.0], 12.0, 400, lerp(DIM, BG, 0.3), DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
         ui.round([M, EXTRA_TOP, w - M, LISTS_END], 12.0, PANEL, PANEL);
     }
     let steps = STEPS.lock().unwrap().clone();
@@ -386,15 +386,15 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
             right = gb[0] - 8.0;
         }
         let status = if working {
-            Some((if removing { t!("Удаление…", "Removing…", ja: "削除中…", pt: "Removendo…") } else { t!("Установка…", "Installing…", ja: "インストール中…", pt: "Instalando…") }, ACCENT))
+            Some((if removing { t!("Удаление…", "Removing…", ja: "削除中…", pt: "Removendo…", zh: "正在移除…") } else { t!("Установка…", "Installing…", ja: "インストール中…", pt: "Instalando…", zh: "正在安装…") }, ACCENT))
         } else if queued {
-            Some((t!("В очереди", "Queued", ja: "待機中", pt: "Na fila"), DIM))
+            Some((t!("В очереди", "Queued", ja: "待機中", pt: "Na fila", zh: "已排队"), DIM))
         } else if !busy && to_rm.contains(&i) {
-            Some((t!("Будет удалён", "Will be removed", ja: "削除されます", pt: "Será removido"), BAD))
+            Some((t!("Будет удалён", "Will be removed", ja: "削除されます", pt: "Será removido", zh: "将移除"), BAD))
         } else if !busy && to_add.contains(&i) {
-            Some((t!("Будет установлен", "Will be installed", ja: "インストールされます", pt: "Será instalado"), ACCENT))
+            Some((t!("Будет установлен", "Will be installed", ja: "インストールされます", pt: "Será instalado", zh: "将安装"), ACCENT))
         } else if installed {
-            Some((if p.bulk { t!("Установлен", "Installed", ja: "インストール済み", pt: "Instalado") } else { t!("Применён", "Applied", ja: "適用済み", pt: "Aplicado") }, DIM))
+            Some((if p.bulk { t!("Установлен", "Installed", ja: "インストール済み", pt: "Instalado", zh: "已安装") } else { t!("Применён", "Applied", ja: "適用済み", pt: "Aplicado", zh: "已应用") }, DIM))
         } else {
             None
         };
@@ -418,9 +418,9 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     let (m, fg) = if let Some(i) = card {
         (PLUGINS[i].desc.get().to_string(), DIM)
     } else if busy {
-        (t!("Не закрывайте окно до конца установки.", "Keep the window open until it finishes.", ja: "完了するまでウィンドウを開いたままにしてください。", pt: "Mantenha a janela aberta até terminar.").to_string(), DIM)
+        (t!("Не закрывайте окно до конца установки.", "Keep the window open until it finishes.", ja: "完了するまでウィンドウを開いたままにしてください。", pt: "Mantenha a janela aberta até terminar.", zh: "请保持窗口打开直至完成。").to_string(), DIM)
     } else if m.is_empty() {
-        (t!("Перед установкой создаётся точка восстановления.", "A restore point is created before installing.", ja: "インストールの前に復元ポイントを作成します。", pt: "Um ponto de restauração é criado antes de instalar.").into(), DIM)
+        (t!("Перед установкой создаётся точка восстановления.", "A restore point is created before installing.", ja: "インストールの前に復元ポイントを作成します。", pt: "Um ponto de restauração é criado antes de instalar.", zh: "安装前会创建还原点。").into(), DIM)
     } else if ok {
         (m, GOOD)
     } else {
@@ -431,15 +431,15 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     // bottom row: remove-all on the left, the action on the right
     let rb = rollback_box(w);
     let can_rm = n_inst > 0 && !busy;
-    ui.text(t!("Удалить всё", "Remove all", ja: "すべて削除", pt: "Remover tudo"), [rb[0] + 8.0, rb[1], rb[2], rb[3]], 13.0, 400, if !can_rm { lerp(DIM, BG, 0.4) } else if hot(ID_ROLLBACK) { lerp(BAD, TEXT, 0.3) } else { BAD }, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    ui.text(t!("Удалить всё", "Remove all", ja: "すべて削除", pt: "Remover tudo", zh: "全部移除"), [rb[0] + 8.0, rb[1], rb[2], rb[3]], 13.0, 400, if !can_rm { lerp(DIM, BG, 0.4) } else if hot(ID_ROLLBACK) { lerp(BAD, TEXT, 0.3) } else { BAD }, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     let mb = main_box(w);
     if busy {
         let total = steps.len().max(1);
         let done = if job == n { 0.0 } else { pos.map_or(0.0, |q| (q as f32 + 0.5) / total as f32) };
         let label = if job == n {
-            t!("Удаление…", "Removing…", ja: "削除中…", pt: "Removendo…").to_string()
+            t!("Удаление…", "Removing…", ja: "削除中…", pt: "Removendo…", zh: "正在移除…").to_string()
         } else {
-            pos.map_or(t!("Подготовка…", "Preparing…", ja: "準備中…", pt: "Preparando…").into(), |q| tf!("Шаг {} из {}…", "Step {} of {}…", ja: "ステップ {} / {}…", pt: "Etapa {} de {}…", q + 1, total))
+            pos.map_or(t!("Подготовка…", "Preparing…", ja: "準備中…", pt: "Preparando…", zh: "正在准备…").into(), |q| tf!("Шаг {} из {}…", "Step {} of {}…", ja: "ステップ {} / {}…", pt: "Etapa {} de {}…", zh: "第 {} 步，共 {} 步…", q + 1, total))
         };
         // a thin progress line over the bottom row
         let pl = [mb[0], mb[1] - 10.0, mb[2], mb[1] - 7.0];
@@ -451,12 +451,12 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     } else {
         // the switches say what should be installed: the button applies only the difference
         let (label, kind) = match (to_rm.len(), to_add.len()) {
-            (0, 0) if n_inst == 0 => (t!("Ничего не выбрано", "Nothing selected", ja: "何も選択されていません", pt: "Nada selecionado").to_string(), 3),
-            (0, 0) => (t!("Обновить", "Update", ja: "更新", pt: "Atualizar").to_string(), 1),
-            (0, a) if n_inst == 0 && a >= N_READY - 1 => (t!("Установить WinRust", "Install WinRust", ja: "WinRust をインストール", pt: "Instalar a WinRust").to_string(), 0),
-            (0, a) => (tf!("Установить ({a})", "Install ({a})", ja: "インストール ({a})", pt: "Instalar ({a})"), 0),
-            (r, 0) => (tf!("Удалить ({r})", "Remove ({r})", ja: "削除 ({r})", pt: "Remover ({r})"), 2),
-            (r, a) => (tf!("Применить (+{a} −{r})", "Apply (+{a} −{r})", ja: "適用 (+{a} −{r})", pt: "Aplicar (+{a} −{r})"), 0),
+            (0, 0) if n_inst == 0 => (t!("Ничего не выбрано", "Nothing selected", ja: "何も選択されていません", pt: "Nada selecionado", zh: "未选择任何项目").to_string(), 3),
+            (0, 0) => (t!("Обновить", "Update", ja: "更新", pt: "Atualizar", zh: "更新").to_string(), 1),
+            (0, a) if n_inst == 0 && a >= N_READY - 1 => (t!("Установить WinRust", "Install WinRust", ja: "WinRust をインストール", pt: "Instalar a WinRust", zh: "安装 WinRust").to_string(), 0),
+            (0, a) => (tf!("Установить ({a})", "Install ({a})", ja: "インストール ({a})", pt: "Instalar ({a})", zh: "安装（{a}）"), 0),
+            (r, 0) => (tf!("Удалить ({r})", "Remove ({r})", ja: "削除 ({r})", pt: "Remover ({r})", zh: "移除（{r}）"), 2),
+            (r, a) => (tf!("Применить (+{a} −{r})", "Apply (+{a} −{r})", ja: "適用 (+{a} −{r})", pt: "Aplicar (+{a} −{r})", zh: "应用（+{a} −{r}）"), 0),
         };
         button(&ui, mb, &label, kind, hot(ID_MAIN));
     }
@@ -469,7 +469,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         ui.round(d, 14.0, card, rgb(64, 64, 66));
         ui.text(&title, [d[0] + 24.0, d[1] + 22.0, d[2] - 24.0, d[1] + 50.0], 16.0, 600, TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         ui.text(&text, [d[0] + 24.0, d[1] + 60.0, d[2] - 24.0, cancel[1] - 14.0], 12.5, 400, DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS);
-        button(&ui, cancel, t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar"), 1, hot(ID_CANCEL));
+        button(&ui, cancel, t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消"), 1, hot(ID_CANCEL));
         button(&ui, okb, &ok_label, if danger { 2 } else { 0 }, hot(ID_OK));
     }
 
@@ -479,14 +479,14 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         let (d, _, closeb) = dialog_boxes(w);
         let card = rgb(44, 44, 46);
         ui.round(d, 14.0, card, rgb(64, 64, 66));
-        ui.text(&tf!("Настройки {}", "{} settings", ja: "{} の設定", pt: "Configurações de {}", PLUGINS[i].name), [d[0] + 24.0, d[1] + 22.0, d[2] - 24.0, d[1] + 50.0], 16.0, 600, TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        ui.text(&tf!("Настройки {}", "{} settings", ja: "{} の設定", pt: "Configurações de {}", zh: "{} 项设置", PLUGINS[i].name), [d[0] + 24.0, d[1] + 22.0, d[2] - 24.0, d[1] + 50.0], 16.0, 600, TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         let group = [d[0] + 24.0, d[1] + 72.0, d[2] - 24.0, d[1] + 72.0 + 128.0];
         let inner = rgb(58, 58, 60);
         ui.round(group, 10.0, inner, inner);
         ui.shape([group[0] + 16.0, group[1] + 64.0, group[2], group[1] + 64.0 + hair], 0.0, argb(rgb(72, 72, 74), 255));
         let rows = [
-            (t!("Скрыть значок OneDrive", "Hide the OneDrive icon", ja: "OneDrive アイコンを隠す", pt: "Ocultar o ícone do OneDrive"), t!("Синхронизация продолжает работать", "Sync keeps working", ja: "同期は引き続き動作します", pt: "A sincronização continua funcionando"), od_hidden(), switch_box(w)),
-            (t!("Заменить Проводник", "Replace Explorer", ja: "エクスプローラーを置き換える", pt: "Substituir o Explorer"), t!("Оболочкой становится rust-explorer", "rust-explorer becomes the shell", ja: "rust-explorer がシェルになります", pt: "O rust-explorer passa a ser o shell"), explorer_idx().is_some_and(|e| SELECTED[e].load(Relaxed)), shell_switch_box(w)),
+            (t!("Скрыть значок OneDrive", "Hide the OneDrive icon", ja: "OneDrive アイコンを隠す", pt: "Ocultar o ícone do OneDrive", zh: "隐藏 OneDrive 图标"), t!("Синхронизация продолжает работать", "Sync keeps working", ja: "同期は引き続き動作します", pt: "A sincronização continua funcionando", zh: "同步仍会继续"), od_hidden(), switch_box(w)),
+            (t!("Заменить Проводник", "Replace Explorer", ja: "エクスプローラーを置き換える", pt: "Substituir o Explorer", zh: "替换资源管理器"), t!("Оболочкой становится rust-explorer", "rust-explorer becomes the shell", ja: "rust-explorer がシェルになります", pt: "O rust-explorer passa a ser o shell", zh: "rust-explorer 将成为 Shell"), explorer_idx().is_some_and(|e| SELECTED[e].load(Relaxed)), shell_switch_box(w)),
         ];
         for (k, (name, note, on, sw)) in rows.into_iter().enumerate() {
             let t = group[1] + k as f32 * 64.0;
@@ -494,7 +494,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
             ui.text(note, [group[0] + 16.0, t + 32.0, sw[0] - 12.0, t + 52.0], 12.0, 400, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             switch(&ui, sw, on, false);
         }
-        button(&ui, closeb, t!("Готово", "Done", ja: "完了", pt: "Concluído"), 0, hot(ID_CANCEL));
+        button(&ui, closeb, t!("Готово", "Done", ja: "完了", pt: "Concluído", zh: "完成"), 0, hot(ID_CANCEL));
     }
 
     GdipDeleteGraphics(g);
@@ -572,7 +572,7 @@ pub(crate) fn start(hwnd: HWND, which: usize, job: impl FnOnce() -> Result<Strin
     thread::spawn(move || {
         *MSG.lock().unwrap() = match job() {
             Ok(m) => (m, true),
-            Err(e) => (tf!("Ошибка: {e}", "Error: {e}", ja: "エラー: {e}", pt: "Erro: {e}"), false),
+            Err(e) => (tf!("Ошибка: {e}", "Error: {e}", ja: "エラー: {e}", pt: "Erro: {e}", zh: "错误：{e}"), false),
         };
         refresh();
         BUSY.store(false, Relaxed);
@@ -609,16 +609,16 @@ pub(crate) fn apply(h: isize) -> Result<String, String> {
     STEPS.lock().unwrap().clear();
     let mut done = vec![];
     if !added.is_empty() {
-        done.push(format!("{} {}", if update { t!("Обновлено:", "Updated:", ja: "更新:", pt: "Atualizados:") } else { t!("Установлено:", "Installed:", ja: "インストール:", pt: "Instalados:") }, added.join(", ")));
+        done.push(format!("{} {}", if update { t!("Обновлено:", "Updated:", ja: "更新:", pt: "Atualizados:", zh: "已更新：") } else { t!("Установлено:", "Installed:", ja: "インストール:", pt: "Instalados:", zh: "已安装：") }, added.join(", ")));
     }
     if !removed.is_empty() {
-        done.push(format!("{} {}", t!("Удалено:", "Removed:", ja: "削除:", pt: "Removidos:"), removed.join(", ")));
+        done.push(format!("{} {}", t!("Удалено:", "Removed:", ja: "削除:", pt: "Removidos:", zh: "已移除："), removed.join(", ")));
     }
     let done = done.join(". ");
     if !failed.is_empty() {
         return Err(format!("{}.{}", failed.join("; "), if done.is_empty() { String::new() } else { format!(" {done}.") }));
     }
-    let note = if warned { t!(" Есть предупреждения (см. %ProgramData%\\plugin-launcher\\install.log).", " There are warnings (see %ProgramData%\\plugin-launcher\\install.log).", ja: " 警告があります (%ProgramData%\\plugin-launcher\\install.log を参照)。", pt: " Há avisos (veja %ProgramData%\\plugin-launcher\\install.log).") } else { "" };
+    let note = if warned { t!(" Есть предупреждения (см. %ProgramData%\\plugin-launcher\\install.log).", " There are warnings (see %ProgramData%\\plugin-launcher\\install.log).", ja: " 警告があります (%ProgramData%\\plugin-launcher\\install.log を参照)。", pt: " Há avisos (veja %ProgramData%\\plugin-launcher\\install.log).", zh: " 存在警告（见 %ProgramData%\plugin-launcher\install.log）。") } else { "" };
     Ok(format!("{done}.{note}"))
 }
 
@@ -653,7 +653,7 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
     if SETTINGS.get().is_some() {
         if id == ID_SWITCH {
             if let Err(e) = set_od_hidden(!od_hidden()) {
-                *MSG.lock().unwrap() = (tf!("Ошибка: {e}", "Error: {e}", ja: "エラー: {e}", pt: "Erro: {e}"), false);
+                *MSG.lock().unwrap() = (tf!("Ошибка: {e}", "Error: {e}", ja: "エラー: {e}", pt: "Erro: {e}", zh: "错误：{e}"), false);
             }
         } else if id == ID_SHELL {
             if let Some(e) = explorer_idx() {
@@ -703,16 +703,16 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
             InvalidateRect(hwnd, null(), 0);
         }
         ID_ROLLBACK => ask(hwnd, Dialog {
-            title: t!("Удалить WinRust?", "Remove WinRust?", ja: "WinRust を削除しますか?", pt: "Remover a WinRust?").into(),
-            text: t!("Все компоненты будут удалены. Вернутся поиск Windows, стандартный диспетчер задач, панель задач и обычный Проводник.", "All components will be removed. Windows Search, the stock Task Manager, the taskbar and regular Explorer come back.", ja: "すべてのコンポーネントが削除されます。Windows 検索、標準のタスク マネージャー、タスクバー、通常のエクスプローラーが元に戻ります。", pt: "Todos os componentes serão removidos. A Pesquisa do Windows, o Gerenciador de Tarefas padrão, a barra de tarefas e o Explorer comum voltam.").into(),
-            ok: t!("Удалить всё", "Remove all", ja: "すべて削除", pt: "Remover tudo").into(),
+            title: t!("Удалить WinRust?", "Remove WinRust?", ja: "WinRust を削除しますか?", pt: "Remover a WinRust?", zh: "移除 WinRust？").into(),
+            text: t!("Все компоненты будут удалены. Вернутся поиск Windows, стандартный диспетчер задач, панель задач и обычный Проводник.", "All components will be removed. Windows Search, the stock Task Manager, the taskbar and regular Explorer come back.", ja: "すべてのコンポーネントが削除されます。Windows 検索、標準のタスク マネージャー、タスクバー、通常のエクスプローラーが元に戻ります。", pt: "Todos os componentes serão removidos. A Pesquisa do Windows, o Gerenciador de Tarefas padrão, a barra de tarefas e o Explorer comum voltam.", zh: "将移除所有组件。Windows 搜索、系统任务管理器、任务栏和原生资源管理器都会恢复。").into(),
+            ok: t!("Удалить всё", "Remove all", ja: "すべて削除", pt: "Remover tudo", zh: "全部移除").into(),
             danger: true,
             act: Act::Rollback,
         }),
         ID_MAIN if diff() == (vec![], vec![]) => ask(hwnd, Dialog {
-            title: t!("Обновить WinRust?", "Update WinRust?", ja: "WinRust を更新しますか?", pt: "Atualizar a WinRust?").into(),
-            text: t!("Установленные компоненты будут переустановлены из этой версии установщика. Настройки сохранятся.", "The installed components will be reinstalled from this version of the installer. Settings are kept.", ja: "インストール済みのコンポーネントを、このバージョンのインストーラーから再インストールします。設定は保持されます。", pt: "Os componentes instalados serão reinstalados a partir desta versão do instalador. As configurações são mantidas.").into(),
-            ok: t!("Обновить", "Update", ja: "更新", pt: "Atualizar").into(),
+            title: t!("Обновить WinRust?", "Update WinRust?", ja: "WinRust を更新しますか?", pt: "Atualizar a WinRust?", zh: "更新 WinRust？").into(),
+            text: t!("Установленные компоненты будут переустановлены из этой версии установщика. Настройки сохранятся.", "The installed components will be reinstalled from this version of the installer. Settings are kept.", ja: "インストール済みのコンポーネントを、このバージョンのインストーラーから再インストールします。設定は保持されます。", pt: "Os componentes instalados serão reinstalados a partir desta versão do instalador. As configurações são mantidas.", zh: "已安装的组件将用此版本的安装程序重装。设置会保留。").into(),
+            ok: t!("Обновить", "Update", ja: "更新", pt: "Atualizar", zh: "更新").into(),
             danger: false,
             act: Act::InstallAll,
         }),
@@ -721,30 +721,32 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
             let names = |v: &[usize]| v.iter().map(|&i| PLUGINS[i].name).collect::<Vec<_>>().join(", ");
             let mut text = String::new();
             if !add.is_empty() {
-                text.push_str(&tf!("Будет установлено: {}.", "To be installed: {}.", ja: "インストールされるもの: {}。", pt: "Serão instalados: {}.", names(&add)));
+                text.push_str(&tf!("Будет установлено: {}.", "To be installed: {}.", ja: "インストールされるもの: {}。", pt: "Serão instalados: {}.", zh: "待安装：{}。", names(&add)));
             }
             if !rm.is_empty() {
                 if !text.is_empty() {
                     text.push('\n');
                 }
-                text.push_str(&tf!("Будет удалено: {} (вернутся стандартные части Windows).", "To be removed: {} (the stock Windows parts come back).", ja: "削除されるもの: {} (Windows 標準の部品が元に戻ります)。", pt: "Serão removidos: {} (as partes originais do Windows voltam).", names(&rm)));
+                text.push_str(&tf!("Будет удалено: {} (вернутся стандартные части Windows).", "To be removed: {} (the stock Windows parts come back).", ja: "削除されるもの: {} (Windows 標準の部品が元に戻ります)。", pt: "Serão removidos: {} (as partes originais do Windows voltam).", zh: "待移除：{}（Windows 原生组件会恢复）。", names(&rm)));
             }
             // what the new ones change: the big ones get their own warning
             for &i in add.iter().filter(|&&i| PLUGINS[i].name == RUST_EXPLORER || !PLUGINS[i].bulk) {
                 text.push_str(&format!("\n\n{}: {}", PLUGINS[i].name, PLUGINS[i].warn.get()));
             }
             if !add.is_empty() {
-                text.push_str(t!("\n\nПеред установкой создаётся точка восстановления.", "\n\nA restore point is created before installing.", ja: "\n\nインストールの前に復元ポイントを作成します。", pt: "\n\nUm ponto de restauração é criado antes de instalar."));
+                text.push_str(t!("\n\nПеред установкой создаётся точка восстановления.", "\n\nA restore point is created before installing.", ja: "\n\nインストールの前に復元ポイントを作成します。", pt: "\n\nUm ponto de restauração é criado antes de instalar.", zh: "
+
+安装前会创建还原点。"));
             }
             let purge = add.iter().any(|&i| PLUGINS[i].name == "purge");
             let (title, ok, danger) = if purge {
-                (t!("Удалить приложения навсегда?", "Remove apps for good?", ja: "アプリを完全に削除しますか?", pt: "Remover os apps de vez?"), t!("Удалить навсегда", "Remove for good", ja: "完全に削除", pt: "Remover de vez"), true)
+                (t!("Удалить приложения навсегда?", "Remove apps for good?", ja: "アプリを完全に削除しますか?", pt: "Remover os apps de vez?", zh: "彻底移除应用？"), t!("Удалить навсегда", "Remove for good", ja: "完全に削除", pt: "Remover de vez", zh: "彻底移除"), true)
             } else if add.is_empty() {
-                (t!("Удалить выбранное?", "Remove the selected?", ja: "選択したものを削除しますか?", pt: "Remover os selecionados?"), t!("Удалить", "Remove", ja: "削除", pt: "Remover"), true)
+                (t!("Удалить выбранное?", "Remove the selected?", ja: "選択したものを削除しますか?", pt: "Remover os selecionados?", zh: "移除选定的项目？"), t!("Удалить", "Remove", ja: "削除", pt: "Remover", zh: "移除"), true)
             } else if rm.is_empty() {
-                (t!("Установить выбранное?", "Install the selected?", ja: "選択したものをインストールしますか?", pt: "Instalar os selecionados?"), t!("Установить", "Install", ja: "インストール", pt: "Instalar"), false)
+                (t!("Установить выбранное?", "Install the selected?", ja: "選択したものをインストールしますか?", pt: "Instalar os selecionados?", zh: "安装选定的项目？"), t!("Установить", "Install", ja: "インストール", pt: "Instalar", zh: "安装"), false)
             } else {
-                (t!("Применить изменения?", "Apply the changes?", ja: "変更を適用しますか?", pt: "Aplicar as alterações?"), t!("Применить", "Apply", ja: "適用", pt: "Aplicar"), false)
+                (t!("Применить изменения?", "Apply the changes?", ja: "変更を適用しますか?", pt: "Aplicar as alterações?", zh: "应用更改？"), t!("Применить", "Apply", ja: "適用", pt: "Aplicar", zh: "应用"), false)
             };
             ask(hwnd, Dialog { title: title.into(), text, ok: ok.into(), danger, act: Act::InstallAll });
         }

@@ -63,7 +63,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> u32 {
 struct Tr(&'static str, &'static str, &'static str, &'static str);
 impl Tr {
     fn get(&self) -> &'static str {
-        t!(self.0, self.1, ja: self.2, pt: self.3)
+        t!(self.0, self.1, ja: self.2, pt: self.3, zh: "self.1")
     }
 }
 

@@ -26,16 +26,16 @@ pub(crate) fn parse(out: &str) -> Result<(String, String), String> {
     let mut l = out.lines().map(str::trim).filter(|l| !l.is_empty());
     match (l.next(), l.next()) {
         (Some(a), Some(b)) if i18n::reg::valid_sid(a) && i18n::reg::valid_sid(b) => Ok((a.into(), b.into())),
-        _ => Err(tf!("не удалось определить пользователя сеанса: {}", "could not determine the signed-in user: {}", ja: "サインイン中のユーザーを特定できませんでした: {}", pt: "não foi possível identificar o usuário conectado: {}", out.trim())),
+        _ => Err(tf!("не удалось определить пользователя сеанса: {}", "could not determine the signed-in user: {}", ja: "サインイン中のユーザーを特定できませんでした: {}", pt: "não foi possível identificar o usuário conectado: {}", zh: "无法确定登录用户：{}", out.trim())),
     }
 }
 
 fn detect() -> Result<Session, String> {
     let (sid, token) = parse(&out("powershell", &["-NoProfile", "-NonInteractive", "-Command", FIND]).map_err(|e| {
-        tf!("не удалось определить пользователя сеанса (нет запущенного explorer.exe, topbar или rust-explorer): {e}", "could not determine the signed-in user (no running explorer.exe, topbar or rust-explorer): {e}", ja: "サインイン中のユーザーを特定できませんでした (実行中の explorer.exe、topbar、rust-explorer がありません): {e}", pt: "não foi possível identificar o usuário conectado (sem explorer.exe, topbar ou rust-explorer em execução): {e}")
+        tf!("не удалось определить пользователя сеанса (нет запущенного explorer.exe, topbar или rust-explorer): {e}", "could not determine the signed-in user (no running explorer.exe, topbar or rust-explorer): {e}", ja: "サインイン中のユーザーを特定できませんでした (実行中の explorer.exe、topbar、rust-explorer がありません): {e}", pt: "não foi possível identificar o usuário conectado (sem explorer.exe, topbar ou rust-explorer em execução): {e}", zh: "无法确定登录用户（没有运行中的 explorer.exe、topbar 或 rust-explorer）：{e}")
     })?)?;
     if matches!(sid.as_str(), "S-1-5-18" | "S-1-5-19" | "S-1-5-20") {
-        return Err(t!("оболочка сеанса запущена не от обычного пользователя (SYSTEM или служба)", "the session shell does not run as a normal user (SYSTEM or a service)", ja: "セッションのシェルが通常のユーザーとして実行されていません (SYSTEM またはサービス)", pt: "o shell da sessão não roda como um usuário comum (SYSTEM ou um serviço)").into());
+        return Err(t!("оболочка сеанса запущена не от обычного пользователя (SYSTEM или служба)", "the session shell does not run as a normal user (SYSTEM or a service)", ja: "セッションのシェルが通常のユーザーとして実行されていません (SYSTEM またはサービス)", pt: "o shell da sessão não roda como um usuário comum (SYSTEM ou um serviço)", zh: "会话 Shell 并非以普通用户身份运行（SYSTEM 或服务）").into());
     }
     Ok(Session { other: sid != token, sid })
 }
@@ -54,7 +54,7 @@ pub(crate) fn init() -> Result<&'static Session, String> {
 /// account's own HKCU is used and the failure becomes a warning.
 pub(crate) fn init_soft() {
     if let Err(e) = init() {
-        soft(t!("пользователь сеанса не определён, настройки пользователя убираются у текущей учётной записи", "signed-in user unknown, per-user settings are removed from the current account", ja: "サインイン中のユーザーが不明なため、ユーザーごとの設定は現在のアカウントから削除されます", pt: "usuário conectado desconhecido; as configurações por usuário são removidas da conta atual"), Err(e));
+        soft(t!("пользователь сеанса не определён, настройки пользователя убираются у текущей учётной записи", "signed-in user unknown, per-user settings are removed from the current account", ja: "サインイン中のユーザーが不明なため、ユーザーごとの設定は現在のアカウントから削除されます", pt: "usuário conectado desconhecido; as configurações por usuário são removidas da conta atual", zh: "登录用户未知，分用户设置将从当前账户移除"), Err(e));
     }
 }
 
