@@ -218,7 +218,7 @@ pub fn purge(drive: char, all: bool) {
     }
     save(&m, &keep);
     for d in subdirs(&qroot(drive), |_| true) { let _ = fs::remove_dir(d); } // only empty ones go
-    if freed > 0 { println!("quarantine emptied: {} freed", human(freed)); }
+    if freed > 0 { println!("{}", tf!("карантин очищен: освобождено {}", "quarantine emptied: {} freed", ja: "隔離を空にしました: {} を解放", pt: "quarentena esvaziada: {} liberados", zh: "隔离区已清空：释放了 {}", human(freed))); }
 }
 
 /// Puts quarantined items back where they were.
@@ -227,9 +227,9 @@ pub fn restore(drive: char) {
     let mut keep = vec![];
     for r in rows {
         if !r.2.exists() { continue; }
-        if r.1.exists() { println!("not restored (the place is taken): {}", r.1.display()); keep.push(r); continue; }
+        if r.1.exists() { println!("{}", tf!("не восстановлено (место занято): {}", "not restored (the place is taken): {}", ja: "復元できません (場所が使われています): {}", pt: "não restaurado (o local está ocupado): {}", zh: "未恢复（原位置已被占用）：{}", r.1.display())); keep.push(r); continue; }
         let moved = r.1.parent().is_some_and(|d| fs::create_dir_all(d).is_ok()) && fs::rename(&r.2, &r.1).is_ok();
-        println!("{} {}", if moved { "restored" } else { "FAILED" }, r.1.display());
+        println!("{} {}", if moved { t!("восстановлено", "restored", ja: "復元しました", pt: "restaurado", zh: "已恢复") } else { t!("ОШИБКА", "FAILED", ja: "失敗", pt: "FALHOU", zh: "失败") }, r.1.display());
         if !moved { keep.push(r); }
     }
     save(&m, &keep);

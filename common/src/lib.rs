@@ -20,6 +20,20 @@ pub mod reg;
 pub mod settings;
 pub mod style;
 
+/// Console programs print the UI language, and Rust writes UTF-8: a console decodes those bytes with its output code page,
+/// which is 936 on a Chinese Windows, so every non-ASCII line would come out as noise. Switch this window's output code
+/// page to UTF-8. A pipe or a file is left alone: another program reads those bytes as UTF-8 anyway (rtaskmgr reads rs-du).
+pub fn utf8_console() {
+    use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleOutputCP, STD_OUTPUT_HANDLE};
+    unsafe {
+        let h = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut mode = 0u32;
+        if !h.is_null() && h != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE && GetConsoleMode(h, &mut mode) != 0 {
+            SetConsoleOutputCP(65001);
+        }
+    }
+}
+
 /// "Show in folder": opens `path`'s folder with the file selected in the installed rust-explorer, else in Windows Explorer.
 pub fn reveal(path: &str) {
     use std::{os::windows::process::CommandExt, process::Command};
