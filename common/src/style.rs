@@ -158,6 +158,50 @@ pub fn set_align_left(on: bool) {
     }
 }
 
+/// A 0/1 switch in %ProgramData%\WinRust\<file>, read again at most once a second. No file = the caller's default.
+struct Flag {
+    file: &'static str,
+    val: AtomicU8, // 0 off, 1 on, MAX not read yet
+    at: AtomicU64,
+}
+
+impl Flag {
+    const fn new(file: &'static str) -> Flag {
+        Flag { file, val: AtomicU8::new(u8::MAX), at: AtomicU64::new(0) }
+    }
+    fn path(&self) -> Option<PathBuf> {
+        std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join(self.file))
+    }
+    fn get(&self, default: impl FnOnce() -> bool) -> bool {
+        if self.val.load(Relaxed) == u8::MAX || now_ms().saturating_sub(self.at.load(Relaxed)) > 1000 {
+            let on = self.path().and_then(|f| std::fs::read_to_string(f).ok()).map_or_else(default, |s| s.trim() == "1");
+            self.val.store(on as u8, Relaxed);
+            self.at.store(now_ms(), Relaxed);
+        }
+        self.val.load(Relaxed) == 1
+    }
+    fn set(&self, on: bool) {
+        self.val.store(on as u8, Relaxed);
+        self.at.store(now_ms(), Relaxed);
+        if let Some(f) = self.path() {
+            let _ = std::fs::create_dir_all(f.parent().unwrap());
+            let _ = std::fs::write(f, if on { "1" } else { "0" });
+        }
+    }
+}
+
+static TRAY_ALL: Flag = Flag::new("tray-all.txt");
+
+/// Every tray icon sits on the bar, none behind the arrow. Without a choice of ours: Windows 10's "Always show all icons"
+/// (Windows 11 dropped that switch; its per-icon choices seed the bar instead, see topbar's tray.rs).
+pub fn tray_all() -> bool {
+    TRAY_ALL.get(|| !crate::win11() && crate::reg::get_dword(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer", "EnableAutoTray") == Some(0))
+}
+
+pub fn set_tray_all(on: bool) {
+    TRAY_ALL.set(on);
+}
+
 /// Which screen edge the topbar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
