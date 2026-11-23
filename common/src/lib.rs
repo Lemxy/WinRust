@@ -126,6 +126,17 @@ fn system_lang() -> Lang {
     Lang::from_langid(id).unwrap_or(Lang::En)
 }
 
+/// The Windows build number (19045 = Windows 10 22H2, 22000 and up = Windows 11), read once. 0 if the registry will not say.
+pub fn windows_build() -> u32 {
+    static BUILD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| reg::get_str(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber").and_then(|s| s.trim().parse().ok()).unwrap_or(0))
+}
+
+/// Windows 11 or later: the taskbar, the search window and the tray settings all moved there.
+pub fn win11() -> bool {
+    windows_build() >= 22000
+}
+
 /// Reads lang.txt again now (the `style::msg()` broadcast does this too, through `style::reload`).
 pub fn reload_lang() {
     let l = file().and_then(|f| std::fs::read_to_string(f).ok()).map_or_else(system_lang, |s| Lang::parse(&s));
@@ -258,6 +269,13 @@ mod tests {
         assert_eq!(t!("да", "yes", ja: "はい", pt: "sim", zh: "是", es: "sí"), "да");
         assert_eq!(t!("да", "yes", ja: "はい", pt: "sim", es: "sí"), "да");
         assert_eq!(tf!("{} шт", "{} pcs", ja: "{} 個", pt: "{} un.", zh: "{} 个", es: "{} ud.", 3), "3 шт");
+    }
+
+    #[test]
+    fn the_build_number_is_read() {
+        // any Windows these programs run on is 10 or later; 0 would mean the registry read broke
+        assert!(super::windows_build() >= 10240, "{}", super::windows_build());
+        assert_eq!(super::win11(), super::windows_build() >= 22000);
     }
 
     #[test]

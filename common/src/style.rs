@@ -139,10 +139,11 @@ fn left_file() -> Option<PathBuf> {
 static LEFT: AtomicU8 = AtomicU8::new(0);
 static LEFT_AT: AtomicU64 = AtomicU64::new(0);
 
-/// Start and the pinned apps sit at the bar's left end, like Windows 10 (off unless the file says 1). Re-read once a second.
+/// Start and the pinned apps sit at the bar's left end, like Windows 10. The file says 1 or 0; without it the bar looks
+/// like the Windows it runs on: left on 10, centered on 11. Re-read once a second.
 pub fn align_left() -> bool {
     if now_ms().saturating_sub(LEFT_AT.load(Relaxed)) > 1000 {
-        LEFT.store(left_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|s| s.trim() == "1") as u8, Relaxed);
+        LEFT.store(left_file().and_then(|f| std::fs::read_to_string(f).ok()).map_or(!crate::win11(), |s| s.trim() == "1") as u8, Relaxed);
         LEFT_AT.store(now_ms(), Relaxed);
     }
     LEFT.load(Relaxed) == 1
