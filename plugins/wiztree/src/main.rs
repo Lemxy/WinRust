@@ -141,6 +141,9 @@ fn rescan(hwnd: HWND, drive: char) {
     });
 }
 
+/// The window draws its own caption: the path line on top is the title bar, the buttons sit at its right end.
+const CAP: winrust_common::caption::Caption = winrust_common::caption::Caption { height: 32, drag: 44, buttons: winrust_common::caption::MIN | winrust_common::caption::MAX | winrust_common::caption::CLOSE };
+
 unsafe fn paint(hwnd: HWND) {
     unsafe {
         let mut ps: PAINTSTRUCT = std::mem::zeroed();
@@ -199,9 +202,11 @@ unsafe fn paint(hwnd: HWND) {
                     None => t!("Щелчок: открыть папку / показать файл    ПКМ, Backspace: вверх    Tab: следующий диск    F5: обновить", "Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan", ja: "クリック: フォルダーを開く / ファイルを表示    右クリック、Backspace: 上へ    Tab: 次のドライブ    F5: 再スキャン", pt: "Clique: abrir pasta / mostrar arquivo    Botão direito, Backspace: subir    Tab: próxima unidade    F5: examinar de novo", zh: "单击：打开文件夹 / 定位文件    右键、Backspace：上一层    Tab：下一个磁盘    F5：重新扫描", es: "Clic: abrir carpeta / mostrar archivo    Clic derecho, Retroceso: subir    Tab: siguiente unidad    F5: volver a analizar").into(),
                 };
             }
-            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: w - 12, bottom: top }, ACCENT, one);
+            let head_r = w - winrust_common::caption::buttons_width(hwnd, CAP) - 12;
+            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: head_r, bottom: top }, ACCENT, one);
             text(&foot, RECT { left: (12.0 * k) as i32, top: h - bot, right: w - 12, bottom: h }, DIM, one);
         });
+        winrust_common::caption::paint_buttons(mem, hwnd, CAP, BG, rgb(235, 235, 235));
         BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old);
         DeleteObject(bmp as _);
@@ -222,6 +227,9 @@ fn up(hwnd: HWND) {
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        if let Some(r) = winrust_common::caption::handle(hwnd, msg, wp, lp, CAP, |_, _| false) {
+            return r;
+        }
         match msg {
             WM_CREATE => {
                 let dpi = GetDpiForSystem() as i32;
@@ -319,6 +327,8 @@ fn main() {
         let wc = WNDCLASSW { style: 0, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
         RegisterClassW(&wc);
         let hwnd = CreateWindowExW(0, class.as_ptr(), wide("WinRust Disk").as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800, null_mut(), null_mut(), inst, null());
+        winrust_common::caption::install(hwnd);
+        windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(hwnd, 20, &1i32 as *const i32 as *const _, 4); // dark frame and window menu
         rescan(hwnd, drive);
         let mut m: MSG = std::mem::zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
