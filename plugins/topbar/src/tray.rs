@@ -145,10 +145,30 @@ pub(crate) unsafe fn tray_click(t: (HWND, u32, u32, u32), left: bool) {
     }
 }
 
-/// Indices into TAPPS of the icons kept on the bar; the rest live in the chevron flyout.
+/// Indices into TAPPS of the icons kept on the bar; the rest live in the chevron flyout ("every icon" keeps none there).
 pub(crate) fn bar_idx() -> Vec<usize> {
     let shown = SHOWN.with_borrow(|s| s.clone());
-    TAPPS.with_borrow(|t| t.iter().enumerate().filter(|(_, x)| !x.hidden && shown.as_ref().is_some_and(|s| s.contains(&x.key))).map(|(i, _)| i).collect())
+    let all = i18n::style::tray_all();
+    TAPPS.with_borrow(|t| t.iter().enumerate().filter(|(_, x)| !x.hidden && (all || shown.as_ref().is_some_and(|s| s.contains(&x.key)))).map(|(i, _)| i).collect())
+}
+
+/// Windows 11 keeps a "show on the taskbar" choice per icon (Settings, Personalization, Taskbar, other system tray icons):
+/// the bar starts from it until the user makes choices of their own here. Exe names, lowercase, as `TIcon::key`.
+/// Windows 10 has only the global "Always show all icons", which `style::tray_all` follows.
+pub(crate) fn windows_promoted() -> Option<Vec<String>> {
+    if !winrust_common::win11() {
+        return None;
+    }
+    use winrust_common::reg;
+    const KEY: &str = r"HKCU\Control Panel\NotifyIconSettings";
+    let shown: Vec<String> = reg::subkeys(KEY)
+        .into_iter()
+        .map(|id| format!(r"{KEY}\{id}"))
+        .filter(|k| reg::get_dword(k, "IsPromoted") == Some(1))
+        .filter_map(|k| reg::get_str(&k, "ExecutablePath"))
+        .filter_map(|p| p.rsplit('\\').next().map(str::to_lowercase))
+        .collect();
+    (!shown.is_empty()).then_some(shown)
 }
 /// Bar slots of the tray: the chevron plus the icons kept on the bar.
 pub(crate) fn tray_count() -> usize {

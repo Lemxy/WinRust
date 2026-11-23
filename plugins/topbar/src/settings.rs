@@ -108,6 +108,7 @@ pub(crate) unsafe fn bar_page() {
         fly::MItem::head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为", es: "Comportamiento")),
         fly::MItem::new(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏", es: "Ocultar automáticamente")).on(st::autohide()),
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10", es: "Botones a la izquierda, como en Windows 10")).on(st::align_left()),
+        fly::MItem::new(t!("Все значки трея на панели", "Every tray icon on the bar", ja: "すべてのトレイ アイコンをバーに表示", pt: "Todos os ícones da bandeja na barra", zh: "所有托盘图标都显示在任务栏上", es: "Todos los íconos de la bandeja en la barra")).on(st::tray_all()),
         fly::MItem::new(t!("Alt+Tab: только этот монитор", "Alt+Tab: this monitor only", ja: "Alt+Tab: このモニターのみ", pt: "Alt+Tab: somente este monitor", zh: "Alt+Tab：仅限此显示器", es: "Alt+Tab: solo este monitor")).on(st::alttab_per_monitor()),
     ];
     gear_page("\u{E8A1}", t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏", es: "Barra"), t!("Где она, какого размера и как себя ведёт", "Where it sits, its size and behavior", ja: "配置場所、サイズ、動作", pt: "Onde fica, seu tamanho e comportamento", zh: "其位置、大小和行为", es: "Dónde está, su tamaño y comportamiento"), items, move |i| {
@@ -116,10 +117,11 @@ pub(crate) unsafe fn bar_page() {
             6..=8 => st::set_bar_size((i - 6) as u8),
             10 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
             11 => st::set_align_left(!st::align_left()),
-            12 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            12 => st::set_tray_all(!st::tray_all()),
+            13 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
             _ => return style_menu(),
         }
-        relook(i != 12);
+        relook(i != 13);
         bar_page();
     });
 }
