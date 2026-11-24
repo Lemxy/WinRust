@@ -1240,6 +1240,70 @@ mod sh {
         let t: IDropTarget = DropT { main }.into();
         unsafe { RegisterDragDrop(HWND(list), &t) }
     }
+
+    /// Files dropped onto a tab go into that tab's folder; held over another tab for a moment, that tab opens, so they
+    /// can be dropped into its list (or a second window's) instead.
+    #[implement(IDropTarget)]
+    struct TabDrop { main: isize, chrome: isize }
+
+    thread_local! { static OVER: std::cell::Cell<Option<(usize, std::time::Instant)>> = const { std::cell::Cell::new(None) }; }
+
+    impl TabDrop {
+        /// The tab under the drag and its folder, when something can be dropped there (not into an open archive).
+        fn target(&self, pt: &POINTL) -> Option<(usize, PathBuf)> {
+            let mut p = windows_sys::Win32::Foundation::POINT { x: pt.x, y: pt.y };
+            let i = unsafe {
+                windows_sys::Win32::Graphics::Gdi::ScreenToClient(self.chrome as _, &mut p);
+                super::ui::tab_at(self.chrome as _, p.x, p.y)?
+            };
+            let dir = super::ST.with(|c| c.try_borrow().ok().and_then(|s| s.tabs.get(i).cloned()))?;
+            dir.is_dir().then_some((i, dir))
+        }
+
+        fn over(&self, k: MODIFIERKEYS_FLAGS, pt: &POINTL) -> DROPEFFECT {
+            let Some((i, _)) = self.target(pt) else {
+                OVER.set(None);
+                return DROPEFFECT_NONE;
+            };
+            let active = super::ST.with(|c| c.try_borrow().map_or(i, |s| s.active));
+            match OVER.get() {
+                Some((j, since)) if j == i => {
+                    if i != active && since.elapsed().as_millis() > 700 {
+                        // the tab opens under the pointer, like a browser's
+                        unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), super::ui::WM_UI, WPARAM(1), LPARAM(i as isize)); }
+                        OVER.set(None);
+                    }
+                }
+                _ => OVER.set(Some((i, std::time::Instant::now()))),
+            }
+            effect(k)
+        }
+    }
+
+    impl IDropTarget_Impl for TabDrop_Impl {
+        fn DragEnter(&self, _o: Ref<'_, IDataObject>, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> { unsafe { *e = self.over(k, pt) }; Ok(()) }
+        fn DragOver(&self, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> { unsafe { *e = self.over(k, pt) }; Ok(()) }
+        fn DragLeave(&self) -> Result<()> { OVER.set(None); Ok(()) }
+        fn Drop(&self, o: Ref<'_, IDataObject>, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> {
+            OVER.set(None);
+            unsafe { *e = DROPEFFECT_NONE };
+            let Some((_, to)) = self.target(pt) else { return Ok(()) };
+            // already there, or a folder into itself: nothing to move
+            let paths: Vec<PathBuf> = hdrop_paths(o.ok()?)?.into_iter().filter(|p| p.parent() != Some(to.as_path()) && !to.starts_with(p)).collect();
+            if paths.is_empty() { return Ok(()); }
+            // like the list: same drive moves, other drive copies, Ctrl forces copy
+            let copy = k.0 & 8 != 0 || paths.first().and_then(|p| p.components().next()) != to.components().next();
+            unsafe { *e = if copy { DROPEFFECT_COPY } else { DROPEFFECT_MOVE } };
+            let _ = fileop(self.main as *mut c_void, if copy { Op::Copy } else { Op::Move }, &paths, &to);
+            unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), WM_APP, WPARAM(0), LPARAM(0)); }
+            Ok(())
+        }
+    }
+
+    pub fn register_tab_drop(chrome: *mut c_void, main: isize) -> Result<()> {
+        let t: IDropTarget = TabDrop { main, chrome: chrome as isize }.into();
+        unsafe { RegisterDragDrop(HWND(chrome), &t) }
+    }
 }
 
 
@@ -1617,6 +1681,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 ST.with_borrow_mut(|st| { st.list = list; st.tab = tab; st.edit = edit; st.tabs = vec![PathBuf::new()]; });
                 if !desk() { ui::place_edit(tab); }
                 let _ = sh::register_drop(list as _, h as isize);
+                if !desk() { let _ = sh::register_tab_drop(tab as _, h as isize); } // files dropped onto a tab go to its folder
                 if desk() && icons_hidden() { ShowWindow(list, SW_HIDE); }
                 // live wallpaper: the list is see-through (colour key), so over empty desktop OLE finds the wallpaper window under it,
                 // and walks up from there to the desktop window: it must accept the drop too
@@ -1788,6 +1853,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     LVN_KEYDOWN => {
                         let vk = (*(lp as *const NMLVKEYDOWN)).wVKey as u32;
                         let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
+                        let shift = GetKeyState(0x10) < 0; // VK_SHIFT
                         if desk() && matches!(vk, 0x08 | 0x46 | 0x4D | 0x54 | 0x57 | 0x09 | 0x4C | 0x73) { return 0; } // browsing keys make no sense on the desktop
                         let (list, dir, paths) = selected();
                         match vk {
@@ -1820,6 +1886,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 return 0;
                             }
                             0x56 if ctrl => paste(h, &dir),
+                            // Ctrl+N: another tab, like the + button; Ctrl+Shift+N: a new folder, as in Explorer (the desktop has no tabs)
+                            0x4E if ctrl && !shift && !desk() => tab_new(),
                             0x4E if ctrl => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹", es: "Nueva carpeta"), true),
                             0x48 if ctrl => { SHOW_HIDDEN.fetch_xor(true, Relaxed); } // Ctrl+H: hidden files
                             0x74 => {} // F5: just the reload below

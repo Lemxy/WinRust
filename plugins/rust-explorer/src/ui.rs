@@ -430,6 +430,14 @@ fn layout(cw: i32, n: usize) -> Layout {
 
 fn inside(r: &RECT, x: i32, y: i32) -> bool { x >= r.left && x < r.right && y >= r.top && y < r.bottom }
 
+/// The tab under (x, y), the chrome's client coordinates: files dragged over the tabs go there.
+pub unsafe fn tab_at(chrome: HWND, x: i32, y: i32) -> Option<usize> {
+    let mut r: RECT = std::mem::zeroed();
+    GetClientRect(chrome, &mut r);
+    let n = ST.with(|c| c.try_borrow().map_or(1, |s| s.tabs.len()));
+    layout(r.right, n).tabs.iter().position(|t| inside(t, x, y))
+}
+
 fn hit(l: &Layout, x: i32, y: i32) -> i32 {
     for (i, c) in l.close.iter().enumerate() { if inside(c, x, y) && l.tabs.len() > 1 { return CLOSE + i as i32; } }
     for (i, t) in l.tabs.iter().enumerate() { if inside(t, x, y) { return TAB + i as i32; } }
