@@ -4,7 +4,7 @@
 
 **Um shell do Windows escrito em Rust: mais rápido e mais leve que o original.** Programas nativos pequenos (sem .NET, sem Electron) que substituem partes do Windows: a barra de tarefas, o Explorador de Arquivos, a pesquisa de arquivos, o Gerenciador de Tarefas, além de um limpador de disco, um mapa de disco e um visualizador de fotos. Um instalador coloca tudo, um botão tira tudo.
 
-[English](README.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | Português (Brasil)
+[English](README.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | Português (Brasil) | [简体中文](README.zh.md)
 
 <p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
 
@@ -24,7 +24,7 @@ Se o UAC pedir a senha de **outro administrador**, as configurações por usuár
 
 **Atualização manual:** baixe o novo `WinRust.exe` na página de versões, execute-o como administrador e selecione os componentes que quer atualizar ou instalar. Um `rust-explorer` existente continua selecionado por padrão nas atualizações. Suas configurações e os valores originais do Windows salvos permanecem.
 
-O instalador abre em inglês. O botão de idioma no canto dele (ou a engrenagem da barra → **Configurações da barra → Idioma**) troca todos os programas WinRust para o idioma escolhido: English, Русский, 日本語 ou Português (Brasil). A escolha fica em `%ProgramData%\WinRust\lang.txt` (`en`, `ru`, `ja`, `pt`).
+O instalador abre em inglês. A lista de idiomas fica no canto dele — English, Русский, 日本語, Português (Brasil), 简体中文 —, na engrenagem da barra (**Configurações da barra → Idioma**) e na página Personalização do rust-settings (**Idioma da interface**). A escolha fica em `%ProgramData%\WinRust\lang.txt` (`en`, `ru`, `ja`, `pt`, `zh`); o programa em que você trocou é redesenhado na hora, os outros leem o arquivo quando iniciam — reinicie-os (ou saia da sessão) depois da troca.
 
 ## Remoção
 
@@ -90,13 +90,24 @@ Medições pontuais em uma única máquina (Windows 11 IoT Enterprise 10.0.26300
 
 Resumindo: **64–99% mais rápido ou menor nos testes de tamanho/velocidade, igual na CPU ociosa e na cópia de um arquivo grande.** Ressalvas: o rs pesquisa um índice MFT pronto (e paga 53 MB de memória por isso), enquanto `dir` e PowerShell percorrem o disco do zero; o explorer.exe continuava rodando com suas janelas durante o teste, então o ganho de memória está um pouco exagerado; a Pesquisa do Windows e o Gerenciador de Tarefas original não foram comparados. As execuções de cópia e ZIP (`cargo test -p rust-explorer --release bench -- --ignored`) foram únicas, com dados recém-gravados, então os dois lados leram do cache de memória; nosso ZIP saiu um pouco maior (0,9 MB contra 0,7 MB) porque cada arquivo é compactado em seu próprio núcleo.
 
+### Carga em segundo plano
+
+Os programas que ficam rodando, antes e depois da reescrita orientada a eventos da v0.5.7, na mesma máquina: tempo de CPU em 60 s de área de trabalho ociosa (`TotalProcessorTime` do processo), memória privada e handles abertos. "Antes" é a build instalada logo antes da reescrita.
+
+| Programa | CPU ociosa antes | depois | Memória privada antes | depois | Handles antes | depois |
+|---|---|---|---|---|---|---|
+| topbar | 6,3 ms/s (0,63% de um núcleo) | 0,5 ms/s (0,05%) | 9,2 MB | 7,7 MB | 459 | 426 |
+| rs-launcher (Alt+Espaço, oculto) | 6,3 ms/s (0,63%) | 0 | 12,7 MB | 1,4 MB | 800 | 110 |
+| rs-shell | 2,1 ms/s (0,21%) | 0 | 1,2 MB | 1,3 MB | 95 | 102 |
+| rs (serviço do índice de pesquisa) | 0 | 0,26 ms/s | 59,6 MB | 56,7 MB | 70 | 70 |
+
+O que mudou: a barra segue os eventos das janelas em vez de listar todas as janelas duas vezes por segundo, e desenha o fundo uma vez em vez de a cada quadro; o rs-launcher não atualiza mais a lista inteira de processos a cada 2 s; o rs-shell parou de iniciar o reg.exe e de tirar instantâneos dos processos. A linha de CPU ociosa da tabela acima foi medida de outro jeito, antes deste trabalho.
+
 ## Capturas de tela
 
 **Barra de tarefas**
 
 ![Barra de tarefas na área de trabalho](docs/screenshots/taskbar.webp)
-![Menu da barra de tarefas](docs/screenshots/taskbar-menu.png)
-![Menu da barra, nova aparência](docs/screenshots/topbar-menu-new.png)
 
 **Gerenciador de Tarefas** (interface em russo)
 
@@ -104,7 +115,7 @@ Resumindo: **64–99% mais rápido ou menor nos testes de tamanho/velocidade, ig
 
 **Gerenciador de arquivos**
 
-![Gerenciador de arquivos](docs/screenshots/explorer.png)
+![Gerenciador de arquivos](docs/screenshots/explorer.webp)
 
 ---
 
@@ -116,7 +127,7 @@ src/            o instalador (plugin-launcher.exe)
   main.rs         a tabela de plugins PLUGINS: nome, textos, par instalar/desinstalar, ícone
   install/        o que cada plugin altera e como é desfeito (um arquivo por plugin)
   cli.rs, ui.rs   a linha de comando e a janela; ambos chamam as mesmas funções de instalação
-common/         winrust-common: troca de idioma (t!/tf!), estilos e paletas da interface, analisador da saída do reg.exe, leitor da MFT do NTFS
+common/         winrust-common: troca de idioma (t!/tf!: inglês, russo, japonês, português do Brasil, chinês simplificado), estilos e paletas da interface, analisador da saída do reg.exe, leitor da MFT do NTFS
 plugins/        fontes de cada plugin, cada um em seu próprio crate
 ReShell/        reshell (atalhos da área de trabalho, rede de segurança da topbar), vem com a topbar
 payload.txt     os exes embutidos no instalador e onde a compilação os coloca
@@ -126,7 +137,7 @@ scripts/        compilação, atualização, versão
 Tudo é um único workspace do cargo (um `Cargo.lock`, todos os exes em `target\release`). `plugins/rust-search` e `plugins/chrome-rs` são compilados separadamente porque precisam de `panic = "unwind"` (veja `Cargo.toml`).
 
 ### Adicionar um idioma
-`t!("русский", "english", ja: "日本語", pt: "português")` e `tf!(…)` devolvem cada texto no idioma atual (sem `ja:` e `pt:`, japonês e português mostram o inglês). Os idiomas são o `Lang` em `common/src/lib.rs`.
+`t!("русский", "english", ja: "日本語", pt: "português", zh: "中文")` e `tf!(…)` devolvem cada texto no idioma atual (sem `ja:`/`pt:`/`zh:`, esses idiomas mostram o inglês). Os idiomas são o `Lang` em `common/src/lib.rs`.
 
 ### Compilação
 Requer Windows x64, Rust stable (1.85+) com a toolchain MSVC.

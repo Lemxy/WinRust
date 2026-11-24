@@ -15,7 +15,7 @@
 | `src/main.rs` | таблица `PLUGINS` и общее состояние |
 | `src/install/` | что каждый плагин меняет в системе и как откатывается (файл на плагин; `mod.rs`: общие хелперы, payload, `install_plugin`/`rollback`) |
 | `src/cli.rs`, `src/ui.rs` | командная строка и окно |
-| `common/` | `winrust-common`: `t!`/`tf!`/`lang!`/`en!` (язык: en, ru, ja, pt; `t!(ru, en, ja: .., pt: ..)`, без `ja:`/`pt:` показывается английский) и `mft` (чтение MFT) для всех программ |
+| `common/` | `winrust-common`: `t!`/`tf!`/`lang!`/`en!`/`dot!` (язык: en, ru, ja, pt, zh; `t!(ru, en, ja: .., pt: .., zh: ..)`, без `ja:`/`pt:`/`zh:` показывается английский) и `mft` (чтение MFT) для всех программ |
 | `plugins/<имя>/`, `ReShell/` | исходники плагинов (это и есть оригиналы: копий на рабочем столе больше нет, правь здесь) |
 | `payload.txt` | единственный список вшиваемых exe: из него читают `build.rs` и `scripts\build-plugins.ps1` |
 
@@ -61,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File scripts\update-plugin.ps1 <rust-search|
 - Не коммитить `payload\*.exe`, `target\`, логи (они в `.gitignore`).
 
 **Документация.**
-- `README.md` (англ.) и `README.ru.md` (рус.) править одинаково. Так же `ROADMAP.md` / `ROADMAP.ru.md`.
+- `README.md` (англ.), `README.ru.md` (рус.), `README.ja.md` (яп.), `README.pt-BR.md` (порт.) и `README.zh.md` (кит.) править одинаково. Так же `ROADMAP.md` / `ROADMAP.ru.md`.
 - Бенчмарк в README обновлять только после реального нового замера (`scripts\bench.ps1`), цифры не придумывать.
 - Оговорку про неподписанный exe и SmartScreen не убирать, пока нет подписи.
 - Описание, темы и главная страница репозитория (`gh repo edit`) только по просьбе владельца.

@@ -124,6 +124,8 @@ const BAR_H: i32 = 40;
 // hit-test results. Buttons (Start, pins, windows) are >= 0 in left-to-right order; tray apps are TAPP + index.
 const NONE: i32 = -1;
 const SEARCH: i32 = -10;
+const TASKVIEW: i32 = -14; // Task View button (virtual desktops), right of search (#83)
+const LEAD: i32 = 2; // slots before Start: search, Task View
 const CLOCK: i32 = -4;
 const LANG: i32 = -6;
 const WIFI_I: i32 = -7;
@@ -143,6 +145,7 @@ static DESK_HIDE: AtomicBool = AtomicBool::new(false); // the desktop in front a
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook thread
 const WIN_NUM: u32 = WM_APP + 15; // posted by the keyboard hook: Win+1..9 (wp 0..8) = the n-th button of the bar
+const WIN_X: u32 = WM_APP + 17; // posted by the keyboard hook: Win+X = our power-user menu (start_menu)
 const NEXT_LANG: u32 = WM_APP + 16; // posted by the keyboard hook: Win+Space with no explorer (wp 1 = Shift held: previous layout)
 const VOLKEY: u32 = WM_APP + 14; // posted by the keyboard hook: a volume key (wp 0 up, 1 down, 2 mute)
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
@@ -434,10 +437,11 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 unsafe fn tip_text(h: i32) -> String {
     match h {
         SEARCH => "Search".into(),
+        TASKVIEW => t!("Представление задач", "Task View", ja: "タスク ビュー", pt: "Visão de Tarefas").into(),
         0 => "Start".into(),
         TAPP => "Hidden icons".into(),
-        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo").into(),
-        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho").into(),
+        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式").into(),
+        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho", zh: "显示桌面").into(),
         CLOCK => {
             let mut t: SYSTEMTIME = zeroed();
             GetLocalTime(&mut t);
@@ -445,12 +449,12 @@ unsafe fn tip_text(h: i32) -> String {
             let n = GetDateFormatW(0x0400, 2, &t, null(), b.as_mut_ptr(), 80).max(1) as usize - 1; // DATE_LONGDATE
             String::from_utf16_lossy(&b[..n])
         }
-        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", layout_names(layouts().1).0),
+        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", zh: "输入语言：{}", layout_names(layouts().1).0),
         WIFI_I => match net() {
-            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%"),
-            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet").into(),
-            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo").into(),
-            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado").into(),
+            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%", zh: "Wi‑Fi · 信号 {q}%"),
+            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet", zh: "Wi‑Fi 已连接，无 Internet").into(),
+            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo", zh: "有线网络").into(),
+            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接").into(),
         },
         VOL_I => vol_tip(),
         BAT_I => match BAT.get() {
@@ -560,7 +564,7 @@ unsafe fn sw_layout(sw: HWND) {
     let (mut rects, tw, th) = thumbs::grid(wins.len(), scr * 9 / 10 - 2 * pad, sch * 8 / 10 - 2 * pad, sc(thumbs::CARD_W), sc(thumbs::CARD_H), sc(thumbs::GAP));
     rects.iter_mut().for_each(|r| *r = RECT { left: r.left + pad, top: r.top + pad, right: r.right + pad, bottom: r.bottom + pad });
     let (w, h) = (tw + 2 * pad, th + 2 * pad);
-    SW_CARDS.with_borrow_mut(|(_, ids)| thumbs::unregister(ids));
+    SW_CARDS.with_borrow_mut(|(_, ids)| thumbs::unregister(sw, ids));
     SetWindowRgn(sw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(18), rr(18)), 1);
     SetWindowPos(sw, HWND_TOPMOST, mon.left + (scr - w) / 2, mon.top + (sch - h) / 2, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     let ids = thumbs::register(sw, &wins, &rects);
@@ -593,7 +597,7 @@ unsafe fn alt_close() {
 unsafe fn alt_done(cancel: bool) {
     ShowWindow(SWWND.get(), SW_HIDE);
     SW_CARDS.with_borrow_mut(|(r, ids)| {
-        thumbs::unregister(ids);
+        thumbs::unregister(SWWND.get(), ids);
         r.clear();
     });
     let (v, i) = SW.take();
@@ -1067,6 +1071,21 @@ unsafe fn lnk_aumid(lnk: &[u16]) -> String {
     .unwrap_or_default()
 }
 
+/// The AppUserModelID a window carries (Store apps, installed web apps), "" if none.
+unsafe fn win_aumid(h: HWND) -> String {
+    use windows::{core::GUID, Win32::{Foundation::{HWND as WHWND, PROPERTYKEY}, System::Com::{CoTaskMemFree, StructuredStorage::PropVariantToStringAlloc}, UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow}}};
+    (|| -> Option<String> {
+        let ps: IPropertyStore = SHGetPropertyStoreForWindow(WHWND(h)).ok()?;
+        let key = PROPERTYKEY { fmtid: GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3), pid: 5 }; // PKEY_AppUserModel_ID
+        let p = PropVariantToStringAlloc(&ps.GetValue(&key).ok()?).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as *const _));
+        s
+    })()
+    .unwrap_or_default()
+    .to_lowercase()
+}
+
 /// Taskbar pins the user removed from our bar: Windows still lists them in `FavoritesResolve`, they must not come back.
 fn unpinned_file() -> PathBuf {
     appdata_file(r"topbar-taskband\unpinned.txt")
@@ -1189,20 +1208,50 @@ fn refresh_buttons() {
         }
     }
     // EnumWindows lists by z-order, so clicking a window would jump its button to the front: keep the order they first appeared in
+    let mut keys: Vec<String> = vec![String::new(); btns.len()]; // keys[i] belongs to btns[i]; "" matches nothing
     ORDER.with_borrow_mut(|o| {
         o.retain(|w| loose.contains(w));
         o.extend(loose.iter().filter(|w| !o.contains(w)).copied().collect::<Vec<_>>());
         for &w in o.iter() {
             // windows of one app share a button (a click then offers the list); generic hosts (Store apps, java...) stay apart (#90)
+            // the window's own AppUserModelID is part of the key: a web app installed from Brave runs as brave.exe too (#118, #117)
             let exe = unsafe { exe_of(w) };
-            let same = (!exe.is_empty() && !is_host(&exe)).then(|| btns.iter().position(|b| b.pin.is_none() && b.wins.first().is_some_and(|&x| unsafe { exe_of(x) } == exe))).flatten();
+            let key = format!("{exe}|{}", unsafe { win_meta(w).0 });
+            let same = (!exe.is_empty() && !is_host(&exe)).then(|| keys.iter().position(|k| *k == key)).flatten();
             match same {
                 Some(i) => btns[i].wins.push(w),
-                None => btns.push(Btn { pin: None, wins: vec![w], icon: unsafe { win_icon(w) } }),
+                None => {
+                    btns.push(Btn { pin: None, wins: vec![w], icon: unsafe { win_meta(w).1 } });
+                    keys.push(key);
+                }
             }
         }
     });
     BTNS.set(btns);
+}
+
+thread_local! {
+    // hwnd -> (pid, when read, AppUserModelID, icon): the AUMID is a COM call and a host app's icon up to two 40 ms
+    // WM_GETICON round trips, too much for every refresh; re-read after META_TTL (apps set both shortly after start)
+    static META: RefCell<HashMap<usize, (u32, u64, String, HICON)>> = RefCell::new(HashMap::new());
+}
+const META_TTL: u64 = 4000;
+
+unsafe fn win_meta(w: HWND) -> (String, HICON) {
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(w, &mut pid);
+    let now = now_ms();
+    if let Some(v) = META.with_borrow(|m| m.get(&(w as usize)).filter(|e| e.0 == pid && now.saturating_sub(e.1) < META_TTL).map(|e| (e.2.clone(), e.3))) {
+        return v;
+    }
+    let v = (win_aumid(w), win_icon(w));
+    META.with_borrow_mut(|m| {
+        if m.len() > 512 {
+            m.clear(); // closed windows never leave on their own
+        }
+        m.insert(w as usize, (pid, now, v.0.clone(), v.1));
+    });
+    v
 }
 
 /// A minimized window that Windows left as a caption stub on the desktop (it sits at the bottom left with its restore /
@@ -1215,8 +1264,18 @@ unsafe fn hide_stub(w: HWND) {
 }
 
 fn refresh() {
+    refresh_windows();
+    refresh_status();
+}
+
+/// The buttons: on window events (win_event) and every few seconds as a safety net.
+fn refresh_windows() {
     refresh_buttons();
     BTNS.with_borrow(|b| b.iter().flat_map(|b| &b.wins).for_each(|&w| unsafe { hide_stub(w) }));
+}
+
+/// Everything polled once a second: battery, volume, wifi, explorer, dead tray icons.
+fn refresh_status() {
     let n = TICK.get();
     TICK.set(n + 1);
     unsafe {
@@ -1231,10 +1290,10 @@ fn refresh() {
             // The empty-tray check below misses this when some icons already reached the bar.
             announce();
         }
-        if TAPPS.with_borrow(|t| t.is_empty()) && n % 8 == 4 {
+        if TAPPS.with_borrow(|t| t.is_empty()) && n % 4 == 2 {
             announce(); // no icons yet (apps started before us, or explorer restarted): ask them to register again
         }
-        if n % 6 == 0 {
+        if n % 3 == 0 {
             read_wifi();
         }
     }
@@ -1271,10 +1330,10 @@ fn layout(w: i32) -> Layout {
     let sys = (clock.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + 1; // + the search slot
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD; // + the search and Task View slots
     let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
     // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + 2).min(n);
+    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + 1).min(n);
     // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
     let right_limit = w - margin - (n * (bw + gap) - gap);
     let centered = (w - (fixed * (bw + gap) - gap)) / 2;
@@ -1302,9 +1361,9 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
     }
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + 1;
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD;
     let (d, i) = (x - l.x0, (x - l.x0) / (l.bw + l.gap));
-    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else { i - 1 }
+    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD }
 }
 
 // ---------- animation ----------
@@ -1440,11 +1499,17 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
     mi.cbSize = size_of::<MONITORINFO>() as u32;
     GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi);
     let m = mi.rcMonitor;
-    // a window with a title bar is never a fullscreen app (a framed maximized one overhangs the monitor by its border, #88)
-    if GetWindowLongW(fg, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION {
-        return false;
+    let caption = GetWindowLongW(fg, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
+    (m.left, m.top) == (0, 0) && covers_monitor(r, m, caption, IsZoomed(fg) != 0)
+}
+
+/// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); but a game in "borderless
+/// window" mode that keeps its caption style while sized exactly to the monitor (Dota 2 and others) is.
+fn covers_monitor(r: RECT, m: RECT, caption: bool, zoomed: bool) -> bool {
+    if caption {
+        return !zoomed && (r.left, r.top, r.right, r.bottom) == (m.left, m.top, m.right, m.bottom);
     }
-    (m.left, m.top) == (0, 0) && r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
+    r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
 }
 
 /// True when no app window is on screen (none open, or all minimized: Win+D): the user is looking at the desktop.
@@ -1480,6 +1545,20 @@ unsafe fn fs_update(hwnd: HWND) {
         }
         bar_anim(hwnd);
     }
+    // the 250 ms watch is only needed while the pointer decides (auto-hide, dock, desktop, bar away); otherwise
+    // the foreground event, ABN_FULLSCREENAPP and the 1 s tick call this
+    let poll = i18n::style::autohide() || dock() || desktop_now() || DESK_HIDE.load(Relaxed);
+    if FS_POLL.replace(poll) != poll {
+        if poll {
+            SetTimer(hwnd, 3, 250, None);
+        } else {
+            KillTimer(hwnd, 3);
+        }
+    }
+}
+
+thread_local! {
+    static FS_POLL: Cell<bool> = const { Cell::new(true) }; // timer 3 runs (set in main)
 }
 
 /// The dock is in the way of the window in front (one dragged down under it): it hides like over the
@@ -1578,6 +1657,48 @@ unsafe fn app_window() -> HWND {
     if IsWindow(last) != 0 { last } else { fg }
 }
 
+thread_local! {
+    static WIN_DIRTY: Cell<bool> = const { Cell::new(false) }; // a window refresh is already scheduled (timer 8)
+}
+
+/// Repaints (GDI+, the costly part) only when something shown changed; `tick`: every 10th tick anyway as a safety net.
+unsafe fn repaint_if_changed(hwnd: HWND, tick: bool) {
+    let (last, quiet) = SIG.get();
+    let s = view_sig();
+    if s != last || (tick && quiet >= 10) {
+        SIG.set((s, 0));
+        InvalidateRect(hwnd, null(), 0);
+    } else if tick {
+        SIG.set((s, quiet + 1));
+    }
+}
+
+/// Window events (WINEVENT_OUTOFCONTEXT: delivered on the bar's thread inside GetMessageW). Instead of enumerating every
+/// window twice a second, the bar looks again ~30 ms after something that can change a button happened.
+unsafe extern "system" fn win_event(_: windows_sys::Win32::UI::Accessibility::HWINEVENTHOOK, ev: u32, w: HWND, id: i32, child: i32, _: u32, _: u32) {
+    if id != 0 || child != 0 || w.is_null() {
+        return; // only whole windows (not carets, cursors, parts of controls)
+    }
+    let bar = BAR.load(Relaxed) as HWND;
+    if bar.is_null() {
+        return;
+    }
+    let known = || BTNS.with_borrow(|b| b.iter().any(|b| b.wins.contains(&w)));
+    let top = || GetAncestor(w, GA_PARENT) == GetDesktopWindow();
+    let relevant = match ev {
+        0x0003 => {
+            fs_update(bar); // EVENT_SYSTEM_FOREGROUND: the active button and fullscreen may change
+            true
+        }
+        0x8001 => known(),           // destroyed: it can no longer be asked anything, but it may be one of ours
+        0x800C => !known() && top(), // title set: a window with no title had no button yet
+        _ => top() || known(),       // created, shown, hidden, cloaked, uncloaked, minimized, restored
+    };
+    if relevant && !WIN_DIRTY.replace(true) {
+        SetTimer(bar, 8, 30, None);
+    }
+}
+
 /// Hash of everything the bar paints from polled state.
 unsafe fn view_sig() -> u64 {
     use std::hash::{Hash, Hasher};
@@ -1619,10 +1740,13 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let sb = cell(l.x0, l.bw);
     glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
     text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { dim }, DT_CENTER);
+    let tb = cell(l.x0 + l.bw + l.gap, l.bw);
+    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
+    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { dim }, DT_CENTER);
 
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let y = l.x0 + (i as i32 + 1) * (l.bw + l.gap);
+            let y = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
             let r = cell(y, l.bw);
             let mid = y + l.bw / 2;
             let act = b.wins.contains(&fg);
@@ -1715,15 +1839,36 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     text(dc, &dt, RECT { left: 0, top: mid - sc(1), right: cr.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
 }
 
-unsafe fn paint(hwnd: HWND) {
-    let mut ps: PAINTSTRUCT = zeroed();
-    let wdc = BeginPaint(hwnd, &mut ps);
-    let mut cr: RECT = zeroed();
-    GetClientRect(hwnd, &mut cr);
+thread_local! {
+    static BG: Cell<(HDC, HBITMAP, u64)> = const { Cell::new((null_mut(), null_mut(), 0)) }; // cached background layer and its key
+    static FONTS: Cell<([HFONT; 4], u64)> = const { Cell::new(([null_mut(); 4], 0)) };
+}
+
+fn key_of(v: impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    v.hash(&mut h);
+    h.finish() | 1 // never 0, the "empty" key
+}
+
+/// The bar's background for this size, side and style, redrawn only when one of them changes.
+unsafe fn bg_layer(wdc: HDC, cr: RECT) -> HDC {
     let h = cr.bottom;
-    BUSY.set(false);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, h));
-    let old = SelectObject(dc, bmp);
+    let p = pal();
+    let key = key_of((cr.right, h, vert(), at_top(), i18n::style::side() == i18n::style::Side::Left, style().light(), format!("{:?}", style()), [p.bg, p.text, p.line, p.accent], SCALE.get().to_bits()));
+    let (mut dc, mut bmp, k) = BG.get();
+    if k == key && !dc.is_null() {
+        return dc;
+    }
+    if dc.is_null() {
+        dc = CreateCompatibleDC(wdc);
+    }
+    if !bmp.is_null() {
+        DeleteObject(bmp);
+    }
+    bmp = CreateCompatibleBitmap(wdc, cr.right, h);
+    SelectObject(dc, bmp); // the DC's first bitmap is the stock 1x1 one: nothing to give back
+    BG.set((dc, bmp, key));
     // frosted-glass look: a hairline on top, a faint light catch under it, then the panel colour fading in
     let lit = mix(pal().bg, pal().text, 0.045);
     if vert() {
@@ -1746,13 +1891,43 @@ unsafe fn paint(hwnd: HWND) {
     if !at_top() && !vert() {
         fill(dc, RECT { left: 0, top: 1, right: cr.right, bottom: 2 }, mix(pal().bg, pal().text, 0.08), 0);
     }
-    SetBkMode(dc, TRANSPARENT as i32);
+    dc
+}
+
+/// The bar's four fonts, made again only when the scale or the style's faces change.
+unsafe fn bar_fonts() -> [HFONT; 4] {
+    let key = key_of((SCALE.get().to_bits(), ui_face(), winrust_common::style::icon_face()));
+    let (fonts, k) = FONTS.get();
+    if k == key {
+        return fonts;
+    }
+    fonts.iter().filter(|f| !f.is_null()).for_each(|&f| {
+        DeleteObject(f);
+    });
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
     let font = |f: &[u16], px: i32, wt: i32| CreateFontW(-sc(px), 0, 0, 0, wt, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr());
-    let (f_txt, f_small, f_glyph, f_bold) = (font(&face, 13, 400), font(&face, 12, 400), font(&gface, 16, 400), font(&face, 13, 600));
+    let fonts = [font(&face, 13, 400), font(&face, 12, 400), font(&gface, 16, 400), font(&face, 13, 600)];
+    FONTS.set((fonts, key));
+    fonts
+}
+
+unsafe fn paint(hwnd: HWND) {
+    let mut ps: PAINTSTRUCT = zeroed();
+    let wdc = BeginPaint(hwnd, &mut ps);
+    let mut cr: RECT = zeroed();
+    GetClientRect(hwnd, &mut cr);
+    let h = cr.bottom;
+    BUSY.set(false);
+    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, h));
+    let old = SelectObject(dc, bmp);
+    // the background (gradient, facets, hairlines) is the same every frame: drawn once per size / style, then copied
+    BitBlt(dc, 0, 0, cr.right, h, bg_layer(wdc, cr), 0, 0, SRCCOPY);
+    SetBkMode(dc, TRANSPARENT as i32);
+    let [f_txt, f_small, f_glyph, f_bold] = bar_fonts();
     let of = SelectObject(dc, f_txt);
 
     'horiz: {
+
     if vert() {
         paint_vert(dc, cr, [f_txt, f_small, f_glyph, f_bold]);
         break 'horiz;
@@ -1776,11 +1951,14 @@ unsafe fn paint(hwnd: HWND) {
     glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
     text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    let tb = RECT { left: l.x0 + l.bw + l.gap, top, right: l.x0 + 2 * l.bw + l.gap, bottom: bot };
+    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
+    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
 
     // Start, pinned apps, open windows (center)
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let x = l.x0 + (i as i32 + 1) * (l.bw + l.gap);
+            let x = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
             let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
             let act = b.wins.contains(&fg);
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
@@ -1889,9 +2067,6 @@ unsafe fn paint(hwnd: HWND) {
 
     BitBlt(wdc, 0, 0, cr.right, h, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
-    for f in [f_txt, f_small, f_glyph, f_bold] {
-        DeleteObject(f);
-    }
     SelectObject(dc, old);
     DeleteObject(bmp);
     DeleteDC(dc);
@@ -1943,8 +2118,8 @@ unsafe fn activate_app(aumid: &str) -> bool {
         .is_ok()
 }
 
-/// Opens a file, shortcut or URI through explorer, which starts it with the desktop user's normal token: the bar itself
-/// may run elevated (see the launcher), and everything started from it must not inherit that.
+/// Opens a file, shortcut, URI or program with the desktop user's normal token: the bar itself may run elevated (see the
+/// launcher), and everything started from it must not inherit that.
 unsafe fn open(path: &[u16]) {
     let n = path.iter().position(|&c| c == 0).unwrap_or(path.len());
     let p = String::from_utf16_lossy(&path[..n]);
@@ -1960,10 +2135,17 @@ unsafe fn open(path: &[u16]) {
     if aumid.is_some_and(|id| activate_app(&id)) {
         return;
     }
-    // Always through explorer.exe: it starts the target with the desktop user's normal token. ShellExecuteW from here would
-    // inherit this bar's admin rights, and an elevated app cannot receive files dragged in from normal windows (UIPI), and
-    // PrtSc / Win+Shift+S (ms-screenclip:) do not work when started elevated. With an argument and no explorer shell
-    // running, explorer.exe hands the target to its COM host and does not become a shell or raise a taskbar.
+    // A program is a path to Explorer, and Explorer is not the shell on a WinRust machine: `explorer.exe wt.exe` only
+    // opens a folder window, so the Win+X "Terminal" item showed the file manager and a task manager never started.
+    if winrust_common::launch::is_program(&p) {
+        winrust_common::launch::program(&p);
+        return;
+    }
+    // Everything else through explorer.exe: it hands paths, shortcuts, shell addresses and URIs to the shell with the
+    // desktop user's normal token. ShellExecuteW from here would inherit this bar's admin rights, and an elevated app
+    // cannot receive files dragged in from normal windows (UIPI), and PrtSc / Win+Shift+S (ms-screenclip:) do not work
+    // when started elevated. With an argument and no explorer shell running, explorer.exe hands the target to its COM
+    // host and does not become a shell or raise a taskbar.
     if Command::new("explorer.exe").arg(&p).spawn().is_err() {
         ShellExecuteW(null_mut(), wide("open").as_ptr(), wide(&p).as_ptr(), null(), null(), SW_SHOWNORMAL);
     }
@@ -1975,13 +2157,14 @@ fn wstr_of(w: &[u16]) -> String {
     String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())])
 }
 
-/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows".
+/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows"; "3 个窗口" (no plural in Chinese).
 fn windows_ru(n: usize) -> String {
     use i18n::Lang;
     let w = match lang!() {
         Lang::En => if n == 1 { "window" } else { "windows" },
         Lang::Pt => if n == 1 { "janela" } else { "janelas" },
         Lang::Ja => "ウィンドウ",
+        Lang::Zh => "个窗口",
         Lang::Ru => match (n % 10, n % 100) {
             (1, x) if x != 11 => "окно",
             (2..=4, x) if !(12..=14).contains(&x) => "окна",
@@ -2012,9 +2195,9 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
     let stem = std::path::Path::new(&launch).file_stem().unwrap_or_default().to_string_lossy().to_string();
     let name: String = stem.chars().take(1).flat_map(char::to_uppercase).chain(stem.chars().skip(1)).collect();
     let sub = match (wins.len(), pin.is_some()) {
-        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução").to_string(),
-        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", windows_ru(n)),
-        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", windows_ru(n)),
+        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução", zh: "已固定 · 未运行").to_string(),
+        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", zh: "已固定 · {}", windows_ru(n)),
+        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", zh: "运行中 · {}", windows_ru(n)),
     };
     let icon = if picon.is_null() { bicon } else { picon };
     let mut items: Vec<(fly::MItem, A)> = Vec::new();
@@ -2026,30 +2209,30 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
         }
     }
     if !launch.is_empty() {
-        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela") });
+        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela", zh: "新建窗口") });
         items.push((if items.is_empty() { it } else { it.sep() }, A::Open));
     }
     if pin.is_some() {
-        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra")), A::Pin));
+        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra", zh: "从任务栏取消固定")), A::Pin));
     } else if !exe.is_empty() {
-        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra")), A::Pin));
+        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra", zh: "固定到任务栏")), A::Pin));
     }
     if let Some(p) = pin.filter(|_| !lnk.is_empty()) {
         let n = PINS.with_borrow(|p| p.len());
         if p > 0 {
-            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda") }), A::Left));
+            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima", zh: "上移") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda", zh: "左移") }), A::Left));
         }
         if p + 1 < n {
-            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita") }), A::Right));
+            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo", zh: "下移") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita", zh: "右移") }), A::Right));
         }
     }
     if !launch.is_empty() {
         let s = fly::start_pinned(&launch);
-        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar") }), A::Start));
+        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单") }), A::Start));
     }
     if !wins.is_empty() {
-        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela") }).hint("Alt+F4").sep(), A::Close));
-        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo")).danger(), A::Kill));
+        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas", zh: "关闭所有窗口") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela", zh: "关闭窗口") }).hint("Alt+F4").sep(), A::Close));
+        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo", zh: "结束进程")).danger(), A::Kill));
     }
     let acts: Vec<A> = items.iter().map(|x| x.1).collect();
     let items = items.into_iter().map(|x| x.0).collect();
@@ -2144,15 +2327,17 @@ unsafe fn lnk_args(lnk: &[u16]) -> String {
 }
 
 /// What a running process was started with, minus the exe (e.g. `--profile-directory="Profile 2"`).
-/// shortcut: asks PowerShell (about a second, only when pinning); read the PEB if that ever bothers anyone.
 fn proc_args(pid: u32) -> String {
     use std::os::windows::process::CommandExt;
     if pid == 0 {
         return String::new();
     }
-    let script = format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8;(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
-    let out = Command::new("powershell.exe").args(["-NoProfile", "-Command", &script]).creation_flags(NO_WINDOW).output();
-    let cl = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    // the PEB first (microseconds); PowerShell (about a second) only for a process that cannot be opened for reading
+    let cl = winrust_common::proc::cmdline(pid).map(|c| c.trim().to_string()).unwrap_or_else(|| {
+        let script = format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8;(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
+        let out = Command::new("powershell.exe").args(["-NoProfile", "-Command", &script]).creation_flags(NO_WINDOW).output();
+        out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+    });
     let rest = match cl.strip_prefix('"') {
         Some(r) => r.split_once('"').map_or("", |x| x.1),
         None => cl.split_once(' ').map_or("", |x| x.1),
@@ -2281,33 +2466,33 @@ unsafe fn open_launcher() -> bool {
 /// Right click on Start: the Win+X menu (Explorer's own is gone with the bar).
 unsafe fn start_menu() {
     let bar = BAR.load(Relaxed) as HWND;
-    // (label in ru/en/ja/pt, target); "!" targets are actions of ours, the rest goes through `open`
-    let tools: [(&str, &str, &str, &str, &str); 15] = [
-        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "ms-settings:appsfeatures"),
-        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "powercfg.cpl"),
-        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "eventvwr.msc"),
-        ("Система", "System", "システム", "Sistema", "ms-settings:about"),
-        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "devmgmt.msc"),
-        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "ms-settings:network"),
-        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "diskmgmt.msc"),
-        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "compmgmt.msc"),
-        ("Терминал", "Terminal", "ターミナル", "Terminal", "!term"),
-        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "taskmgr.exe"),
-        ("Параметры", "Settings", "設定", "Configurações", "ms-settings:"),
-        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "shell:MyComputerFolder"),
-        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "!run"),
-        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "!desktop"),
-        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "!taskview"),
+    // (label in ru/en/ja/pt/zh, target); "!" targets are actions of ours, the rest goes through `open`
+    let tools: [(&str, &str, &str, &str, &str, &str); 15] = [
+        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "应用和功能", "ms-settings:appsfeatures"),
+        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "电源选项", "powercfg.cpl"),
+        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "事件查看器", "eventvwr.msc"),
+        ("Система", "System", "システム", "Sistema", "系统", "ms-settings:about"),
+        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "设备管理器", "devmgmt.msc"),
+        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "网络连接", "ms-settings:network"),
+        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "磁盘管理", "diskmgmt.msc"),
+        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "计算机管理", "compmgmt.msc"),
+        ("Терминал", "Terminal", "ターミナル", "Terminal", "终端", "!term"),
+        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "任务管理器", "taskmgr.exe"),
+        ("Параметры", "Settings", "設定", "Configurações", "设置", "ms-settings:"),
+        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "文件资源管理器", "shell:MyComputerFolder"),
+        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "运行", "!run"),
+        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "桌面", "!desktop"),
+        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "任务视图", "!taskview"),
     ];
-    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "!shutdown")];
+    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "锁定", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "睡眠", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "重启", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "关机", "!shutdown")];
     let mut items = Vec::new();
     let mut targets = Vec::new();
-    for (i, (ru, en, ja, pt, to)) in tools.iter().chain(power.iter()).enumerate() {
-        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt));
+    for (i, (ru, en, ja, pt, zh, to)) in tools.iter().chain(power.iter()).enumerate() {
+        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt, zh: *zh));
         items.push(if i == tools.len() { it.sep() } else { it });
         targets.push(*to);
     }
-    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar").to_string(), String::new());
+    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar", zh: "启动").to_string(), String::new());
     fly::menu(tip_cx(&bar_layout(bar), 0), Some(head), items, move |i| {
         let Some(&to) = targets.get(i) else { return };
         let quiet = |c: &mut Command| { let _ = c.creation_flags(NO_WINDOW).spawn(); };
@@ -2401,12 +2586,28 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
                 fly::toggle(fly::Kind::Start);
             }
         }
+        TASKVIEW if left => keys(&[VK_LWIN, VK_TAB]), // virtual desktops (#83)
         // left: the language picker; right: straight to the next one (Win+Space is explorer's, gone under rs-shell)
         LANG if left => lang_menu(BAR.load(Relaxed) as HWND),
         LANG => next_lang(BAR.load(Relaxed) as HWND, false),
         WIFI_I => fly::toggle(if left { fly::Kind::Quick } else { fly::Kind::Wifi }), // right click: the network list
         VOL_I | BAT_I => fly::toggle(fly::Kind::Quick),
         CLOCK if left => fly::toggle(fly::Kind::Cal),
+        CLOCK => {
+            // right click: like Windows 11, a menu with the date and time and notification settings (#126)
+            let items = vec![
+                fly::MItem::new(t!("Настройка даты и времени", "Adjust date and time", ja: "日付と時刻を調整する", pt: "Ajustar data e hora")),
+                fly::MItem::new(t!("Параметры уведомлений", "Notification settings", ja: "通知の設定", pt: "Configurações de notificação")),
+            ];
+            fly::menu(tip_cx(&bar_layout(BAR.load(Relaxed) as HWND), CLOCK), None, items, |i| {
+                if i == 0 {
+                    // the classic applet opens at once with or without Explorer; the Settings page needs Explorer started first
+                    let _ = Command::new("control.exe").arg("timedate.cpl").creation_flags(NO_WINDOW).spawn();
+                } else {
+                    open(&wide("ms-settings:notifications"));
+                }
+            });
+        }
         SHOWDESK if left => winrust_common::desktop::toggle(),
         GEAR => style_menu(),
         TAPP..=-900 => {
@@ -2469,7 +2670,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     let exe = exe_of(w);
     let i = BTNS.with_borrow(|b| b.iter().position(|b| b.wins.contains(&w)).or_else(|| b.iter().position(|b| !exe.is_empty() && b.wins.first().is_some_and(|&x| exe_of(x) == exe))));
     let x = match i {
-        Some(i) => l.x0 + (i as i32 + 1) * (l.bw + l.gap),
+        Some(i) => l.x0 + (i as i32 + LEAD) * (l.bw + l.gap),
         None => (l.x0 + l.apps.0) / 2, // no button (yet): the middle of the bar
     };
     if vert() {
@@ -2487,6 +2688,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
     (if vert() { 0 } else { bar_x_w().0 }) + match h {
         GEAR => sc(GEAR_X.0 + GEAR_X.1 / 2),
         SEARCH => l.x0 + l.bw / 2,
+        TASKVIEW => l.x0 + (l.bw + l.gap) + l.bw / 2,
         CLOCK => (l.clock.0 + l.clock.1) / 2,
         SHOWDESK => l.clock.1 + sc(3),
         LANG => l.sys.0 + sc(21),
@@ -2494,7 +2696,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
         VOL_I => l.sys.0 + sc(90),
         BAT_I => l.sys.0 + sc(130),
         t if (TAPP..TAPP + 100).contains(&t) => l.apps.0 + (t - TAPP) * sc(24) + sc(12),
-        i => l.x0 + (i + 1) * (l.bw + l.gap) + l.bw / 2,
+        i => l.x0 + (i + LEAD) * (l.bw + l.gap) + l.bw / 2,
     }
 }
 
@@ -2572,6 +2774,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WIN_START => fly::toggle(fly::Kind::Start),
         ALT_TAB => alt_tab(wp == 1),
         WIN_NUM => win_num(wp),
+        WIN_X => start_menu(),
         NEXT_LANG => next_lang(hwnd, wp == 1),
         ALT_UP if wp == 2 => alt_close(),
         ALT_UP => alt_done(wp == 1),
@@ -2586,18 +2789,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             InvalidateRect(hwnd, null(), 0);
         }
         WM_DROPFILES => on_drop(hwnd, wp as HDROP),
+        WM_TIMER if wp == 8 => {
+            // window events since the last look (win_event): one refresh for the whole burst
+            KillTimer(hwnd, 8);
+            WIN_DIRTY.set(false);
+            hide_taskbar_if_shown();
+            refresh_windows();
+            repaint_if_changed(hwnd, false);
+        }
         WM_TIMER => {
             hide_taskbar_if_shown();
-            refresh();
-            // repaint (GDI+, the costly part) only when something shown changed; every 10th tick anyway as a safety net
-            let (last, quiet) = SIG.get();
-            let s = view_sig();
-            if s != last || quiet >= 10 {
-                SIG.set((s, 0));
-                InvalidateRect(hwnd, null(), 0);
-            } else {
-                SIG.set((s, quiet + 1));
+            refresh_status();
+            if TICK.get() % 5 == 0 {
+                refresh_windows(); // safety net for a window event the hook did not report
             }
+            fs_update(hwnd); // style switches (auto-hide, dock) take effect without a window event
+            repaint_if_changed(hwnd, true);
         }
         WM_MOUSEMOVE => {
             let h = hit(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
@@ -2775,15 +2982,33 @@ fn main() {
         place(hwnd);
         refresh();
         announce(); // apps already running re-add their icons to us
-        SetTimer(hwnd, 1, 500, None);
+        SetTimer(hwnd, 1, 1000, None); // status poll; windows come from win_event
         BAR.store(hwnd as isize, Relaxed);
         bar_anim(hwnd); // the bar slides in (it starts hidden above the screen)
         SetTimer(hwnd, 3, 250, None); // fullscreen watch
         windows_sys::Win32::UI::Accessibility::SetWinEventHook(0x000B, 0x000B, null_mut(), Some(snap_proc), 0, 0, 0); // EVENT_SYSTEM_MOVESIZEEND
+        // foreground, minimize start/end, create..hide, name, cloaked/uncloaked (2 = WINEVENT_SKIPOWNPROCESS). Not
+        // LOCATIONCHANGE: it fires for every caret and cursor move; a fullscreen switch comes as ABN_FULLSCREENAPP and the 1 s tick
+        for (a, b) in [(0x0003, 0x0003), (0x0016, 0x0017), (0x8000, 0x8003), (0x800C, 0x800C), (0x8017, 0x8018)] {
+            windows_sys::Win32::UI::Accessibility::SetWinEventHook(a, b, null_mut(), Some(win_event), 0, 0, 2);
+        }
         thread::spawn(|| {
-            if !SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), GetModuleHandleW(null()), 0).is_null() {
-                let mut m: MSG = zeroed();
-                while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {}
+            let mut hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), GetModuleHandleW(null()), 0);
+            // Windows silently drops a low-level hook that once answers too slowly (busy boot), leaving Win+R, Start and
+            // Alt+Tab dead with no explorer to fall back on: set it again now and then. Callbacks run only inside
+            // GetMessageW on this thread, so swapping here never delivers a key twice.
+            SetTimer(null_mut(), 0, 30_000, None);
+            let mut m: MSG = zeroed();
+            while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
+                if m.message == WM_TIMER {
+                    let new = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), GetModuleHandleW(null()), 0);
+                    if !new.is_null() {
+                        if !hook.is_null() {
+                            UnhookWindowsHookEx(hook);
+                        }
+                        hook = new;
+                    }
+                }
             }
         });
         let mut m: MSG = zeroed();
@@ -2801,6 +3026,17 @@ mod tests {
         assert_eq!(super::sane_edge(48, 1080), 48); // another bar below ours: stack above it
         assert_eq!(super::sane_edge(540, 1080), 0); // half the screen (#106)
         assert_eq!(super::sane_edge(-20, 1080), 0);
+    }
+
+    #[test]
+    fn borderless_games_count_as_fullscreen() {
+        use super::{RECT, covers_monitor};
+        let m = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        assert!(covers_monitor(m, m, false, false)); // plain borderless / exclusive fullscreen
+        assert!(covers_monitor(m, m, true, false)); // borderless window that kept its caption style
+        assert!(!covers_monitor(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, m, true, true)); // framed maximized window (#88)
+        assert!(!covers_monitor(m, m, true, true)); // a maximized window is never a game
+        assert!(!covers_monitor(RECT { left: 0, top: 0, right: 1920, bottom: 1032 }, m, false, false)); // leaves the bar's strip
     }
 
     #[test]
