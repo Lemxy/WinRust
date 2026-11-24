@@ -94,7 +94,7 @@ fn parse(out: &str) -> Vec<Item> {
 fn found() -> Result<Vec<Item>, String> {
     let (ok, out) = ps(r#"Get-AppxPackage -AllUsers | ForEach-Object { "appx|$($_.PackageFullName)|$($_.Name)|$($_.NonRemovable)" }; Get-AppxProvisionedPackage -Online | ForEach-Object { "prov|$($_.PackageName)|$($_.DisplayName)" }"#);
     if !ok && out.trim().is_empty() {
-        return Err(t!("не удалось получить список приложений (нужны права администратора)", "cannot list apps (run as administrator)", ja: "アプリの一覧を取得できません (管理者として実行してください)", pt: "não foi possível listar os aplicativos (execute como administrador)", zh: "无法列出应用（请以管理员身份运行）").into());
+        return Err(t!("не удалось получить список приложений (нужны права администратора)", "cannot list apps (run as administrator)", ja: "アプリの一覧を取得できません (管理者として実行してください)", pt: "não foi possível listar os aplicativos (execute como administrador)", zh: "无法列出应用（请以管理员身份运行）", es: "no se pueden listar las aplicaciones (ejecuta como administrador)").into());
     }
     Ok(parse(&out))
 }
@@ -116,37 +116,37 @@ fn edge_setup() -> Option<PathBuf> {
 }
 
 fn plan(od: bool, edge: bool) {
-    println!("{}", t!("Пробный прогон: ничего не удаляется. --apply УДАЛЯЕТ НАВСЕГДА (отмены нет).\n", "Dry run: nothing is removed. --apply REMOVES it FOR GOOD (no undo).\n", ja: "確認のみ: 何も削除されません。--apply で完全に削除されます (元に戻せません)。\n", pt: "Simulação: nada é removido. --apply REMOVE DEFINITIVAMENTE (não há como desfazer).\n", zh: "试运行：不会移除任何内容。--apply 会永久移除（无法撤销）。\n"));
+    println!("{}", t!("Пробный прогон: ничего не удаляется. --apply УДАЛЯЕТ НАВСЕГДА (отмены нет).\n", "Dry run: nothing is removed. --apply REMOVES it FOR GOOD (no undo).\n", ja: "確認のみ: 何も削除されません。--apply で完全に削除されます (元に戻せません)。\n", pt: "Simulação: nada é removido. --apply REMOVE DEFINITIVAMENTE (não há como desfazer).\n", zh: "试运行：不会移除任何内容。--apply 会永久移除（无法撤销）。\n", es: "Simulación: no se quita nada. --apply lo QUITA PARA SIEMPRE (sin deshacer).\n"));
     match found() {
         Ok(items) => {
             for i in &items {
                 match i {
-                    Item::Appx { name, .. } => println!("{}", tf!("  приложение (установлено)  {name}", "  app (installed)    {name}", ja: "  アプリ (インストール済み)  {name}", pt: "  app (instalado)    {name}", zh: "  应用（已安装）    {name}")),
-                    Item::Prov { name, .. } => println!("{}", tf!("  приложение (подготовлено)  {name}", "  app (provisioned)  {name}", ja: "  アプリ (プロビジョニング済み)  {name}", pt: "  app (provisionado) {name}", zh: "  应用（预置）      {name}")),
+                    Item::Appx { name, .. } => println!("{}", tf!("  приложение (установлено)  {name}", "  app (installed)    {name}", ja: "  アプリ (インストール済み)  {name}", pt: "  app (instalado)    {name}", zh: "  应用（已安装）    {name}", es: "  app (instalada)    {name}")),
+                    Item::Prov { name, .. } => println!("{}", tf!("  приложение (подготовлено)  {name}", "  app (provisioned)  {name}", ja: "  アプリ (プロビジョニング済み)  {name}", pt: "  app (provisionado) {name}", zh: "  应用（预置）      {name}", es: "  app (en imagen)    {name}")),
                 }
             }
-            println!("{}", tf!("  найдено записей приложений: {}", "  {} app entries found", ja: "  アプリのエントリが {} 件見つかりました", pt: "  {} entradas de aplicativos encontradas", zh: "  找到 {} 个应用条目", items.len()));
+            println!("{}", tf!("  найдено записей приложений: {}", "  {} app entries found", ja: "  アプリのエントリが {} 件見つかりました", pt: "  {} entradas de aplicativos encontradas", zh: "  找到 {} 个应用条目", es: "  {} entradas de aplicaciones encontradas", items.len()));
         }
         Err(e) => println!("  {e}"),
     }
     for t in TASKS.iter().filter(|t| task_exists(t)) {
-        println!("{}", tf!("  задача             {t}", "  task               {t}", ja: "  タスク             {t}", pt: "  tarefa             {t}", zh: "  任务               {t}"));
+        println!("{}", tf!("  задача             {t}", "  task               {t}", ja: "  タスク             {t}", pt: "  tarefa             {t}", zh: "  任务               {t}", es: "  tarea              {t}"));
     }
     if od {
-        println!("{}", tf!("  OneDrive           {}", "  OneDrive           {}", ja: "  OneDrive           {}", pt: "  OneDrive           {}", zh: "  OneDrive           {}", onedrive_setup().map_or(t!("не найден", "not present", ja: "見つかりません", pt: "não encontrado", zh: "未安装").to_string(), |p| p.display().to_string())));
+        println!("{}", tf!("  OneDrive           {}", "  OneDrive           {}", ja: "  OneDrive           {}", pt: "  OneDrive           {}", zh: "  OneDrive           {}", es: "  OneDrive           {}", onedrive_setup().map_or(t!("не найден", "not present", ja: "見つかりません", pt: "não encontrado", zh: "未安装", es: "no existe").to_string(), |p| p.display().to_string())));
     }
     if edge {
-        println!("{}", tf!("  Edge               {}", "  Edge               {}", ja: "  Edge               {}", pt: "  Edge               {}", zh: "  Edge               {}", edge_setup().map_or(t!("не найден", "not present", ja: "見つかりません", pt: "não encontrado", zh: "未安装").to_string(), |p| p.display().to_string())));
+        println!("{}", tf!("  Edge               {}", "  Edge               {}", ja: "  Edge               {}", pt: "  Edge               {}", zh: "  Edge               {}", es: "  Edge               {}", edge_setup().map_or(t!("не найден", "not present", ja: "見つかりません", pt: "não encontrado", zh: "未安装", es: "no existe").to_string(), |p| p.display().to_string())));
     }
 }
 
 fn apply(od: bool, edge: bool) -> Result<(), String> {
     let dir = PathBuf::from(env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join("winrust-purge");
-    fs::create_dir_all(&dir).map_err(|e| tf!("{0}: {1} (нужны права администратора)", "{0}: {1} (run as admin)", ja: "{0}: {1} (管理者として実行してください)", pt: "{0}: {1} (execute como admin)", zh: "{0}: {1}（请以管理员身份运行）", dir.display(), e))?;
+    fs::create_dir_all(&dir).map_err(|e| tf!("{0}: {1} (нужны права администратора)", "{0}: {1} (run as admin)", ja: "{0}: {1} (管理者として実行してください)", pt: "{0}: {1} (execute como admin)", zh: "{0}: {1}（请以管理员身份运行）", es: "{0}: {1} (ejecuta como administrador)", dir.display(), e))?;
     let mut log = fs::OpenOptions::new().create(true).append(true).open(dir.join("removed.txt")).map_err(|e| e.to_string())?;
     let mut failed = 0;
     let mut did = |what: String, ok: bool| {
-        println!("{}  {what}", if ok { t!("удалено", "removed", ja: "削除しました", pt: "removido", zh: "已移除") } else { t!("ОШИБКА ", "FAILED ", ja: "失敗   ", pt: "FALHOU ", zh: "失败   ") });
+        println!("{}  {what}", if ok { t!("удалено", "removed", ja: "削除しました", pt: "removido", zh: "已移除", es: "quitado") } else { t!("ОШИБКА ", "FAILED ", ja: "失敗   ", pt: "FALHOU ", zh: "失败   ", es: "FALLÓ") });
         if ok {
             let _ = writeln!(log, "{what}");
         } else {
@@ -155,18 +155,18 @@ fn apply(od: bool, edge: bool) -> Result<(), String> {
     };
     for i in found()? {
         match i {
-            Item::Appx { full, name } => did(tf!("приложение {name}", "app {name}", ja: "アプリ {name}", pt: "app {name}", zh: "应用 {name}"), ps(&format!("Remove-AppxPackage -Package '{full}' -AllUsers -ErrorAction Stop")).0),
-            Item::Prov { pkg, name } => did(tf!("подготовлено {name}", "provisioned {name}", ja: "プロビジョニング {name}", pt: "provisionado {name}", zh: "预置应用 {name}"), ps(&format!("Remove-AppxProvisionedPackage -Online -PackageName '{pkg}' -ErrorAction Stop")).0),
+            Item::Appx { full, name } => did(tf!("приложение {name}", "app {name}", ja: "アプリ {name}", pt: "app {name}", zh: "应用 {name}", es: "app {name}"), ps(&format!("Remove-AppxPackage -Package '{full}' -AllUsers -ErrorAction Stop")).0),
+            Item::Prov { pkg, name } => did(tf!("подготовлено {name}", "provisioned {name}", ja: "プロビジョニング {name}", pt: "provisionado {name}", zh: "预置应用 {name}", es: "en imagen {name}"), ps(&format!("Remove-AppxProvisionedPackage -Online -PackageName '{pkg}' -ErrorAction Stop")).0),
         }
     }
     for t in TASKS.iter().filter(|t| task_exists(t)) {
-        did(tf!("задача {t}", "task {t}", ja: "タスク {t}", pt: "tarefa {t}", zh: "任务 {t}"), run("schtasks.exe", &["/Delete", "/TN", t, "/F"]).0);
+        did(tf!("задача {t}", "task {t}", ja: "タスク {t}", pt: "tarefa {t}", zh: "任务 {t}", es: "tarea {t}"), run("schtasks.exe", &["/Delete", "/TN", t, "/F"]).0);
     }
     if od {
         let _ = run("taskkill", &["/f", "/im", "OneDrive.exe"]);
         match onedrive_setup() {
             Some(p) => did("OneDrive".into(), run(&p.display().to_string(), &["/uninstall"]).0),
-            None => println!("{}", t!("пропуск  OneDrive: не найден", "skip     OneDrive: not present", ja: "スキップ OneDrive: 見つかりません", pt: "pular    OneDrive: não encontrado", zh: "跳过     OneDrive：未安装")),
+            None => println!("{}", t!("пропуск  OneDrive: не найден", "skip     OneDrive: not present", ja: "スキップ OneDrive: 見つかりません", pt: "pular    OneDrive: não encontrado", zh: "跳过     OneDrive：未安装", es: "omite    OneDrive: no existe")),
         }
     }
     if edge {
@@ -174,13 +174,13 @@ fn apply(od: bool, edge: bool) -> Result<(), String> {
             // Windows only lets Edge go outside the EU when this value exists
             Some(p) => {
                 let _ = run("reg", &["add", r"HKLM\SOFTWARE\Microsoft\EdgeUpdateDev", "/v", "AllowUninstall", "/t", "REG_SZ", "/d", "", "/f"]);
-                did(t!("Edge (по возможности, Windows может отказать)", "Edge (best effort, Windows may refuse)", ja: "Edge (可能な範囲で。Windows が拒否することがあります)", pt: "Edge (melhor esforço, o Windows pode recusar)", zh: "Edge（尽力而为，Windows 可能会拒绝）").into(), run(&p.display().to_string(), &["--uninstall", "--system-level", "--verbose-logging", "--force-uninstall"]).0)
+                did(t!("Edge (по возможности, Windows может отказать)", "Edge (best effort, Windows may refuse)", ja: "Edge (可能な範囲で。Windows が拒否することがあります)", pt: "Edge (melhor esforço, o Windows pode recusar)", zh: "Edge（尽力而为，Windows 可能会拒绝）", es: "Edge (con lo que se pueda, Windows puede negarse)").into(), run(&p.display().to_string(), &["--uninstall", "--system-level", "--verbose-logging", "--force-uninstall"]).0)
             }
-            None => println!("{}", t!("пропуск  Edge: не найден", "skip     Edge: not present", ja: "スキップ Edge: 見つかりません", pt: "pular    Edge: não encontrado", zh: "跳过     Edge：未安装")),
+            None => println!("{}", t!("пропуск  Edge: не найден", "skip     Edge: not present", ja: "スキップ Edge: 見つかりません", pt: "pular    Edge: não encontrado", zh: "跳过     Edge：未安装", es: "omite    Edge: no existe")),
         }
     }
-    println!("{}", tf!("\nОтменить это нельзя. Журнал удалённого: {}", "\nThis cannot be undone. A log of what was removed: {}", ja: "\nこの操作は元に戻せません。削除したもののログ: {}", pt: "\nIsto não pode ser desfeito. Registro do que foi removido: {}", zh: "\n此操作无法撤销。已移除内容的日志：{}", dir.join("removed.txt").display()));
-    if failed > 0 { Err(tf!("не удалось выполнить: {} (нужны права администратора)", "{} item(s) failed (run as administrator)", ja: "{} 件失敗しました (管理者として実行してください)", pt: "{} item(ns) falharam (execute como administrador)", zh: "{} 项失败（请以管理员身份运行）", failed)) } else { Ok(()) }
+    println!("{}", tf!("\nОтменить это нельзя. Журнал удалённого: {}", "\nThis cannot be undone. A log of what was removed: {}", ja: "\nこの操作は元に戻せません。削除したもののログ: {}", pt: "\nIsto não pode ser desfeito. Registro do que foi removido: {}", zh: "\n此操作无法撤销。已移除内容的日志：{}", es: "\nEsto no se puede deshacer. Registro de lo que se quitó: {}", dir.join("removed.txt").display()));
+    if failed > 0 { Err(tf!("не удалось выполнить: {} (нужны права администратора)", "{} item(s) failed (run as administrator)", ja: "{} 件失敗しました (管理者として実行してください)", pt: "{} item(ns) falharam (execute como administrador)", zh: "{} 项失败（请以管理员身份运行）", es: "fallaron {} elemento(s) (ejecuta como administrador)", failed)) } else { Ok(()) }
 }
 
 fn main() {
@@ -194,17 +194,19 @@ fn main() {
 This REMOVES the apps above FOR GOOD, there is no undo. Type YES to continue: ", ja: "
 上記のアプリを完全に削除します。元に戻せません。続けるには YES と入力してください: ", pt: "
 Isto REMOVE os aplicativos acima DEFINITIVAMENTE, não há como desfazer. Digite YES para continuar: ", zh: "
-这将永久删除上面的应用，无法撤销。输入 YES 继续: "));
+这将永久删除上面的应用，无法撤销。输入 YES 继续: ", es: "
+Esto QUITA las aplicaciones de arriba PARA SIEMPRE, no se puede deshacer. Escribe YES para continuar: "));
         let _ = std::io::stdout().flush();
         let mut line = String::new();
         let _ = std::io::stdin().read_line(&mut line);
-        let r = if line.trim() == "YES" { apply(has("--onedrive"), has("--edge")) } else { println!("{}", t!("Ничего не удалено.", "Nothing removed.", ja: "何も削除されませんでした。", pt: "Nada foi removido.", zh: "未移除任何内容。")); Ok(()) };
+        let r = if line.trim() == "YES" { apply(has("--onedrive"), has("--edge")) } else { println!("{}", t!("Ничего не удалено.", "Nothing removed.", ja: "何も削除されませんでした。", pt: "Nada foi removido.", zh: "未移除任何内容。", es: "No se quitó nada.")); Ok(()) };
         println!("{}", t!("
 Нажмите Enter, чтобы закрыть.", "
 Press Enter to close.", ja: "
 Enter キーを押すと閉じます。", pt: "
 Pressione Enter para fechar.", zh: "
-按 Enter 关闭。"));
+按 Enter 关闭。", es: "
+Pulsa Enter para cerrar."));
         let _ = std::io::stdin().read_line(&mut line);
         r
     } else if has("--apply") {
