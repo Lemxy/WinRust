@@ -53,10 +53,10 @@ fn main() {
         let j = |v: &[(String, u64)]| v.iter().map(|(p, s)| format!("{{\"path\":\"{}\",\"bytes\":{s}}}", p.replace('\\', "\\\\").replace('"', "\\\""))).collect::<Vec<_>>().join(",");
         println!("{{\"drive\":\"{drive}\",\"folders\":[{}],\"files\":[{}]}}", j(&d), j(&f));
     } else {
-        println!("{}", tf!("{drive}: записей {0}, всего {1} ({2}), {3:.2} с", "{drive}: {0} records, {1} total ({2}), {3:.2}s", ja: "{drive}: {0} レコード、合計 {1} ({2})、{3:.2} 秒", pt: "{drive}: {0} registros, {1} no total ({2}), {3:.2}s", zh: "{drive}: {0} 条记录，共 {1}（{2}），{3:.2} 秒", recs.len(), human(tot.get(&ROOT).copied().unwrap_or(0)), if logical { t!("логический", "logical", ja: "論理", pt: "lógico", zh: "逻辑大小") } else { t!("на диске", "on disk", ja: "ディスク上", pt: "no disco", zh: "占用空间") }, t.elapsed().as_secs_f32()));
-        println!("{}", tf!("\nПапки (глубина <= {depth}):", "\nFolders (depth <= {depth}):", ja: "\nフォルダー (深さ <= {depth}):", pt: "\nPastas (profundidade <= {depth}):", zh: "\n文件夹（深度 <= {depth}）："));
+        println!("{}", tf!("{drive}: записей {0}, всего {1} ({2}), {3:.2} с", "{drive}: {0} records, {1} total ({2}), {3:.2}s", ja: "{drive}: {0} レコード、合計 {1} ({2})、{3:.2} 秒", pt: "{drive}: {0} registros, {1} no total ({2}), {3:.2}s", zh: "{drive}: {0} 条记录，共 {1}（{2}），{3:.2} 秒", es: "{drive}: {0} registros, {1} en total ({2}), {3:.2}s", recs.len(), human(tot.get(&ROOT).copied().unwrap_or(0)), if logical { t!("логический", "logical", ja: "論理", pt: "lógico", zh: "逻辑大小", es: "lógico") } else { t!("на диске", "on disk", ja: "ディスク上", pt: "no disco", zh: "占用空间", es: "en disco") }, t.elapsed().as_secs_f32()));
+        println!("{}", tf!("\nПапки (глубина <= {depth}):", "\nFolders (depth <= {depth}):", ja: "\nフォルダー (深さ <= {depth}):", pt: "\nPastas (profundidade <= {depth}):", zh: "\n文件夹（深度 <= {depth}）：", es: "\nCarpetas (profundidad <= {depth}):"));
         for (p, s) in &d { println!("{:>10}  {p}", human(*s)); }
-        println!("{}", t!("\nФайлы:", "\nFiles:", ja: "\nファイル:", pt: "\nArquivos:", zh: "\n文件："));
+        println!("{}", t!("\nФайлы:", "\nFiles:", ja: "\nファイル:", pt: "\nArquivos:", zh: "\n文件：", es: "\nArchivos:"));
         for (p, s) in &f { println!("{:>10}  {p}", human(*s)); }
     }
 }

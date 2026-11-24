@@ -104,11 +104,11 @@ pub fn merge(recs: &mut HashMap<u32, Rec>, id: u32, r: Rec) {
 pub fn scan(drive: char) -> Result<HashMap<u32, Rec>, String> {
     let path: Vec<u16> = format!("\\\\.\\{drive}:").encode_utf16().chain([0]).collect();
     let h = unsafe { CreateFileW(path.as_ptr(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, ptr::null(), OPEN_EXISTING, 0, ptr::null_mut()) };
-    if h == INVALID_HANDLE_VALUE { return Err(tf!("не удалось открыть том {0}: (нужны права администратора), код {1}", "cannot open volume {0}: (run as administrator), error {1}", ja: "ボリューム {0}: を開けません (管理者として実行してください)、エラー {1}", pt: "não foi possível abrir o volume {0}: (execute como administrador), erro {1}", zh: "无法打开卷 {0}:（请以管理员身份运行），错误 {1}", drive, unsafe { GetLastError() })); }
+    if h == INVALID_HANDLE_VALUE { return Err(tf!("не удалось открыть том {0}: (нужны права администратора), код {1}", "cannot open volume {0}: (run as administrator), error {1}", ja: "ボリューム {0}: を開けません (管理者として実行してください)、エラー {1}", pt: "não foi possível abrir o volume {0}: (execute como administrador), erro {1}", zh: "无法打开卷 {0}:（请以管理员身份运行），错误 {1}", es: "no se puede abrir el volumen {0}: (ejecuta como administrador), error {1}", drive, unsafe { GetLastError() })); }
     let mut vd: NTFS_VOLUME_DATA_BUFFER = unsafe { std::mem::zeroed() };
     let mut n = 0u32;
     let ok = unsafe { DeviceIoControl(h, FSCTL_GET_NTFS_VOLUME_DATA, ptr::null(), 0, &mut vd as *mut _ as _, size_of::<NTFS_VOLUME_DATA_BUFFER>() as u32, &mut n, ptr::null_mut()) };
-    if ok == 0 { return Err(tf!("{0}: не NTFS (код {1})", "{0}: is not NTFS (error {1})", ja: "{0}: は NTFS ではありません (エラー {1})", pt: "{0}: não é NTFS (erro {1})", zh: "{0}: 不是 NTFS（错误 {1}）", drive, unsafe { GetLastError() })); }
+    if ok == 0 { return Err(tf!("{0}: не NTFS (код {1})", "{0}: is not NTFS (error {1})", ja: "{0}: は NTFS ではありません (エラー {1})", pt: "{0}: não é NTFS (erro {1})", zh: "{0}: 不是 NTFS（错误 {1}）", es: "{0}: no es NTFS (error {1})", drive, unsafe { GetLastError() })); }
     let (rs, cl) = (vd.BytesPerFileRecordSegment as usize, vd.BytesPerCluster as u64);
     // Record 0 is $MFT itself: its data runs say where the whole table lives, then we read it in big chunks.
     let mut out = vec![0u8; 12 + rs];
@@ -131,7 +131,7 @@ pub fn scan(drive: char) -> Result<HashMap<u32, Rec>, String> {
             let want = len.min(buf.len() as u64) as usize;
             let mut got = 0u32;
             let ok = unsafe { SetFilePointerEx(h, pos, ptr::null_mut(), FILE_BEGIN) != 0 && ReadFile(h, buf.as_mut_ptr() as _, want as u32, &mut got, ptr::null_mut()) != 0 };
-            if !ok || got as usize != want { return Err(tf!("не удалось прочитать MFT на байте {0}, код {1}", "reading the MFT failed at byte {0}, error {1}", ja: "バイト {0} で MFT を読めません、エラー {1}", pt: "falha ao ler a MFT no byte {0}, erro {1}", zh: "读取 MFT 在字节 {0} 处失败，错误 {1}", pos, unsafe { GetLastError() })); }
+            if !ok || got as usize != want { return Err(tf!("не удалось прочитать MFT на байте {0}, код {1}", "reading the MFT failed at byte {0}, error {1}", ja: "バイト {0} で MFT を読めません、エラー {1}", pt: "falha ao ler a MFT no byte {0}, erro {1}", zh: "读取 MFT 在字节 {0} 处失败，错误 {1}", es: "falló la lectura de la MFT en el byte {0}, error {1}", pos, unsafe { GetLastError() })); }
             for c in buf[..want].chunks_exact_mut(rs) {
                 seen += 1;
                 magic += (&c[..4] == b"FILE") as u32;
