@@ -315,22 +315,36 @@ unsafe fn shrink(ic: HICON, px: i32) -> HICON {
     }
 }
 
-/// The icon at `px` from its two bitmaps: colour + alpha (or the mask when it has no alpha) averaged down, mask rebuilt
-/// from what is left transparent.
+/// The icon at `px` from its two bitmaps: colour + alpha (or the mask when the colour bitmap has no alpha) averaged
+/// down, mask rebuilt from what is left transparent.
 unsafe fn resample(ii: &ICONINFO, sw: i32, sh: i32, px: i32) -> HICON {
     unsafe {
         let Some(mut src) = bgra(ii.hbmColor, sw, sh) else { return null_mut() };
-        // An icon without an alpha channel carries its shape in the mask: bit set = transparent.
-        if !src.iter().any(|p| p >> 24 != 0) {
+        // Graded per-pixel alpha (anything between 0 and 255) already carries the shape. A colour bitmap whose alpha
+        // is flat says nothing about it: all zero is what an icon with no alpha channel comes back from `GetDIBits`,
+        // and all 255 is what some exporters store over a classic mask. In both cases the shape lives in the AND mask
+        // (bit set = transparent) and dropping it would turn the icon into an opaque square.
+        let no_alpha = src.iter().all(|p| p >> 24 == 0);
+        let flat_opaque = src.iter().all(|p| p >> 24 == 255);
+        if no_alpha || flat_opaque {
             match bgra(ii.hbmMask, sw, sh) {
                 Some(mask) => {
                     for (p, m) in src.iter_mut().zip(&mask) {
-                        *p = if m & 0x00FF_FFFF != 0 { *p & 0x00FF_FFFF } else { *p | 0xFF00_0000 };
+                        if m & 0x00FF_FFFF != 0 {
+                            *p = 0; // transparent: no colour left to average into the neighbours
+                        } else if no_alpha {
+                            *p |= 0xFF00_0000; // opaque in the mask, but the colour bitmap carried no alpha
+                        }
                     }
                 }
-                None => src.iter_mut().for_each(|p| *p |= 0xFF00_0000), // neither alpha nor mask: opaque
+                // neither alpha nor mask: the icon is a solid square
+                None if no_alpha => src.iter_mut().for_each(|p| *p |= 0xFF00_0000),
+                None => {}
             }
         }
+        // `downscale` divides the colour by the alpha sum, so the output keeps the representation it came in with:
+        // an alpha-premultiplied bitmap stays premultiplied and a straight one stays straight. `CreateIconIndirect`
+        // is fed the same way the source HICON was stored, so no extra (un)premultiply is needed here.
         let dst = downscale(&src, sw, sh, px);
         icon_from_bgra(&dst, px)
     }
@@ -403,10 +417,22 @@ fn downscale(src: &[u32], sw: i32, sh: i32, px: i32) -> Vec<u32> {
             }
             let a = asum / wsum;
             let (r, g, b) = if asum > 0.0 { (r / asum, g / asum, b / asum) } else { (0.0, 0.0, 0.0) };
-            dst[dy * px + dx] = (a.round() as u32) << 24 | (b.round() as u32) << 16 | (g.round() as u32) << 8 | r.round() as u32;
+            // 0xAARRGGBB: blue in bits 0..8, red in bits 16..24 - the same word `bgra` hands out (a 32-bpp DIB
+            // stores its bytes as B, G, R, A) and `icon_from_bgra` writes back. Packing by position instead of by
+            // name swaps red and blue, which turns every warm icon (Firefox, AMD, the Explorer folder) into its
+            // complement while a dark grey one (Steam) still looks plausible.
+            dst[dy * px + dx] = (a.round() as u32) << 24 | (r.round() as u32) << 16 | (g.round() as u32) << 8 | b.round() as u32;
         }
     }
     dst
+}
+
+/// A `BITMAPINFO` with room for the two-entry colour table a 1-bpp DIB section needs (`BITMAPINFO` itself declares a
+/// single `RGBQUAD`, while `CreateDIBSection` reads one entry per palette index - two at 1 bpp).
+#[repr(C)]
+struct MonoBmi {
+    header: BITMAPINFOHEADER,
+    colors: [RGBQUAD; 2],
 }
 
 /// An icon of `side` x `side` from BGRA pixels (top row first): a 32-bit DIB section plus the AND mask that marks the
@@ -438,12 +464,23 @@ unsafe fn icon_from_bgra(px: &[u32], side: i32) -> HICON {
             let src = px.as_ptr().add((n - 1 - y) * n) as *const u8; // memory row 0 is the bottom of the picture
             std::ptr::copy_nonoverlapping(src, dst, n * 4);
         }
-        // 1 bit per pixel, rows padded to a DWORD: bit 1 = transparent, the way an icon's AND mask reads.
-        let stride = (((side + 31) / 32) * 4) as usize;
-        bi.bmiHeader.biBitCount = 1;
-        bi.bmiHeader.biClrUsed = 0;
+        // The AND mask: 1 bit per pixel, rows padded to a DWORD and stored bottom-up like the colour section so the
+        // two stay aligned. 1 = transparent (the destination is kept), 0 = paint the colour. A 1-bpp DIB section
+        // needs its two-entry colour table present: `BITMAPINFO` only declares one entry, so passing it as is makes
+        // `CreateDIBSection` read a palette word off the end of the struct - and a mask that maps index 1 to black
+        // reads as inverted. `MonoBmi` carries the table, so 1 is always white ("keep the destination").
+        let stride = ((side + 31) / 32) as usize * 4;
+        let mut mi: MonoBmi = zeroed();
+        mi.header.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        mi.header.biWidth = side;
+        mi.header.biHeight = side; // bottom-up
+        mi.header.biPlanes = 1;
+        mi.header.biBitCount = 1;
+        mi.header.biCompression = BI_RGB;
+        mi.colors[0] = RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 };
+        mi.colors[1] = RGBQUAD { rgbBlue: 255, rgbGreen: 255, rgbRed: 255, rgbReserved: 0 };
         let mut mbits: *mut std::ffi::c_void = null_mut();
-        let mask = CreateDIBSection(null_mut(), &bi, DIB_RGB_COLORS, &mut mbits, null_mut(), 0);
+        let mask = CreateDIBSection(null_mut(), &mi as *const MonoBmi as *const BITMAPINFO, DIB_RGB_COLORS, &mut mbits, null_mut(), 0);
         if mask.is_null() || mbits.is_null() {
             if !mask.is_null() {
                 DeleteObject(mask);
@@ -467,5 +504,29 @@ unsafe fn icon_from_bgra(px: &[u32], side: i32) -> HICON {
         DeleteObject(mask);
         DeleteObject(color);
         ic
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::downscale;
+
+    /// `downscale` hands out 0xAARRGGBB words: an opaque red pixel must stay in bits 16..24. Packing blue there
+    /// instead (the bug this guards against) swaps red and blue in every resampled icon.
+    #[test]
+    fn downscale_keeps_the_channel_order() {
+        // Two source rows of one pixel each, bottom row first (the order `bgra` hands out): blue below red.
+        let src = [0xFF00_00FFu32, 0xFFFF_0000u32]; // rows: blue, then red
+        let dst = downscale(&src, 1, 2, 1);
+        // the single target pixel averages both: alpha 255, red 128 in bits 16..24, blue 128 in bits 0..8
+        assert_eq!(dst[0], 0xFF80_0080);
+    }
+
+    /// A fully transparent source pixel contributes no colour, so a lone transparent area stays transparent and
+    /// black instead of picking up whatever colour the bitmap stored underneath the mask.
+    #[test]
+    fn downscale_leaves_transparent_pixels_empty() {
+        let dst = downscale(&[0x00FF_FFFFu32], 1, 1, 1);
+        assert_eq!(dst[0], 0);
     }
 }
