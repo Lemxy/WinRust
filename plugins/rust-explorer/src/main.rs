@@ -661,13 +661,9 @@ unsafe fn activate(h: HWND, p: PathBuf, is_dir: bool) {
         unsafe { openwith::open(h, &p) };
     }
     else {
-        // like Explorer: the exe starts in its own folder (games look for files next to it)
-        let dir = p.parent().map(|d| w(&d.to_string_lossy()));
-        let r = unsafe { ShellExecuteW(h, ptr::null(), w(&p.to_string_lossy()).as_ptr(), ptr::null(), dir.as_ref().map_or(ptr::null(), |d| d.as_ptr()), SW_SHOWNORMAL) };
-        // an association that points nowhere (a removed app answers <= 32): the same picker beats the broken one
-        if r as isize <= 32 {
-            unsafe { openwith::open(h, &p) };
-        }
+        // The shell is not asked to open anything: with a broken association ShellExecuteW ends in OpenWith.exe, the
+        // picker that cannot render without explorer. openwith starts the handler itself, or asks with our dialog.
+        unsafe { openwith::open_file(h, &p) };
     }
 }
 

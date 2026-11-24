@@ -566,12 +566,80 @@ unsafe fn ensure_command(progid: &str, exe: &Path) {
     RegCloseKey(k);
 }
 
-/// Starts `exe` with `file` as its argument, in the file's own folder (an app that looks for files next to the
-/// document finds them). The path is quoted: "C:\Program Files\..." is one argv entry, not two.
-unsafe fn launch(exe: &Path, file: &Path) -> bool {
-    let app = wc(&exe.to_string_lossy());
-    let cmd = format!("\"{}\" \"{}\"", exe.display(), file.display());
-    let mut line: Vec<u16> = cmd.encode_utf16().chain([0]).collect();
+/// The arguments of a `shell\open\command` line, with the document where the command expects it (`%1`, `%L`), or
+/// appended when the line names no placeholder at all.
+fn args_after(cmd: &str, file: &Path) -> String {
+    let quoted = format!("\"{}\"", file.display());
+    let s = cmd.trim();
+    let rest = if let Some(r) = s.strip_prefix('"') {
+        match r.find('"') {
+            Some(i) => &r[i + 1..],
+            None => "",
+        }
+    } else {
+        let lower = s.to_ascii_lowercase();
+        match lower.find(".exe") {
+            Some(i) => &s[i + 4..],
+            None => "",
+        }
+    };
+    let mut args = rest.trim().to_string();
+    let mut filled = false;
+    // the quoted form first: `"%1"` must not become `""C:\path""`
+    for placeholder in ["\"%1\"", "\"%L\"", "\"%l\"", "\"%*\""] {
+        if args.contains(placeholder) {
+            args = args.replace(placeholder, &quoted);
+            filled = true;
+        }
+    }
+    for placeholder in ["%1", "%L", "%l", "%*"] {
+        if args.contains(placeholder) {
+            args = args.replace(placeholder, &quoted);
+            filled = true;
+        }
+    }
+    if filled {
+        return args;
+    }
+    if args.is_empty() {
+        quoted
+    } else {
+        format!("{args} {quoted}")
+    }
+}
+
+/// The handler "Abrir" starts: the type's ProgID (the user's own pick first, then the class default), its command,
+/// and the exe from it.
+unsafe fn handler_for(file: &Path) -> Option<(PathBuf, String)> {
+    let ext = file.extension()?;
+    let key = format!(".{}", ext.to_string_lossy().to_lowercase());
+    // a UserChoice left behind by an uninstalled app has no command: keep looking instead of giving up
+    let (_, cmd) = [user_choice(&key), class_progid(&key)]
+        .into_iter()
+        .flatten()
+        .find_map(|p| command_of(&p).map(|c| (p, c)))?;
+    let exe = resolve_exe(&parse_exe(&cmd)?);
+    Some((exe, args_after(&cmd, file)))
+}
+
+/// The message shown when a program cannot be started, with the Windows code (or the path that was not found).
+fn start_error(detail: &str) -> String {
+    format!(
+        "{}{detail}",
+        t!("Не удалось запустить программу", "Could not start the program", ja: "プログラムを起動できませんでした", pt: "Não foi possível iniciar o programa", zh: "无法启动该程序")
+    )
+}
+
+/// CreateProcessW with the file's folder as the working directory; `args` is already quoted. The exe is resolved first
+/// (`%SystemRoot%...`, a bare name), and a failure comes back as text so the caller can show it.
+unsafe fn start(exe: &Path, args: &str, file: &Path) -> Result<(), String> {
+    let app = resolve_exe(exe);
+    if !app.is_file() {
+        return Err(start_error(&format!(": {}", app.display())));
+    }
+    let app_w = wc(&app.to_string_lossy());
+    let line = format!("\"{}\" {args}", app.display());
+    let mut cmd: Vec<u16> = line.encode_utf16().chain([0]).collect();
     let dir = file.parent().map(|d| wc(&d.to_string_lossy()));
     let mut si: STARTUPINFOW = zeroed();
     si.cb = size_of::<STARTUPINFOW>() as u32;
@@ -579,8 +647,8 @@ unsafe fn launch(exe: &Path, file: &Path) -> bool {
     si.wShowWindow = SW_SHOWNORMAL as u16;
     let mut pi: PROCESS_INFORMATION = zeroed();
     let ok = CreateProcessW(
-        app.as_ptr(),
-        line.as_mut_ptr(),
+        app_w.as_ptr(),
+        cmd.as_mut_ptr(),
         ptr::null(),
         ptr::null(),
         0,
@@ -590,24 +658,34 @@ unsafe fn launch(exe: &Path, file: &Path) -> bool {
         &si,
         &mut pi,
     ) != 0;
-    if ok {
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+    if !ok {
+        return Err(start_error(&format!(" (error {})", GetLastError())));
     }
-    ok
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    Ok(())
+}
+
+/// What a double click and our own "Abrir" do: the type's handler, started here. The shell is never asked - with a
+/// broken association `ShellExecute` lands in `OpenWith.exe`, the picker that cannot render, and that must not happen
+/// from any action of this program.
+pub unsafe fn open_file(owner: HWND, file: &Path) {
+    if !file.is_dir() && associated(file) {
+        if let Some((exe, args)) = handler_for(file) {
+            match start(&exe, &args, file) {
+                Ok(()) => return,
+                // registered but unusable: say so. Falling back to the shell would show the Windows picker.
+                Err(e) => {
+                    MessageBoxW(owner, wc(&e).as_ptr(), wc("WinRust Explorer").as_ptr(), MB_ICONWARNING);
+                    return;
+                }
+            }
+        }
+    }
+    open(owner, file);
 }
 
 // ---------------------------------------------------------------- the dialog
-
-/// What the picker came back with.
-enum Pick {
-    /// Start this exe; the bool is "always use this app".
-    App(PathBuf, Option<String>, bool),
-    /// "Search another app...": the caller falls back to the classic picker.
-    Search,
-    /// Dismissed.
-    None,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Hit {
@@ -622,15 +700,18 @@ enum Hit {
 struct Dlg {
     apps: Vec<App>,
     icons: Vec<HICON>, // from winrust_common::icon::best: cached and shared, never destroyed
+    /// The document: the working directory of whatever we start, and what "always use" binds the type to.
+    file: PathBuf,
     file_name: String,
     title: String,
-    search: String,
     always_text: String,
     open_text: String,
     cancel_text: String,
     browse_text: String,
-    n: usize, // apps.len() + the "search another app" row
-    /// Rows (search row included) that fit on this monitor: the cap a browsed app has to respect.
+    /// Shown in place of the rows when no application is registered for the type.
+    empty: String,
+    n: usize, // apps.len(), or 1 when the empty message needs a row
+    /// Rows that fit on this monitor: the cap a browsed app has to respect.
     rows_fit: usize,
     w: i32,
     head: i32,
@@ -643,7 +724,8 @@ struct Dlg {
     /// The Win32 file dialog is up: the deactivation it causes must not close this window.
     modal: bool,
     always: bool,
-    chosen: Option<usize>,
+    /// Why the last Abrir did not start anything: drawn in the dialog, which stays open.
+    error: Option<String>,
     done: bool,
     px: Vec<u32>, // the blurred screen behind the window, taken before it is shown
     fonts: [HFONT; 4], // title, body, small, glyph
@@ -769,18 +851,10 @@ unsafe fn paint(h: HWND, d: &Dlg) {
         ui::text(dc, &app.hint, RECT { left: text_left, top: r.top + sc(24), right: r.right - sc(10), bottom: r.bottom - sc(2) }, p.dim, DT_LEFT);
         SelectObject(dc, old);
     }
-    // the last row is always "Search another app...": the classic picker, the one place it still makes sense
-    {
-        let i = d.apps.len();
-        let r = row_rect(d, i);
-        if i == d.sel {
-            ui::fill(dc, r, ui::mix(ui::listbg(), p.accent, 0.22), sc(7));
-        } else if d.hover == Hit::Row(i) {
-            ui::fill(dc, r, p.hover, sc(7));
-        }
-        glyph(dc, d.fonts[3], "\u{E721}", RECT { left: r.left + sc(10), top: r.top, right: r.left + sc(10) + sc(ICON), bottom: r.bottom }, p.dim);
+    // no handler for the type: say so instead of offering Windows' picker, which is the thing this dialog replaces
+    if d.apps.is_empty() {
         SelectObject(dc, d.fonts[1]);
-        ui::text(dc, &d.search, RECT { left: text_left, top: r.top, right: r.right - sc(10), bottom: r.bottom }, p.text, DT_LEFT);
+        ui::text(dc, &d.empty, RECT { left: text_left, top: d.head, right: cr.right - sc(20), bottom: d.head + sc(ROW_H) - sc(2) }, p.dim, DT_LEFT);
     }
 
     // "always use this app": a rounded box, the accent when it is on
@@ -793,6 +867,14 @@ unsafe fn paint(h: HWND, d: &Dlg) {
     }
     SelectObject(dc, d.fonts[1]);
     ui::text(dc, &d.always_text, RECT { left: check.right + sc(10), top: d.check_row.top, right: d.check_row.right, bottom: d.check_row.bottom }, p.text, DT_LEFT);
+
+    // why Abrir did not start anything: in the strip between the checkbox and the buttons, in red, and the dialog
+    // stays open (this is the visible error that replaces Windows' picker)
+    if let Some(err) = &d.error {
+        SelectObject(dc, d.fonts[2]);
+        let r = RECT { left: sc(22), top: d.check_row.bottom, right: cr.right - sc(20), bottom: d.check_row.bottom + sc(16) };
+        ui::text(dc, err, r, winrust_common::style::BAD, DT_LEFT);
+    }
 
     // the buttons: Browse on the left in the plain surface of Cancel, Open in the accent
     let browse_bg = if d.hover == Hit::Browse { ui::mix(p.bg, p.text, 0.16) } else { ui::mix(p.bg, p.text, 0.08) };
@@ -808,6 +890,26 @@ unsafe fn paint(h: HWND, d: &Dlg) {
     ui::text(dc, &d.cancel_text, d.cancel_btn, p.text, DT_CENTER);
     SelectObject(dc, old);
     EndPaint(h, &ps);
+}
+
+/// Abrir / Enter / double click. Starts the selected app with the document; when Windows refuses, the reason is drawn
+/// in the dialog and it stays open. "Always use" is written only for an app that really started.
+unsafe fn choose(h: HWND, d: &mut Dlg) {
+    if d.apps.is_empty() || d.sel >= d.apps.len() {
+        return; // nothing to start: the row already says so, and "Browse..." is right there
+    }
+    d.error = None;
+    let (exe, progid) = (d.apps[d.sel].exe.clone(), d.apps[d.sel].progid.clone());
+    let args = format!("\"{}\"", d.file.display());
+    if let Err(e) = start(&exe, &args, &d.file) {
+        d.error = Some(e);
+        InvalidateRect(h, ptr::null(), 0);
+        return;
+    }
+    if d.always {
+        remember(&d.file, &exe, progid);
+    }
+    d.done = true;
 }
 
 unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize {
@@ -852,10 +954,7 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             let dbl = d.dbl;
             d.dbl = false;
             match hit(d, x, y) {
-                Hit::Open => {
-                    d.chosen = Some(d.sel);
-                    d.done = true;
-                }
+                Hit::Open => choose(h, d),
                 Hit::Cancel => d.done = true,
                 Hit::Browse => {
                     // the file dialog deactivates this window: the modal flag keeps that from closing it
@@ -871,10 +970,10 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
                 Hit::Row(i) => {
                     if dbl {
                         d.sel = i;
-                        d.chosen = Some(i);
-                        d.done = true;
+                        choose(h, d);
                     } else if d.sel != i {
                         d.sel = i;
+                        d.error = None; // a new choice clears the last failure
                         InvalidateRect(h, ptr::null(), 0);
                     }
                 }
@@ -894,10 +993,7 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             let k = wp as u16;
             match k {
                 VK_ESCAPE => d.done = true,
-                VK_RETURN => {
-                    d.chosen = Some(d.sel);
-                    d.done = true;
-                }
+                VK_RETURN => choose(h, d),
                 VK_SPACE => {
                     d.always = !d.always;
                     InvalidateRect(h, ptr::null(), 0);
@@ -1004,13 +1100,14 @@ unsafe fn browse(h: HWND, d: &mut Dlg) {
     d.apps.retain(|a| a.exe.to_string_lossy().to_lowercase() != lower);
     let name = file_description(&exe);
     d.apps.insert(0, app_of(exe, name, None));
-    // one row is always "search another app": the cap keeps the buttons reachable on this monitor
-    d.apps.truncate(d.rows_fit.saturating_sub(1).clamp(1, MAX_APPS));
+    // the cap keeps the buttons reachable on this monitor
+    d.apps.truncate(d.rows_fit.clamp(1, MAX_APPS));
     d.icons = d.apps.iter().map(|a| winrust_common::icon::best(&a.exe, sc(ICON))).collect();
-    d.n = d.apps.len() + 1;
+    d.n = d.apps.len().max(1);
     d.sel = 0;
     d.hover = Hit::None;
     d.dbl = false;
+    d.error = None;
 
     let mut wr: RECT = zeroed();
     GetWindowRect(h, &mut wr);
@@ -1061,7 +1158,7 @@ unsafe fn ensure_class() {
 }
 
 /// Shows the picker for `file`, centred on `owner`'s monitor, and returns what was picked.
-unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
+unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) {
     ensure_class();
     // centre on the monitor the user is working on: the owner may be the desktop window (it spans every monitor, so
     // MonitorFromWindow picks one arbitrarily) and the point is that the dialog shows where the click happened
@@ -1073,17 +1170,19 @@ unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
     // a short screen (or a big DPI scale) shows fewer rows: the buttons must stay reachable
     let fixed = sc(HEAD) + sc(48) + sc(56);
     let fit = (((area.bottom - area.top) - fixed) / sc(ROW_H)).max(1) as usize;
-    apps.truncate(fit.saturating_sub(1)); // one of the rows is "search another app"
-    let n = apps.len() + 1;
+    apps.truncate(fit);
+    // one row even when empty: the message about the missing handler needs a line
+    let n = apps.len().max(1);
     let w = sc(WIN_W);
     let head = sc(HEAD);
     let icons: Vec<HICON> = apps.iter().map(|a| unsafe { winrust_common::icon::best(&a.exe, sc(ICON)) }).collect();
     let mut d = Box::new(Dlg {
         apps,
         icons,
+        file: file.to_path_buf(),
         file_name: file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         title: t!("Выберите приложение", "Choose an application", ja: "アプリを選択", pt: "Escolher um aplicativo", zh: "选择应用").to_string(),
-        search: t!("Поиск другого приложения…", "Search another app…", ja: "別のアプリを探す…", pt: "Procurar outro aplicativo…", zh: "查找其他应用…").to_string(),
+        empty: t!("Для этого типа не зарегистрировано ни одного приложения", "No application is registered for this type", ja: "この種類に関連付けられたアプリはありません", pt: "Nenhum aplicativo está registrado para este tipo", zh: "此类型没有已注册的应用").to_string(),
         always_text: t!("Всегда использовать это приложение", "Always use this app", ja: "常にこのアプリを使用する", pt: "Usar sempre este aplicativo", zh: "始终使用此应用").to_string(),
         open_text: t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开").to_string(),
         cancel_text: t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消").to_string(),
@@ -1098,7 +1197,7 @@ unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
         dbl: false,
         modal: false,
         always: false,
-        chosen: None,
+        error: None,
         done: false,
         px: Vec::new(),
         fonts: [
@@ -1134,7 +1233,7 @@ unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
         ptr::null(),
     );
     if hwnd.is_null() {
-        return Pick::None; // the Box drops here: its fonts go with it
+        return; // the Box drops here: its fonts go with it
     }
     let raw = Box::into_raw(d);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
@@ -1163,24 +1262,16 @@ unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
         }
     }
     OPEN.set(ptr::null_mut());
-    // an explicit borrow (not through `(*raw).field.method()`, which the implicit-autoref lint rejects): the box is
-    // still ours until Box::from_raw below
-    let dlg: &Dlg = &*raw;
-    let pick = match dlg.chosen {
-        Some(i) if i < dlg.apps.len() => Pick::App(dlg.apps[i].exe.clone(), dlg.apps[i].progid.clone(), dlg.always),
-        Some(_) => Pick::Search,
-        None => Pick::None,
-    };
     DestroyWindow(hwnd);
     drop(Box::from_raw(raw)); // the Drop impl deletes the fonts; the icons stay in the shared cache
     // the owner gets the keyboard back (the dialog had it)
     if !owner.is_null() && IsWindow(owner) != 0 {
         SetForegroundWindow(owner);
     }
-    pick
 }
 
-/// Opens the picker for `file`: the chosen app, or the classic picker through "Search another app...".
+/// Opens the picker for `file`, and nothing else: the chosen app is started by the dialog itself (`choose`), so the
+/// classic Windows picker - which cannot render here - is never involved.
 pub unsafe fn open(owner: HWND, file: &Path) {
     if file.is_dir() {
         return;
@@ -1191,27 +1282,12 @@ pub unsafe fn open(owner: HWND, file: &Path) {
         SetForegroundWindow(cur);
         return;
     }
-    match dialog(owner, file, candidates(file)) {
-        Pick::App(exe, progid, always) => {
-            if always {
-                remember(file, &exe, progid);
-            }
-            if !launch(&exe, file) {
-                let msg = t!("Не удалось запустить приложение", "Could not start the application", ja: "アプリを起動できませんでした", pt: "Não foi possível iniciar o aplicativo", zh: "无法启动该应用");
-                MessageBoxW(owner, wc(msg).as_ptr(), wc("WinRust Explorer").as_ptr(), MB_ICONWARNING);
-            }
-        }
-        // the documented last resort: Windows' classic picker is a plain Win32 window and works without explorer
-        Pick::Search => {
-            let _ = std::process::Command::new("rundll32.exe").args(["shell32.dll,OpenAs_RunDLL", &file.to_string_lossy()]).spawn();
-        }
-        Pick::None => {}
-    }
+    dialog(owner, file, candidates(file));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_exe;
+    use super::{args_after, parse_exe};
     use std::path::PathBuf;
 
     #[test]
@@ -1220,5 +1296,14 @@ mod tests {
         assert_eq!(parse_exe(r"C:\Windows\notepad.exe %1"), Some(PathBuf::from(r"C:\Windows\notepad.exe")));
         assert_eq!(parse_exe("notepad.exe"), Some(PathBuf::from("notepad.exe")));
         assert_eq!(parse_exe("   "), None);
+    }
+
+    #[test]
+    fn puts_the_document_where_the_command_expects_it() {
+        let f = PathBuf::from(r"C:\x\a b.txt");
+        assert_eq!(args_after(r#""C:\App\app.exe" "%1""#, &f), r#""C:\x\a b.txt""#);
+        assert_eq!(args_after(r"%SystemRoot%\system32\NOTEPAD.EXE %1", &f), r#""C:\x\a b.txt""#);
+        assert_eq!(args_after(r#""C:\App\app.exe" /n "%1""#, &f), r#"/n "C:\x\a b.txt""#);
+        assert_eq!(args_after(r#""C:\App\app.exe""#, &f), r#""C:\x\a b.txt""#);
     }
 }
