@@ -97,7 +97,7 @@ enum Op {
 }
 
 /// The languages the drop-down offers, in the order it shows them.
-const LANGS: [winrust_common::Lang; 5] = [winrust_common::Lang::En, winrust_common::Lang::Ru, winrust_common::Lang::Ja, winrust_common::Lang::Pt, winrust_common::Lang::Zh];
+const LANGS: [winrust_common::Lang; 6] = winrust_common::Lang::ALL;
 
 fn lang_text() -> String {
     lang!().name().to_string()
@@ -231,7 +231,7 @@ fn monitor_text() -> String {
 
 fn topo_text() -> String {
     if display::connected() < 2 {
-        return t!("Один экран", "Single display", ja: "単一ディスプレイ", pt: "Tela única", zh: "单显示器").into();
+        return t!("Один экран", "Single display", ja: "単一ディスプレイ", pt: "Tela única", zh: "单显示器", es: "Una sola pantalla").into();
     }
     display::topology().map_or("?".into(), |t| topo_name(t).into())
 }
@@ -239,17 +239,17 @@ fn topo_text() -> String {
 fn topo_name(t: display::Topo) -> &'static str {
     use display::Topo::*;
     match t {
-        Extend => t!("Расширить", "Extend", ja: "拡張", pt: "Estender", zh: "扩展"),
-        Duplicate => t!("Повторять", "Duplicate", ja: "複製", pt: "Duplicar", zh: "复制"),
-        PcOnly => t!("Только этот ПК", "PC screen only", ja: "PC 画面のみ", pt: "Somente a tela do PC", zh: "仅电脑屏幕"),
-        SecondOnly => t!("Только второй экран", "Second screen only", ja: "2 番目の画面のみ", pt: "Somente a segunda tela", zh: "仅第二屏幕"),
+        Extend => t!("Расширить", "Extend", ja: "拡張", pt: "Estender", zh: "扩展", es: "Extender"),
+        Duplicate => t!("Повторять", "Duplicate", ja: "複製", pt: "Duplicar", zh: "复制", es: "Duplicar"),
+        PcOnly => t!("Только этот ПК", "PC screen only", ja: "PC 画面のみ", pt: "Somente a tela do PC", zh: "仅电脑屏幕", es: "Solo la pantalla del PC"),
+        SecondOnly => t!("Только второй экран", "Second screen only", ja: "2 番目の画面のみ", pt: "Somente a segunda tela", zh: "仅第二屏幕", es: "Solo la segunda pantalla"),
     }
 }
 
 fn primary_text() -> String {
     match display::monitor_info() {
-        Some((_, _, _, true)) => t!("Этот дисплей основной", "This is the main display", ja: "これがメイン ディスプレイです", pt: "Esta é a tela principal", zh: "这是主显示器").into(),
-        Some(_) => t!("Сделать основным", "Make main", ja: "メインにする", pt: "Tornar principal", zh: "设为主显示器").into(),
+        Some((_, _, _, true)) => t!("Этот дисплей основной", "This is the main display", ja: "これがメイン ディスプレイです", pt: "Esta é a tela principal", zh: "这是主显示器", es: "Esta es la pantalla principal").into(),
+        Some(_) => t!("Сделать основным", "Make main", ja: "メインにする", pt: "Tornar principal", zh: "设为主显示器", es: "Convertir en principal").into(),
         None => "?".into(),
     }
 }
@@ -268,7 +268,7 @@ fn orient_text() -> String {
 }
 
 fn orient_names() -> [&'static str; 4] {
-    [t!("Альбомная", "Landscape", ja: "横", pt: "Paisagem", zh: "横向"), t!("Книжная", "Portrait", ja: "縦", pt: "Retrato", zh: "纵向"), t!("Альбомная (перевёрнутая)", "Landscape (flipped)", ja: "横 (反転)", pt: "Paisagem (invertida)", zh: "横向（翻转）"), t!("Книжная (перевёрнутая)", "Portrait (flipped)", ja: "縦 (反転)", pt: "Retrato (invertido)", zh: "纵向（翻转）")]
+    [t!("Альбомная", "Landscape", ja: "横", pt: "Paisagem", zh: "横向", es: "Horizontal"), t!("Книжная", "Portrait", ja: "縦", pt: "Retrato", zh: "纵向", es: "Vertical"), t!("Альбомная (перевёрнутая)", "Landscape (flipped)", ja: "横 (反転)", pt: "Paisagem (invertida)", zh: "横向（翻转）", es: "Horizontal (volteada)"), t!("Книжная (перевёрнутая)", "Portrait (flipped)", ja: "縦 (反転)", pt: "Retrato (invertido)", zh: "纵向（翻转）", es: "Vertical (volteada)")]
 }
 
 /// Rows whose value is picked from a list (the others act on a click). Screen modes need a second screen.
@@ -344,16 +344,17 @@ unsafe fn choose(hwnd: HWND, op: Op, i: usize) {
             if let Some(&l) = LANGS.get(i) {
                 if l != lang!() {
                     let written = winrust_common::set_lang(l);
-                    // the titles and rows of this window are read again right away; the other programs read lang.txt when they start
+                    // the titles and rows of this window are read again right away; the others follow on the broadcast
                     APP.with_borrow_mut(|a| a.pages = pages());
                     unsafe { refresh_page(hwnd) };
                     note(if written {
                         t!(
-                            "Язык изменён. Перезапустите программы WinRust (или выйдите из системы), чтобы он применился везде.",
-                            "Language changed. Restart the WinRust programs (or sign out) to apply it everywhere.",
-                            ja: "言語を変更しました。すべてに反映するには WinRust の各プログラムを再起動 (またはサインアウト) してください。",
-                            pt: "Idioma alterado. Reinicie os programas da WinRust (ou saia da sessão) para aplicá-lo em todos.",
-                            zh: "语言已切换。请重启 WinRust 程序（或注销后重新登录），让所有程序都生效。"
+                            "Язык изменён: открытые окна WinRust переключаются сразу.",
+                            "Language changed: open WinRust windows switch right away.",
+                            ja: "言語を変更しました。開いている WinRust のウィンドウもすぐに切り替わります。",
+                            pt: "Idioma alterado: as janelas abertas da WinRust mudam na hora.",
+                            zh: "语言已切换：已打开的 WinRust 窗口会立即切换。",
+                            es: "Idioma cambiado: las ventanas abiertas de WinRust cambian al instante."
                         )
                     } else {
                         t!(
@@ -361,7 +362,8 @@ unsafe fn choose(hwnd: HWND, op: Op, i: usize) {
                             "Only this window switched: %ProgramData%\\WinRust\\lang.txt could not be written. Run the installer as administrator to apply the language everywhere.",
                             ja: "このウィンドウだけが切り替わりました: %ProgramData%\\WinRust\\lang.txt に書き込めません。すべてに反映するにはインストーラーを管理者として実行してください。",
                             pt: "Somente esta janela mudou: não foi possível gravar %ProgramData%\\WinRust\\lang.txt. Execute o instalador como administrador para aplicar o idioma em todos.",
-                            zh: "只有这个窗口切换了：无法写入 %ProgramData%\\WinRust\\lang.txt。请以管理员身份运行安装程序，才能让所有程序都生效。"
+                            zh: "只有这个窗口切换了：无法写入 %ProgramData%\\WinRust\\lang.txt。请以管理员身份运行安装程序，才能让所有程序都生效。",
+                            es: "Solo cambió esta ventana: no se pudo escribir %ProgramData%\\WinRust\\lang.txt. Ejecuta el instalador como administrador para aplicar el idioma en todas."
                         )
                     }.to_string());
                 }
@@ -419,11 +421,11 @@ fn night_labels() -> Vec<String> {
     ext::NIGHT_STEPS
         .iter()
         .map(|&k| match k {
-            0 => t!("Выкл.", "Off", ja: "オフ", pt: "Desligado", zh: "关").to_string(),
-            5500 => tf!("Слабый · {} K", "Low · {} K", ja: "弱 · {} K", pt: "Fraco · {} K", zh: "弱 · {} K", k),
-            4800 => tf!("Средний · {} K", "Medium · {} K", ja: "中 · {} K", pt: "Médio · {} K", zh: "中 · {} K", k),
-            4200 => tf!("Сильный · {} K", "Strong · {} K", ja: "強 · {} K", pt: "Forte · {} K", zh: "强 · {} K", k),
-            _ => tf!("Максимальный · {} K", "Maximum · {} K", ja: "最大 · {} K", pt: "Máximo · {} K", zh: "最高 · {} K", k),
+            0 => t!("Выкл.", "Off", ja: "オフ", pt: "Desligado", zh: "关", es: "Desactivado").to_string(),
+            5500 => tf!("Слабый · {} K", "Low · {} K", ja: "弱 · {} K", pt: "Fraco · {} K", zh: "弱 · {} K", es: "Baja · {} K", k),
+            4800 => tf!("Средний · {} K", "Medium · {} K", ja: "中 · {} K", pt: "Médio · {} K", zh: "中 · {} K", es: "Media · {} K", k),
+            4200 => tf!("Сильный · {} K", "Strong · {} K", ja: "強 · {} K", pt: "Forte · {} K", zh: "强 · {} K", es: "Fuerte · {} K", k),
+            _ => tf!("Максимальный · {} K", "Maximum · {} K", ja: "最大 · {} K", pt: "Máximo · {} K", zh: "最高 · {} K", es: "Máxima · {} K", k),
         })
         .collect()
 }
@@ -486,11 +488,11 @@ fn bars(q: u32) -> u32 {
 fn wifi_note(n: &wifi::Net) -> String {
     use wifi::Sec::*;
     match (n.connected, &n.profile, n.sec) {
-        (true, ..) => t!("Подключено  ·  правый клик: отключить, забыть", "Connected  ·  right click: disconnect, forget", ja: "接続済み  ·  右クリック: 切断、削除", pt: "Conectado  ·  botão direito: desconectar, esquecer", zh: "已连接  ·  右键：断开、忘记").into(),
-        (_, Some(_), _) => t!("Сохранена", "Saved", ja: "保存済み", pt: "Salva", zh: "已保存").into(),
-        (_, _, None) if n.eap.is_some() => t!("Корпоративная (802.1X)  ·  имя и пароль", "Enterprise (802.1X)  ·  user name and password", ja: "エンタープライズ (802.1X)  ·  ユーザー名とパスワード", pt: "Empresarial (802.1X)  ·  nome de usuário e senha", zh: "企业级 (802.1X)  ·  用户名和密码").into(),
-        (_, _, None) => t!("Корпоративная, сертификатом: не поддерживается", "Enterprise with certificates: not supported", ja: "証明書を使うエンタープライズ: 非対応", pt: "Empresarial com certificados: sem suporte", zh: "证书认证的企业级网络：不支持").into(),
-        (_, _, Some(Open | Owe)) => t!("Открытая сеть", "Open network", ja: "オープン ネットワーク", pt: "Rede aberta", zh: "开放网络").into(),
+        (true, ..) => t!("Подключено  ·  правый клик: отключить, забыть", "Connected  ·  right click: disconnect, forget", ja: "接続済み  ·  右クリック: 切断、削除", pt: "Conectado  ·  botão direito: desconectar, esquecer", zh: "已连接  ·  右键：断开、忘记", es: "Conectado  ·  clic derecho: desconectar, olvidar").into(),
+        (_, Some(_), _) => t!("Сохранена", "Saved", ja: "保存済み", pt: "Salva", zh: "已保存", es: "Guardada").into(),
+        (_, _, None) if n.eap.is_some() => t!("Корпоративная (802.1X)  ·  имя и пароль", "Enterprise (802.1X)  ·  user name and password", ja: "エンタープライズ (802.1X)  ·  ユーザー名とパスワード", pt: "Empresarial (802.1X)  ·  nome de usuário e senha", zh: "企业级 (802.1X)  ·  用户名和密码", es: "Empresarial (802.1X)  ·  nombre de usuario y contraseña").into(),
+        (_, _, None) => t!("Корпоративная, сертификатом: не поддерживается", "Enterprise with certificates: not supported", ja: "証明書を使うエンタープライズ: 非対応", pt: "Empresarial com certificados: sem suporte", zh: "证书认证的企业级网络：不支持", es: "Empresarial con certificados: no compatible").into(),
+        (_, _, Some(Open | Owe)) => t!("Открытая сеть", "Open network", ja: "オープン ネットワーク", pt: "Rede aberta", zh: "开放网络", es: "Red abierta").into(),
         (_, _, Some(s)) => {
             let kind = match s {
                 Wep { .. } => "WEP",
@@ -498,7 +500,7 @@ fn wifi_note(n: &wifi::Net) -> String {
                 Wpa3 => "WPA3",
                 _ => "WPA2",
             };
-            tf!("Защищена  ·  {}", "Secured  ·  {}", ja: "セキュリティ保護あり  ·  {}", pt: "Protegida  ·  {}", zh: "已加密  ·  {}", kind)
+            tf!("Защищена  ·  {}", "Secured  ·  {}", ja: "セキュリティ保護あり  ·  {}", pt: "Protegida  ·  {}", zh: "已加密  ·  {}", es: "Protegida  ·  {}", kind)
         }
     }
 }
@@ -508,7 +510,7 @@ fn network_rows() -> Vec<Row> {
     let mut rows = vec![];
     let adapters = net::adapters();
     if !adapters.is_empty() {
-        rows.push(Row::Header(t!("Подключения", "Connections", ja: "接続", pt: "Conexões", zh: "连接").into()));
+        rows.push(Row::Header(t!("Подключения", "Connections", ja: "接続", pt: "Conexões", zh: "连接", es: "Conexiones").into()));
     }
     for a in adapters {
         let open = EXPANDED.with_borrow(|e| e.as_deref() == Some(a.name.as_str()));
@@ -520,29 +522,29 @@ fn network_rows() -> Vec<Row> {
     RADIO.set(radio);
     if let Some((_, hw)) = radio {
         rows.push(Row::Header("Wi-Fi".into()));
-        let label = if hw { "Wi-Fi".into() } else { t!("Wi-Fi выключен кнопкой на устройстве", "Wi-Fi is off by the hardware switch", ja: "Wi-Fi がハードウェア スイッチでオフになっています", pt: "O Wi-Fi está desligado pela chave de hardware", zh: "Wi-Fi 已被硬件开关关闭").into() };
+        let label = if hw { "Wi-Fi".into() } else { t!("Wi-Fi выключен кнопкой на устройстве", "Wi-Fi is off by the hardware switch", ja: "Wi-Fi がハードウェア スイッチでオフになっています", pt: "O Wi-Fi está desligado pela chave de hardware", zh: "Wi-Fi 已被硬件开关关闭", es: "El Wi-Fi está apagado con el interruptor físico").into() };
         rows.push(Row::Switch(label, radio_on, Op::Radio));
         for n in wifi::list().into_iter().take(12) {
             let note = wifi_note(&n);
             rows.push(Row::Wifi(n, note));
         }
         if radio.is_some_and(|r| r.0 && r.1) {
-            rows.push(Row::Cycle(t!("Другая сеть…", "Other network…", ja: "その他のネットワーク…", pt: "Outra rede…", zh: "其他网络…").into(), String::new, Op::Hidden));
+            rows.push(Row::Cycle(t!("Другая сеть…", "Other network…", ja: "その他のネットワーク…", pt: "Outra rede…", zh: "其他网络…", es: "Otra red…").into(), String::new, Op::Hidden));
         }
     }
     rows.push(Row::Header("VPN".into()));
     let vpns = ext::vpns();
     if vpns.is_empty() {
-        rows.push(Row::Info(t!("VPN-подключения", "VPN connections", ja: "VPN 接続", pt: "Conexões VPN", zh: "VPN 连接").into(), t!("не настроены", "none set up", ja: "未設定", pt: "nenhuma configurada", zh: "尚未设置").into()));
+        rows.push(Row::Info(t!("VPN-подключения", "VPN connections", ja: "VPN 接続", pt: "Conexões VPN", zh: "VPN 连接", es: "Conexiones VPN").into(), t!("не настроены", "none set up", ja: "未設定", pt: "nenhuma configurada", zh: "尚未设置", es: "ninguna configurada").into()));
     }
     for v in vpns {
-        let state = if v.on { t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接") } else { t!("Отключено", "Disconnected", ja: "切断", pt: "Desconectado", zh: "已断开") };
+        let state = if v.on { t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接", es: "Conectado") } else { t!("Отключено", "Disconnected", ja: "切断", pt: "Desconectado", zh: "已断开", es: "Desconectado") };
         rows.push(Row::Item(v.name.clone(), state.into(), Cmd::Vpn(v)));
     }
-    rows.push(Row::Header(t!("Прокси-сервер", "Proxy", ja: "プロキシ", pt: "Proxy", zh: "代理").into()));
-    rows.push(toggle_row(t!("Использовать прокси-сервер", "Use a proxy server", ja: "プロキシ サーバーを使う", pt: "Usar um servidor proxy", zh: "使用代理服务器"), ext::INET, "ProxyEnable", 1, 0));
-    rows.push(Row::Cycle(t!("Адрес прокси-сервера", "Proxy address", ja: "プロキシ アドレス", pt: "Endereço do proxy", zh: "代理地址").into(), ext::proxy_text, Op::Proxy));
-    rows.push(Row::Cycle(t!("Скрипт настройки (PAC)", "Setup script (PAC)", ja: "セットアップ スクリプト (PAC)", pt: "Script de configuração (PAC)", zh: "设置脚本 (PAC)").into(), ext::pac_text, Op::Pac));
+    rows.push(Row::Header(t!("Прокси-сервер", "Proxy", ja: "プロキシ", pt: "Proxy", zh: "代理", es: "Proxy").into()));
+    rows.push(toggle_row(t!("Использовать прокси-сервер", "Use a proxy server", ja: "プロキシ サーバーを使う", pt: "Usar um servidor proxy", zh: "使用代理服务器", es: "Usar un servidor proxy"), ext::INET, "ProxyEnable", 1, 0));
+    rows.push(Row::Cycle(t!("Адрес прокси-сервера", "Proxy address", ja: "プロキシ アドレス", pt: "Endereço do proxy", zh: "代理地址", es: "Dirección del proxy").into(), ext::proxy_text, Op::Proxy));
+    rows.push(Row::Cycle(t!("Скрипт настройки (PAC)", "Setup script (PAC)", ja: "セットアップ スクリプト (PAC)", pt: "Script de configuração (PAC)", zh: "设置脚本 (PAC)", es: "Script de configuración (PAC)").into(), ext::pac_text, Op::Pac));
     rows
 }
 
@@ -552,22 +554,22 @@ fn toggle_row(label: &str, key: &'static str, name: &'static str, on_when: u32, 
 
 fn display_rows() -> Vec<Row> {
     let head = |s: &str| Row::Header(s.into());
-    let mut rows = vec![head(t!("Дисплеи", "Displays", ja: "ディスプレイ", pt: "Telas", zh: "显示器"))];
+    let mut rows = vec![head(t!("Дисплеи", "Displays", ja: "ディスプレイ", pt: "Telas", zh: "显示器", es: "Pantallas"))];
     if display::layout().len() > 1 {
         rows.extend((0..4).map(Row::Arrange));
     }
     rows.extend([
-        Row::Cycle(t!("Дисплей", "Display", ja: "ディスプレイ", pt: "Tela", zh: "显示器").into(), monitor_text, Op::Monitor),
-        Row::Cycle(t!("Несколько экранов", "Multiple displays", ja: "複数のディスプレイ", pt: "Várias telas", zh: "多显示器").into(), topo_text, Op::Topology),
-        Row::Cycle(t!("Основной дисплей", "Main display", ja: "メイン ディスプレイ", pt: "Tela principal", zh: "主显示器").into(), primary_text, Op::Primary),
-        head(t!("Выбранный дисплей", "Selected display", ja: "選択したディスプレイ", pt: "Tela selecionada", zh: "所选显示器")),
-        Row::Cycle(t!("Разрешение", "Resolution", ja: "解像度", pt: "Resolução", zh: "分辨率").into(), res_text, Op::Res),
-        Row::Cycle(t!("Частота обновления", "Refresh rate", ja: "リフレッシュ レート", pt: "Taxa de atualização", zh: "刷新率").into(), hz_text, Op::Hz),
-        Row::Cycle(t!("Масштаб", "Scale", ja: "拡大縮小", pt: "Escala", zh: "缩放").into(), scale_text, Op::Scale),
-        Row::Cycle(t!("Ориентация", "Orientation", ja: "向き", pt: "Orientação", zh: "方向").into(), orient_text, Op::Orient),
-        Row::Switch(t!("HDR", "HDR", ja: "HDR", pt: "HDR", zh: "HDR").into(), hdr_on, Op::Hdr),
-        head(t!("Цвет", "Colour", ja: "色", pt: "Cor", zh: "颜色")),
-        Row::Cycle(t!("Ночной свет", "Night light", ja: "夜間モード", pt: "Luz noturna", zh: "夜间模式").into(), ext::night_text, Op::Night),
+        Row::Cycle(t!("Дисплей", "Display", ja: "ディスプレイ", pt: "Tela", zh: "显示器", es: "Pantalla").into(), monitor_text, Op::Monitor),
+        Row::Cycle(t!("Несколько экранов", "Multiple displays", ja: "複数のディスプレイ", pt: "Várias telas", zh: "多显示器", es: "Varias pantallas").into(), topo_text, Op::Topology),
+        Row::Cycle(t!("Основной дисплей", "Main display", ja: "メイン ディスプレイ", pt: "Tela principal", zh: "主显示器", es: "Pantalla principal").into(), primary_text, Op::Primary),
+        head(t!("Выбранный дисплей", "Selected display", ja: "選択したディスプレイ", pt: "Tela selecionada", zh: "所选显示器", es: "Pantalla seleccionada")),
+        Row::Cycle(t!("Разрешение", "Resolution", ja: "解像度", pt: "Resolução", zh: "分辨率", es: "Resolución").into(), res_text, Op::Res),
+        Row::Cycle(t!("Частота обновления", "Refresh rate", ja: "リフレッシュ レート", pt: "Taxa de atualização", zh: "刷新率", es: "Frecuencia de actualización").into(), hz_text, Op::Hz),
+        Row::Cycle(t!("Масштаб", "Scale", ja: "拡大縮小", pt: "Escala", zh: "缩放", es: "Escala").into(), scale_text, Op::Scale),
+        Row::Cycle(t!("Ориентация", "Orientation", ja: "向き", pt: "Orientação", zh: "方向", es: "Orientación").into(), orient_text, Op::Orient),
+        Row::Switch(t!("HDR", "HDR", ja: "HDR", pt: "HDR", zh: "HDR", es: "HDR").into(), hdr_on, Op::Hdr),
+        head(t!("Цвет", "Colour", ja: "色", pt: "Cor", zh: "颜色", es: "Color")),
+        Row::Cycle(t!("Ночной свет", "Night light", ja: "夜間モード", pt: "Luz noturna", zh: "夜间模式", es: "Luz nocturna").into(), ext::night_text, Op::Night),
     ]);
     rows
 }
@@ -575,19 +577,19 @@ fn display_rows() -> Vec<Row> {
 fn sound_rows() -> Vec<Row> {
     let head = |s: &str| Row::Header(s.into());
     let mut rows = vec![
-        head(t!("Вывод", "Output", ja: "出力", pt: "Saída", zh: "输出")),
-        Row::Cycle(t!("Устройство вывода", "Output device", ja: "出力デバイス", pt: "Dispositivo de saída", zh: "输出设备").into(), out_dev_text, Op::OutDev),
-        Row::Slider(t!("Громкость", "Volume", ja: "音量", pt: "Volume", zh: "音量").into(), audio::Src::Out),
-        Row::Switch(t!("Без звука", "Mute", ja: "ミュート", pt: "Silenciar", zh: "静音").into(), sound_muted, Op::Mute),
-        head(t!("Ввод", "Input", ja: "入力", pt: "Entrada", zh: "输入")),
-        Row::Cycle(t!("Устройство ввода", "Input device", ja: "入力デバイス", pt: "Dispositivo de entrada", zh: "输入设备").into(), in_dev_text, Op::InDev),
-        Row::Slider(t!("Микрофон", "Microphone", ja: "マイク", pt: "Microfone", zh: "麦克风").into(), audio::Src::Mic),
-        Row::Switch(t!("Микрофон выключен", "Microphone muted", ja: "マイクをミュート中", pt: "Microfone silenciado", zh: "麦克风已静音").into(), mic_muted, Op::MicMute),
-        head(t!("Громкость приложений", "Volume per app", ja: "アプリごとの音量", pt: "Volume por app", zh: "应用音量")),
+        head(t!("Вывод", "Output", ja: "出力", pt: "Saída", zh: "输出", es: "Salida")),
+        Row::Cycle(t!("Устройство вывода", "Output device", ja: "出力デバイス", pt: "Dispositivo de saída", zh: "输出设备", es: "Dispositivo de salida").into(), out_dev_text, Op::OutDev),
+        Row::Slider(t!("Громкость", "Volume", ja: "音量", pt: "Volume", zh: "音量", es: "Volumen").into(), audio::Src::Out),
+        Row::Switch(t!("Без звука", "Mute", ja: "ミュート", pt: "Silenciar", zh: "静音", es: "Silenciar").into(), sound_muted, Op::Mute),
+        head(t!("Ввод", "Input", ja: "入力", pt: "Entrada", zh: "输入", es: "Entrada")),
+        Row::Cycle(t!("Устройство ввода", "Input device", ja: "入力デバイス", pt: "Dispositivo de entrada", zh: "输入设备", es: "Dispositivo de entrada").into(), in_dev_text, Op::InDev),
+        Row::Slider(t!("Микрофон", "Microphone", ja: "マイク", pt: "Microfone", zh: "麦克风", es: "Micrófono").into(), audio::Src::Mic),
+        Row::Switch(t!("Микрофон выключен", "Microphone muted", ja: "マイクをミュート中", pt: "Microfone silenciado", zh: "麦克风已静音", es: "Micrófono silenciado").into(), mic_muted, Op::MicMute),
+        head(t!("Громкость приложений", "Volume per app", ja: "アプリごとの音量", pt: "Volume por app", zh: "应用音量", es: "Volumen por aplicación")),
     ];
     let apps = audio::apps();
     if apps.is_empty() {
-        rows.push(Row::Info(t!("Приложения со звуком", "Apps with sound", ja: "音を出しているアプリ", pt: "Apps com som", zh: "正在发声的应用").into(), t!("сейчас нет", "none right now", ja: "現在なし", pt: "nenhum no momento", zh: "当前没有").into()));
+        rows.push(Row::Info(t!("Приложения со звуком", "Apps with sound", ja: "音を出しているアプリ", pt: "Apps com som", zh: "正在发声的应用", es: "Aplicaciones con sonido").into(), t!("сейчас нет", "none right now", ja: "現在なし", pt: "nenhum no momento", zh: "当前没有", es: "ninguna por ahora").into()));
     }
     rows.extend(apps.into_iter().map(|(pid, name)| Row::Slider(name, audio::Src::App(pid))));
     rows
@@ -598,19 +600,19 @@ fn power_rows() -> Vec<Row> {
     let bin = ext::bin_bytes();
     [
         vec![
-            head(t!("Питание", "Power", ja: "電源", pt: "Energia", zh: "电源")),
-            Row::Cycle(t!("Батарея", "Battery", ja: "バッテリー", pt: "Bateria", zh: "电池").into(), power::battery_text, Op::Nop),
-            Row::Cycle(t!("Схема питания", "Power plan", ja: "電源プラン", pt: "Plano de energia", zh: "电源计划").into(), power::plan_text, Op::Plan),
-            Row::Cycle(t!("Отключать экран через", "Turn screen off after", ja: "ディスプレイの電源を切るまでの時間", pt: "Desligar a tela após", zh: "在此时间后关闭屏幕").into(), screen_text, Op::Screen),
-            Row::Cycle(t!("Переходить в сон через", "Sleep after", ja: "スリープするまでの時間", pt: "Suspender após", zh: "在此时间后进入睡眠").into(), sleep_text, Op::Sleep),
-            head(t!("Хранилище", "Storage", ja: "ストレージ", pt: "Armazenamento", zh: "存储")),
-            toggle_row(t!("Контроль памяти (автоочистка)", "Storage Sense (auto cleanup)", ja: "ストレージ センサー (自動クリーンアップ)", pt: "Sensor de Armazenamento (limpeza automática)", zh: "存储感知（自动清理）"), STORAGE_SENSE, "01", 1, 0),
+            head(t!("Питание", "Power", ja: "電源", pt: "Energia", zh: "电源", es: "Energía")),
+            Row::Cycle(t!("Батарея", "Battery", ja: "バッテリー", pt: "Bateria", zh: "电池", es: "Batería").into(), power::battery_text, Op::Nop),
+            Row::Cycle(t!("Схема питания", "Power plan", ja: "電源プラン", pt: "Plano de energia", zh: "电源计划", es: "Plan de energía").into(), power::plan_text, Op::Plan),
+            Row::Cycle(t!("Отключать экран через", "Turn screen off after", ja: "ディスプレイの電源を切るまでの時間", pt: "Desligar a tela após", zh: "在此时间后关闭屏幕", es: "Apagar la pantalla después de").into(), screen_text, Op::Screen),
+            Row::Cycle(t!("Переходить в сон через", "Sleep after", ja: "スリープするまでの時間", pt: "Suspender após", zh: "在此时间后进入睡眠", es: "Suspender después de").into(), sleep_text, Op::Sleep),
+            head(t!("Хранилище", "Storage", ja: "ストレージ", pt: "Armazenamento", zh: "存储", es: "Almacenamiento")),
+            toggle_row(t!("Контроль памяти (автоочистка)", "Storage Sense (auto cleanup)", ja: "ストレージ センサー (自動クリーンアップ)", pt: "Sensor de Armazenamento (limpeza automática)", zh: "存储感知（自动清理）", es: "Sensor de almacenamiento (limpieza automática)"), STORAGE_SENSE, "01", 1, 0),
         ],
-        power::drives().into_iter().map(|(l, free, total)| Row::Info(tf!("Диск {}:", "Drive {}:", ja: "ドライブ {}:", pt: "Unidade {}:", zh: "驱动器 {}:", l), tf!("{} свободно из {}", "{} free of {}", ja: "{} 空き / {}", pt: "{} livres de {}", zh: "{} 可用，共 {}", power::size(free), power::size(total)))).collect(),
+        power::drives().into_iter().map(|(l, free, total)| Row::Info(tf!("Диск {}:", "Drive {}:", ja: "ドライブ {}:", pt: "Unidade {}:", zh: "驱动器 {}:", es: "Unidad {}:", l), tf!("{} свободно из {}", "{} free of {}", ja: "{} 空き / {}", pt: "{} livres de {}", zh: "{} 可用，共 {}", es: "{} libres de {}", power::size(free), power::size(total)))).collect(),
         vec![
-            head(t!("Очистка диска", "Disk cleanup", ja: "ディスク クリーンアップ", pt: "Limpeza de disco", zh: "磁盘清理")),
-            Row::Item(t!("Временные файлы (старше суток)", "Temporary files (older than a day)", ja: "一時ファイル (1 日以上前)", pt: "Arquivos temporários (com mais de um dia)", zh: "临时文件（超过一天）").into(), ext::temp_text(), Cmd::CleanTemp),
-            Row::Item(t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira", zh: "回收站").into(), if bin == 0 { t!("пуста", "empty", ja: "空", pt: "vazia", zh: "空").into() } else { power::size(bin) }, Cmd::EmptyBin),
+            head(t!("Очистка диска", "Disk cleanup", ja: "ディスク クリーンアップ", pt: "Limpeza de disco", zh: "磁盘清理", es: "Limpieza de disco")),
+            Row::Item(t!("Временные файлы (старше суток)", "Temporary files (older than a day)", ja: "一時ファイル (1 日以上前)", pt: "Arquivos temporários (com mais de um dia)", zh: "临时文件（超过一天）", es: "Archivos temporales (de más de un día)").into(), ext::temp_text(), Cmd::CleanTemp),
+            Row::Item(t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira", zh: "回收站", es: "Papelera de reciclaje").into(), if bin == 0 { t!("пуста", "empty", ja: "空", pt: "vazia", zh: "空", es: "vacía").into() } else { power::size(bin) }, Cmd::EmptyBin),
         ],
     ]
     .into_iter()
@@ -621,28 +623,28 @@ fn power_rows() -> Vec<Row> {
 fn bt_rows() -> Vec<Row> {
     let s = bt::state();
     let head = |x: &str| Row::Header(x.into());
-    let label = if s.bt.is_some() { "Bluetooth".into() } else { t!("Bluetooth: адаптера нет", "Bluetooth: no adapter", ja: "Bluetooth: アダプターなし", pt: "Bluetooth: sem adaptador", zh: "蓝牙：没有适配器").into() };
-    let mut rows = vec![head("Bluetooth"), Row::Switch(label, bt_on, Op::Bt), Row::Switch(t!("Режим «в самолёте»", "Airplane mode", ja: "機内モード", pt: "Modo avião", zh: "飞行模式").into(), air_on, Op::Air)];
+    let label = if s.bt.is_some() { "Bluetooth".into() } else { t!("Bluetooth: адаптера нет", "Bluetooth: no adapter", ja: "Bluetooth: アダプターなし", pt: "Bluetooth: sem adaptador", zh: "蓝牙：没有适配器", es: "Bluetooth: no hay adaptador").into() };
+    let mut rows = vec![head("Bluetooth"), Row::Switch(label, bt_on, Op::Bt), Row::Switch(t!("Режим «в самолёте»", "Airplane mode", ja: "機内モード", pt: "Modo avião", zh: "飞行模式", es: "Modo avión").into(), air_on, Op::Air)];
     if s.bt == Some(true) {
-        rows.push(head(t!("Сопряжённые устройства", "Paired devices", ja: "ペアリング済みデバイス", pt: "Dispositivos pareados", zh: "已配对设备")));
+        rows.push(head(t!("Сопряжённые устройства", "Paired devices", ja: "ペアリング済みデバイス", pt: "Dispositivos pareados", zh: "已配对设备", es: "Dispositivos emparejados")));
         if s.paired.is_empty() {
-            rows.push(Row::Info(t!("Устройства", "Devices", ja: "デバイス", pt: "Dispositivos", zh: "设备").into(), t!("нет", "none", ja: "なし", pt: "nenhum", zh: "无").into()));
+            rows.push(Row::Info(t!("Устройства", "Devices", ja: "デバイス", pt: "Dispositivos", zh: "设备", es: "Dispositivos").into(), t!("нет", "none", ja: "なし", pt: "nenhum", zh: "无", es: "ninguno").into()));
         }
         for d in &s.paired {
-            let st = if d.connected { t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接") } else { t!("Сопряжено", "Paired", ja: "ペアリング済み", pt: "Pareado", zh: "已配对") };
+            let st = if d.connected { t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接", es: "Conectado") } else { t!("Сопряжено", "Paired", ja: "ペアリング済み", pt: "Pareado", zh: "已配对", es: "Emparejado") };
             rows.push(Row::Item(d.name.clone(), st.into(), Cmd::BtUnpair(d.id.clone())));
         }
-        rows.push(head(t!("Устройства поблизости", "Nearby devices", ja: "近くのデバイス", pt: "Dispositivos próximos", zh: "附近的设备")));
-        rows.push(Row::Item(t!("Найти устройства", "Find devices", ja: "デバイスを検索", pt: "Procurar dispositivos", zh: "查找设备").into(), if s.scanning { t!("поиск…", "searching…", ja: "検索中…", pt: "procurando…", zh: "正在搜索…").into() } else { String::new() }, Cmd::BtScan));
+        rows.push(head(t!("Устройства поблизости", "Nearby devices", ja: "近くのデバイス", pt: "Dispositivos próximos", zh: "附近的设备", es: "Dispositivos cercanos")));
+        rows.push(Row::Item(t!("Найти устройства", "Find devices", ja: "デバイスを検索", pt: "Procurar dispositivos", zh: "查找设备", es: "Buscar dispositivos").into(), if s.scanning { t!("поиск…", "searching…", ja: "検索中…", pt: "procurando…", zh: "正在搜索…", es: "buscando…").into() } else { String::new() }, Cmd::BtScan));
         for d in s.nearby.iter().filter(|d| !s.paired.iter().any(|p| p.id == d.id)) {
-            rows.push(Row::Item(d.name.clone(), t!("Сопрячь", "Pair", ja: "ペアリング", pt: "Parear", zh: "配对").into(), Cmd::BtPair(d.id.clone())));
+            rows.push(Row::Item(d.name.clone(), t!("Сопрячь", "Pair", ja: "ペアリング", pt: "Parear", zh: "配对", es: "Emparejar").into(), Cmd::BtPair(d.id.clone())));
         }
     }
     rows
 }
 
 fn apps_rows(list: &[ext::App]) -> Vec<Row> {
-    let mut rows = vec![Row::Header(tf!("Установленные программы: {}", "Installed programs: {}", ja: "インストール済みのプログラム: {}", pt: "Programas instalados: {}", zh: "已安装程序：{}", list.len()))];
+    let mut rows = vec![Row::Header(tf!("Установленные программы: {}", "Installed programs: {}", ja: "インストール済みのプログラム: {}", pt: "Programas instalados: {}", zh: "已安装程序：{}", es: "Programas instalados: {}", list.len()))];
     rows.extend(list.iter().take(400).map(|a| Row::Item(a.name.clone(), a.version.clone(), Cmd::Uninstall(a.uninstall.clone()))));
     rows
 }
@@ -651,21 +653,21 @@ fn wu_rows() -> Vec<Row> {
     let s = wu::state();
     let status = match (&s.busy, &s.found) {
         (Some(b), _) => b.clone(),
-        (_, None) => t!("Ещё не проверялось", "Not checked yet", ja: "まだ確認していません", pt: "Ainda não verificado", zh: "尚未检查").into(),
-        (_, Some(f)) if f.is_empty() => t!("Всё установлено", "Up to date", ja: "最新の状態です", pt: "Atualizado", zh: "已是最新").into(),
-        (_, Some(f)) => tf!("Доступно обновлений: {}", "Updates available: {}", ja: "利用可能な更新プログラム: {}", pt: "Atualizações disponíveis: {}", zh: "可用更新：{}", f.len()),
+        (_, None) => t!("Ещё не проверялось", "Not checked yet", ja: "まだ確認していません", pt: "Ainda não verificado", zh: "尚未检查", es: "Aún sin comprobar").into(),
+        (_, Some(f)) if f.is_empty() => t!("Всё установлено", "Up to date", ja: "最新の状態です", pt: "Atualizado", zh: "已是最新", es: "Al día").into(),
+        (_, Some(f)) => tf!("Доступно обновлений: {}", "Updates available: {}", ja: "利用可能な更新プログラム: {}", pt: "Atualizações disponíveis: {}", zh: "可用更新：{}", es: "Actualizaciones disponibles: {}", f.len()),
     };
-    let mut rows = vec![Row::Header(t!("Центр обновления Windows", "Windows Update", ja: "Windows Update", pt: "Windows Update", zh: "Windows 更新").into()), Row::Info(t!("Состояние", "Status", ja: "状態", pt: "Status", zh: "状态").into(), status)];
+    let mut rows = vec![Row::Header(t!("Центр обновления Windows", "Windows Update", ja: "Windows Update", pt: "Windows Update", zh: "Windows 更新", es: "Windows Update").into()), Row::Info(t!("Состояние", "Status", ja: "状態", pt: "Status", zh: "状态", es: "Estado").into(), status)];
     if !s.note.is_empty() {
-        rows.push(Row::Info(t!("Результат", "Result", ja: "結果", pt: "Resultado", zh: "结果").into(), s.note.clone()));
+        rows.push(Row::Info(t!("Результат", "Result", ja: "結果", pt: "Resultado", zh: "结果", es: "Resultado").into(), s.note.clone()));
     }
     for title in s.found.iter().flatten().take(30) {
-        rows.push(Row::Info(t!("Обновление", "Update", ja: "更新", pt: "Atualizar", zh: "更新").into(), title.clone()));
+        rows.push(Row::Info(t!("Обновление", "Update", ja: "更新", pt: "Atualizar", zh: "更新", es: "Actualizar").into(), title.clone()));
     }
     if s.busy.is_none() {
-        rows.push(Row::Item(t!("Проверить наличие обновлений", "Check for updates", ja: "更新プログラムのチェック", pt: "Verificar atualizações", zh: "检查更新").into(), String::new(), Cmd::Check));
+        rows.push(Row::Item(t!("Проверить наличие обновлений", "Check for updates", ja: "更新プログラムのチェック", pt: "Verificar atualizações", zh: "检查更新", es: "Buscar actualizaciones").into(), String::new(), Cmd::Check));
         if s.found.as_ref().is_some_and(|f| !f.is_empty()) {
-            rows.push(Row::Item(t!("Скачать и установить", "Download and install", ja: "ダウンロードしてインストール", pt: "Baixar e instalar", zh: "下载并安装").into(), t!("нужны права администратора", "needs administrator rights", ja: "管理者権限が必要です", pt: "requer direitos de administrador", zh: "需要管理员权限").into(), Cmd::Install));
+            rows.push(Row::Item(t!("Скачать и установить", "Download and install", ja: "ダウンロードしてインストール", pt: "Baixar e instalar", zh: "下载并安装", es: "Descargar e instalar").into(), t!("нужны права администратора", "needs administrator rights", ja: "管理者権限が必要です", pt: "requer direitos de administrador", zh: "需要管理员权限", es: "necesita permisos de administrador").into(), Cmd::Install));
         }
     }
     rows
@@ -693,36 +695,36 @@ fn pages() -> Vec<Page> {
     let ram = if unsafe { GlobalMemoryStatusEx(&mut mem) } != 0 { gb(mem.ullTotalPhys) } else { "?".into() };
     let head = |s: &str| Row::Header(s.into());
     vec![
-        Page { title: t!("Экран", "Display", ja: "ディスプレイ", pt: "Tela", zh: "显示器").into(), rows: display_rows() },
-        Page { title: t!("Звук", "Sound", ja: "サウンド", pt: "Som", zh: "声音").into(), rows: sound_rows() },
-        Page { title: t!("Питание и диски", "Power & storage", ja: "電源とストレージ", pt: "Energia e armazenamento", zh: "电源和存储").into(), rows: power_rows() },
-        Page { title: t!("Сеть", "Network", ja: "ネットワーク", pt: "Rede", zh: "网络").into(), rows: network_rows() },
+        Page { title: t!("Экран", "Display", ja: "ディスプレイ", pt: "Tela", zh: "显示器", es: "Pantalla").into(), rows: display_rows() },
+        Page { title: t!("Звук", "Sound", ja: "サウンド", pt: "Som", zh: "声音", es: "Sonido").into(), rows: sound_rows() },
+        Page { title: t!("Питание и диски", "Power & storage", ja: "電源とストレージ", pt: "Energia e armazenamento", zh: "电源和存储", es: "Energía y almacenamiento").into(), rows: power_rows() },
+        Page { title: t!("Сеть", "Network", ja: "ネットワーク", pt: "Rede", zh: "网络", es: "Red").into(), rows: network_rows() },
         Page { title: "Bluetooth".into(), rows: bt_rows() },
-        Page { title: t!("Приложения", "Apps", ja: "アプリ", pt: "Apps", zh: "应用").into(), rows: vec![] }, // read when the page opens
-        Page { title: t!("Центр обновления", "Windows Update", ja: "Windows Update", pt: "Windows Update", zh: "Windows 更新").into(), rows: wu_rows() },
+        Page { title: t!("Приложения", "Apps", ja: "アプリ", pt: "Apps", zh: "应用", es: "Aplicaciones").into(), rows: vec![] }, // read when the page opens
+        Page { title: t!("Центр обновления", "Windows Update", ja: "Windows Update", pt: "Windows Update", zh: "Windows 更新", es: "Windows Update").into(), rows: wu_rows() },
         Page {
-            title: t!("Персонализация", "Personalization", ja: "個人用設定", pt: "Personalização", zh: "个性化").into(),
+            title: t!("Персонализация", "Personalization", ja: "個人用設定", pt: "Personalização", zh: "个性化", es: "Personalización").into(),
             rows: vec![
-                Row::Cycle(t!("Язык интерфейса", "Interface language", ja: "表示言語", pt: "Idioma da interface", zh: "界面语言").into(), lang_text, Op::UiLang),
-                head(t!("Фон рабочего стола", "Desktop background", ja: "デスクトップの背景", pt: "Plano de fundo", zh: "桌面背景")),
-                Row::Item(t!("Выбрать картинку…", "Choose a picture…", ja: "画像を選択…", pt: "Escolher imagem…", zh: "选择图片…").into(), sys::wallpaper_name(), Cmd::Wallpaper),
-                head(t!("Оформление", "Appearance", ja: "外観", pt: "Aparência", zh: "外观")),
-                toggle_row(t!("Тёмная тема для приложений", "Dark theme for apps", ja: "アプリのダーク テーマ", pt: "Tema escuro para apps", zh: "应用深色主题"), PERSONALIZE, "AppsUseLightTheme", 0, 1),
-                toggle_row(t!("Тёмная тема для системы", "Dark theme for the system", ja: "システムのダーク テーマ", pt: "Tema escuro para o sistema", zh: "系统深色主题"), PERSONALIZE, "SystemUsesLightTheme", 0, 1),
-                toggle_row(t!("Эффекты прозрачности", "Transparency effects", ja: "透明効果", pt: "Efeitos de transparência", zh: "透明效果"), PERSONALIZE, "EnableTransparency", 1, 1),
-                toggle_row(t!("Акцентный цвет на заголовках окон", "Accent color on title bars", ja: "タイトル バーにアクセント カラーを表示", pt: "Cor de destaque nas barras de título", zh: "标题栏上的强调色"), r"Software\Microsoft\Windows\DWM", "ColorPrevalence", 1, 0),
+                Row::Cycle(t!("Язык интерфейса", "Interface language", ja: "表示言語", pt: "Idioma da interface", zh: "界面语言", es: "Idioma de la interfaz").into(), lang_text, Op::UiLang),
+                head(t!("Фон рабочего стола", "Desktop background", ja: "デスクトップの背景", pt: "Plano de fundo", zh: "桌面背景", es: "Fondo de escritorio")),
+                Row::Item(t!("Выбрать картинку…", "Choose a picture…", ja: "画像を選択…", pt: "Escolher imagem…", zh: "选择图片…", es: "Elegir una imagen…").into(), sys::wallpaper_name(), Cmd::Wallpaper),
+                head(t!("Оформление", "Appearance", ja: "外観", pt: "Aparência", zh: "外观", es: "Apariencia")),
+                toggle_row(t!("Тёмная тема для приложений", "Dark theme for apps", ja: "アプリのダーク テーマ", pt: "Tema escuro para apps", zh: "应用深色主题", es: "Tema oscuro para las aplicaciones"), PERSONALIZE, "AppsUseLightTheme", 0, 1),
+                toggle_row(t!("Тёмная тема для системы", "Dark theme for the system", ja: "システムのダーク テーマ", pt: "Tema escuro para o sistema", zh: "系统深色主题", es: "Tema oscuro para el sistema"), PERSONALIZE, "SystemUsesLightTheme", 0, 1),
+                toggle_row(t!("Эффекты прозрачности", "Transparency effects", ja: "透明効果", pt: "Efeitos de transparência", zh: "透明效果", es: "Efectos de transparencia"), PERSONALIZE, "EnableTransparency", 1, 1),
+                toggle_row(t!("Акцентный цвет на заголовках окон", "Accent color on title bars", ja: "タイトル バーにアクセント カラーを表示", pt: "Cor de destaque nas barras de título", zh: "标题栏上的强调色", es: "Color de énfasis en las barras de título"), r"Software\Microsoft\Windows\DWM", "ColorPrevalence", 1, 0),
             ],
         },
         Page {
-            title: t!("О системе", "About", ja: "バージョン情報", pt: "Sobre", zh: "关于").into(),
+            title: t!("О системе", "About", ja: "バージョン情報", pt: "Sobre", zh: "关于", es: "Acerca de").into(),
             rows: vec![
-                head(t!("Устройство", "Device", ja: "デバイス", pt: "Dispositivo", zh: "设备")),
-                Row::Info(t!("Имя компьютера", "Computer name", ja: "コンピューター名", pt: "Nome do computador", zh: "计算机名").into(), std::env::var("COMPUTERNAME").unwrap_or_default()),
-                Row::Info(t!("Оперативная память", "Memory", ja: "メモリ", pt: "Memória", zh: "内存").into(), ram),
+                head(t!("Устройство", "Device", ja: "デバイス", pt: "Dispositivo", zh: "设备", es: "Dispositivo")),
+                Row::Info(t!("Имя компьютера", "Computer name", ja: "コンピューター名", pt: "Nome do computador", zh: "计算机名", es: "Nombre del equipo").into(), std::env::var("COMPUTERNAME").unwrap_or_default()),
+                Row::Info(t!("Оперативная память", "Memory", ja: "メモリ", pt: "Memória", zh: "内存", es: "Memoria").into(), ram),
                 head("Windows"),
-                Row::Info(t!("Выпуск", "Edition", ja: "エディション", pt: "Edição", zh: "发行版").into(), os_name(&reg("ProductName"), build)),
-                Row::Info(t!("Версия", "Version", ja: "バージョン", pt: "Versão", zh: "版本").into(), reg("DisplayVersion")),
-                Row::Info(t!("Сборка", "Build", ja: "ビルド", pt: "Compilação", zh: "内部版本").into(), reg("CurrentBuild")),
+                Row::Info(t!("Выпуск", "Edition", ja: "エディション", pt: "Edição", zh: "发行版", es: "Edición").into(), os_name(&reg("ProductName"), build)),
+                Row::Info(t!("Версия", "Version", ja: "バージョン", pt: "Versão", zh: "版本", es: "Versión").into(), reg("DisplayVersion")),
+                Row::Info(t!("Сборка", "Build", ja: "ビルド", pt: "Compilação", zh: "内部版本", es: "Compilación").into(), reg("CurrentBuild")),
             ],
         },
     ]
@@ -1082,7 +1084,7 @@ unsafe fn paint(hwnd: HWND) {
                         }
                         let tl = inner.left + p(34);
                         text(mem, body, &nw.ssid, RECT { left: tl, top: r.top + p(7), right: inner.right - p(52), bottom: r.top + p(29) }, t.fg, DT_LEFT);
-                        let sub = if busy { t!("Подключение…", "Connecting…", ja: "接続中…", pt: "Conectando…", zh: "正在连接…").into() } else { note.clone() };
+                        let sub = if busy { t!("Подключение…", "Connecting…", ja: "接続中…", pt: "Conectando…", zh: "正在连接…", es: "Conectando…").into() } else { note.clone() };
                         text(mem, small, &sub, RECT { left: tl, top: r.top + p(27), right: inner.right - p(52), bottom: r.bottom - p(7) }, if busy || nw.connected { t.accent } else { t.dim }, DT_LEFT);
                         if nw.connected {
                             text(mem, icon_s, "\u{E73E}", inner, t.accent, DT_RIGHT);
@@ -1094,8 +1096,8 @@ unsafe fn paint(hwnd: HWND) {
                         let armed = a.armed.as_deref() == Some(label.as_str());
                         let lw = text_width(mem, body, label).min((inner.right - inner.left) * 3 / 5);
                         text(mem, body, label, RECT { right: inner.left + lw, ..inner }, if armed { winrust_common::style::BAD } else { t.fg }, DT_LEFT);
-                        let value = if armed { t!("Нажмите ещё раз", "Click again", ja: "もう一度クリック", pt: "Clique de novo", zh: "再次点击").to_string() } else { value.clone() };
-                        let ink = if armed { winrust_common::style::BAD } else if matches!(cmd, Cmd::Vpn(v) if v.on) || value == t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接") { t.accent } else { t.dim };
+                        let value = if armed { t!("Нажмите ещё раз", "Click again", ja: "もう一度クリック", pt: "Clique de novo", zh: "再次点击", es: "Haz clic de nuevo").to_string() } else { value.clone() };
+                        let ink = if armed { winrust_common::style::BAD } else if matches!(cmd, Cmd::Vpn(v) if v.on) || value == t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接", es: "Conectado") { t.accent } else { t.dim };
                         text(mem, body, &value, RECT { left: inner.left + lw + p(16), right: inner.right - p(22), ..inner }, ink, DT_RIGHT);
                         text(mem, icon_s, "\u{E76C}", inner, t.dim, DT_RIGHT);
                     }
@@ -1149,7 +1151,7 @@ unsafe fn paint(hwnd: HWND) {
             let rad = rd(14) * 2;
             if a.pending > 0 {
                 shape(mem, r, t.accent, rad);
-                let msg = tf!("Оставить этот режим? Enter: оставить, Esc или {} с: вернуть", "Keep this mode? Enter keeps it, Esc or {} s goes back", ja: "このモードを維持しますか? Enter で維持、Esc または {} 秒後に元に戻ります", pt: "Manter este modo? Enter mantém, Esc ou {} s volta ao anterior", zh: "保留此模式？按 Enter 保留，按 Esc 或 {} s 后还原", a.pending);
+                let msg = tf!("Оставить этот режим? Enter: оставить, Esc или {} с: вернуть", "Keep this mode? Enter keeps it, Esc or {} s goes back", ja: "このモードを維持しますか? Enter で維持、Esc または {} 秒後に元に戻ります", pt: "Manter este modo? Enter mantém, Esc ou {} s volta ao anterior", zh: "保留此模式？按 Enter 保留，按 Esc 或 {} s 后还原", es: "¿Mantener este modo? Enter lo mantiene; Esc o {} s lo revierten", a.pending);
                 text(mem, body, &msg, RECT { left: r.left + p(18), right: r.right - p(18), ..r }, rgb(255, 255, 255), DT_LEFT);
             } else if let Some(pr) = &a.prompt {
                 shape(mem, r, t.sep, rad);
@@ -1157,13 +1159,13 @@ unsafe fn paint(hwnd: HWND) {
                 shape(mem, inset(e, -p(2)), t.accent, rd(8) * 2);
                 shape(mem, e, t.bg, rd(6) * 2);
                 let ask = match pr {
-                    Prompt::Ssid => t!("Имя скрытой сети", "Hidden network name", ja: "非表示のネットワーク名", pt: "Nome da rede oculta", zh: "隐藏网络名称").into(),
-                    Prompt::Proxy(false) => t!("Прокси: адрес:порт (пусто: убрать)", "Proxy: host:port (empty: remove)", ja: "プロキシ: ホスト:ポート (空欄で削除)", pt: "Proxy: host:porta (vazio: remover)", zh: "代理：主机:端口（留空：移除）").into(),
-                    Prompt::Proxy(true) => t!("Адрес скрипта PAC (пусто: убрать)", "PAC script address (empty: remove)", ja: "PAC スクリプトのアドレス (空欄で削除)", pt: "Endereço do script PAC (vazio: remover)", zh: "PAC 脚本地址（留空：移除）").into(),
-                    Prompt::EapUser(n) => tf!("Имя пользователя для «{}» (домен\\имя)", "User name for \"{}\" (domain\\name)", ja: "「{}」のユーザー名 (ドメイン\\名前)", pt: "Nome de usuário para \"{}\" (domínio\\nome)", zh: "“{}”的用户名（域\\用户名）", n.ssid),
-                    Prompt::EapPass(n, _) => tf!("Пароль «{}»", "Password for \"{}\"", ja: "「{}」のパスワード", pt: "Senha de \"{}\"", zh: "“{}”的密码", n.ssid),
-                    Prompt::Key(n, true) => tf!("Пароль «{}» (пусто: открытая)", "Password for \"{}\" (empty: open)", ja: "「{}」のパスワード (空欄: オープン)", pt: "Senha de \"{}\" (vazio: aberta)", zh: "“{}”的密码（留空：开放网络）", n.ssid),
-                    Prompt::Key(n, false) => tf!("Пароль «{}»", "Password for \"{}\"", ja: "「{}」のパスワード", pt: "Senha de \"{}\"", zh: "“{}”的密码", n.ssid),
+                    Prompt::Ssid => t!("Имя скрытой сети", "Hidden network name", ja: "非表示のネットワーク名", pt: "Nome da rede oculta", zh: "隐藏网络名称", es: "Nombre de la red oculta").into(),
+                    Prompt::Proxy(false) => t!("Прокси: адрес:порт (пусто: убрать)", "Proxy: host:port (empty: remove)", ja: "プロキシ: ホスト:ポート (空欄で削除)", pt: "Proxy: host:porta (vazio: remover)", zh: "代理：主机:端口（留空：移除）", es: "Proxy: host:puerto (vacío: quitar)").into(),
+                    Prompt::Proxy(true) => t!("Адрес скрипта PAC (пусто: убрать)", "PAC script address (empty: remove)", ja: "PAC スクリプトのアドレス (空欄で削除)", pt: "Endereço do script PAC (vazio: remover)", zh: "PAC 脚本地址（留空：移除）", es: "Dirección del script PAC (vacío: quitar)").into(),
+                    Prompt::EapUser(n) => tf!("Имя пользователя для «{}» (домен\\имя)", "User name for \"{}\" (domain\\name)", ja: "「{}」のユーザー名 (ドメイン\\名前)", pt: "Nome de usuário para \"{}\" (domínio\\nome)", zh: "“{}”的用户名（域\\用户名）", es: "Nombre de usuario para «{}» (dominio\\nombre)", n.ssid),
+                    Prompt::EapPass(n, _) => tf!("Пароль «{}»", "Password for \"{}\"", ja: "「{}」のパスワード", pt: "Senha de \"{}\"", zh: "“{}”的密码", es: "Contraseña para «{}»", n.ssid),
+                    Prompt::Key(n, true) => tf!("Пароль «{}» (пусто: открытая)", "Password for \"{}\" (empty: open)", ja: "「{}」のパスワード (空欄: オープン)", pt: "Senha de \"{}\" (vazio: aberta)", zh: "“{}”的密码（留空：开放网络）", es: "Contraseña para «{}» (vacía: red abierta)", n.ssid),
+                    Prompt::Key(n, false) => tf!("Пароль «{}»", "Password for \"{}\"", ja: "「{}」のパスワード", pt: "Senha de \"{}\"", zh: "“{}”的密码", es: "Contraseña para «{}»", n.ssid),
                 };
                 let label = a.msg.clone().unwrap_or(ask);
                 text(mem, body, &label, RECT { left: r.left + p(18), right: e.left - p(14), ..r }, if a.msg.is_some() { winrust_common::style::BAD } else { t.fg }, DT_LEFT);
@@ -1393,7 +1395,7 @@ unsafe fn run_cmd(hwnd: HWND, label: &str, cmd: Cmd) {
             // destructive ones need a second click on the same row
             Cmd::Uninstall(c) => {
                 if once_more(label) {
-                    say(if ext::uninstall(&c) { tf!("Запущено удаление «{}»", "Uninstalling \"{}\"", ja: "「{}」をアンインストールしています", pt: "Desinstalando \"{}\"", zh: "正在卸载“{}”", label) } else { tf!("Не удалось запустить удаление «{}»", "Could not start uninstalling \"{}\"", ja: "「{}」のアンインストールを開始できませんでした", pt: "Não foi possível iniciar a desinstalação de \"{}\"", zh: "无法开始卸载“{}”", label) });
+                    say(if ext::uninstall(&c) { tf!("Запущено удаление «{}»", "Uninstalling \"{}\"", ja: "「{}」をアンインストールしています", pt: "Desinstalando \"{}\"", zh: "正在卸载“{}”", es: "Desinstalando «{}»", label) } else { tf!("Не удалось запустить удаление «{}»", "Could not start uninstalling \"{}\"", ja: "「{}」のアンインストールを開始できませんでした", pt: "Não foi possível iniciar a desinstalação de \"{}\"", zh: "无法开始卸载“{}”", es: "No se pudo iniciar la desinstalación de «{}»", label) });
                 }
             }
             Cmd::BtUnpair(id) => {
@@ -1409,29 +1411,29 @@ unsafe fn run_cmd(hwnd: HWND, label: &str, cmd: Cmd) {
                         if v.on {
                             std::thread::spawn(move || {
                                 ext::hang_up(&name);
-                                note(tf!("VPN «{}» отключён", "VPN \"{}\" disconnected", ja: "VPN「{}」を切断しました", pt: "VPN \"{}\" desconectada", zh: "VPN“{}”已断开", name));
+                                note(tf!("VPN «{}» отключён", "VPN \"{}\" disconnected", ja: "VPN「{}」を切断しました", pt: "VPN \"{}\" desconectada", zh: "VPN“{}”已断开", es: "VPN «{}» desconectada", name));
                             });
                         } else {
-                            say(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", ja: "「{}」に接続中…", pt: "Conectando a \"{}\"…", zh: "正在连接“{}”…", name));
-                            std::thread::spawn(move || note(ext::dial(&name, v.pbk.as_deref()).map_or_else(|e| e, |_| tf!("VPN «{}» подключён", "VPN \"{}\" connected", ja: "VPN「{}」に接続しました", pt: "VPN \"{}\" conectada", zh: "VPN“{}”已连接", name))));
+                            say(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", ja: "「{}」に接続中…", pt: "Conectando a \"{}\"…", zh: "正在连接“{}”…", es: "Conectando a «{}»…", name));
+                            std::thread::spawn(move || note(ext::dial(&name, v.pbk.as_deref()).map_or_else(|e| e, |_| tf!("VPN «{}» подключён", "VPN \"{}\" connected", ja: "VPN「{}」に接続しました", pt: "VPN \"{}\" conectada", zh: "VPN“{}”已连接", es: "VPN «{}» conectada", name))));
                         }
                     }
                     Cmd::CleanTemp => {
-                        say(t!("Очистка…", "Cleaning…", ja: "クリーンアップ中…", pt: "Limpando…", zh: "正在清理…").into());
+                        say(t!("Очистка…", "Cleaning…", ja: "クリーンアップ中…", pt: "Limpando…", zh: "正在清理…", es: "Limpiando…").into());
                         ext::clean_temp(note);
                     }
                     Cmd::Wallpaper => {
                         if sys::pick_wallpaper(hwnd).is_ok() {
-                            say(t!("Обои изменены", "Wallpaper changed", ja: "壁紙を変更しました", pt: "Plano de fundo alterado").into());
+                            say(t!("Обои изменены", "Wallpaper changed", ja: "壁紙を変更しました", pt: "Plano de fundo alterado", es: "Fondo de pantalla cambiado").into());
                         }
                     }
                     Cmd::EmptyBin => {
                         if ext::empty_bin(hwnd) {
-                            say(t!("Корзина очищена", "Recycle Bin emptied", ja: "ごみ箱を空にしました", pt: "Lixeira esvaziada", zh: "回收站已清空").into());
+                            say(t!("Корзина очищена", "Recycle Bin emptied", ja: "ごみ箱を空にしました", pt: "Lixeira esvaziada", zh: "回收站已清空", es: "Papelera de reciclaje vaciada").into());
                         }
                     }
                     Cmd::BtPair(id) => {
-                        say(t!("Сопряжение…", "Pairing…", ja: "ペアリング中…", pt: "Pareando…", zh: "正在配对…").into());
+                        say(t!("Сопряжение…", "Pairing…", ja: "ペアリング中…", pt: "Pareando…", zh: "正在配对…", es: "Emparejando…").into());
                         bt::pair(id, ping);
                     }
                     Cmd::BtScan => {
@@ -1556,7 +1558,7 @@ unsafe fn edit_text(ed: isize) -> String {
 unsafe fn start_wait(hwnd: HWND, ssid: String, profile: String, new: bool) {
     unsafe {
         APP.with_borrow_mut(|a| {
-            a.msg = Some(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", ja: "「{}」に接続中…", pt: "Conectando a \"{}\"…", zh: "正在连接“{}”…", ssid));
+            a.msg = Some(tf!("Подключение к «{}»…", "Connecting to \"{}\"…", ja: "「{}」に接続中…", pt: "Conectando a \"{}\"…", zh: "正在连接“{}”…", es: "Conectando a «{}»…", ssid));
             a.connecting = Some((ssid, profile, new));
         });
         SetTimer(hwnd, 3, 30_000, None);
@@ -1587,7 +1589,7 @@ unsafe fn submit_prompt(hwnd: HWND) {
         let mut s = edit_text(ed);
         match APP.with_borrow_mut(|a| a.prompt.take()) {
             Some(Prompt::Ssid) if s.trim().is_empty() || s.len() > 32 => {
-                APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Ssid), Some(t!("Имя сети: от 1 до 32 байт", "Network name: 1 to 32 bytes", ja: "ネットワーク名: 1 ～ 32 バイト", pt: "Nome da rede: de 1 a 32 bytes", zh: "网络名称：1 到 32 字节").into())));
+                APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Ssid), Some(t!("Имя сети: от 1 до 32 байт", "Network name: 1 to 32 bytes", ja: "ネットワーク名: 1 ～ 32 バイト", pt: "Nome da rede: de 1 a 32 bytes", zh: "网络名称：1 到 32 字节", es: "Nombre de red: de 1 a 32 bytes").into())));
             }
             Some(Prompt::Ssid) => {
                 let n = wifi::Net { raw: s.as_bytes().to_vec(), ssid: s.clone(), quality: 0, connected: false, profile: None, sec: Some(wifi::Sec::Wpa2 { tkip: false }), eap: None, iface: std::mem::zeroed() };
@@ -1600,10 +1602,10 @@ unsafe fn submit_prompt(hwnd: HWND) {
                     close_prompt(hwnd);
                     refresh_page(hwnd);
                 } else {
-                    APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Proxy(pac)), Some(t!("Неверный адрес", "Not a valid address", ja: "無効なアドレスです", pt: "Endereço inválido", zh: "地址无效").into())));
+                    APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Proxy(pac)), Some(t!("Неверный адрес", "Not a valid address", ja: "無効なアドレスです", pt: "Endereço inválido", zh: "地址无效", es: "No es una dirección válida").into())));
                 }
             }
-            Some(Prompt::EapUser(n)) if s.trim().is_empty() => APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::EapUser(n)), Some(t!("Введите имя пользователя", "Enter the user name", ja: "ユーザー名を入力してください", pt: "Digite o nome de usuário", zh: "输入用户名").into()))),
+            Some(Prompt::EapUser(n)) if s.trim().is_empty() => APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::EapUser(n)), Some(t!("Введите имя пользователя", "Enter the user name", ja: "ユーザー名を入力してください", pt: "Digite o nome de usuário", zh: "输入用户名", es: "Escribe el nombre de usuario").into()))),
             Some(Prompt::EapUser(n)) => open_prompt(hwnd, Prompt::EapPass(n, s.trim().to_string())),
             Some(Prompt::EapPass(n, user)) => match wifi::add_eap_and_connect(&n.ssid, &n.raw, n.eap.unwrap_or("WPA2"), &user, &s, false, Some(&n.iface)) {
                 Ok(profile) => {
@@ -1634,7 +1636,7 @@ unsafe fn wifi_click(hwnd: HWND, n: wifi::Net) {
     unsafe {
         close_prompt(hwnd);
         match (&n.profile, n.sec) {
-            _ if n.connected => APP.with_borrow_mut(|a| a.msg = Some(t!("Отключить или забыть: правая кнопка мыши", "Disconnect or forget: right click", ja: "切断または削除: 右クリック", pt: "Desconectar ou esquecer: botão direito", zh: "断开或忘记：右键").into())),
+            _ if n.connected => APP.with_borrow_mut(|a| a.msg = Some(t!("Отключить или забыть: правая кнопка мыши", "Disconnect or forget: right click", ja: "切断または削除: 右クリック", pt: "Desconectar ou esquecer: botão direito", zh: "断开或忘记：右键", es: "Desconectar u olvidar: clic derecho").into())),
             (Some(p), _) => {
                 if wifi::connect(p, &n.iface) {
                     start_wait(hwnd, n.ssid.clone(), p.clone(), false);
@@ -1643,7 +1645,7 @@ unsafe fn wifi_click(hwnd: HWND, n: wifi::Net) {
             (None, Some(s)) if !s.needs_key() => drop(add_network(hwnd, &n, s, "", false)),
             (None, Some(_)) => open_prompt(hwnd, Prompt::Key(n, false)),
             (None, None) if n.eap.is_some() => open_prompt(hwnd, Prompt::EapUser(n)),
-            (None, None) => APP.with_borrow_mut(|a| a.msg = Some(t!("Эта сеть входит сертификатом: такие сети не поддерживаются", "This network signs in with a certificate: not supported", ja: "このネットワークは証明書でサインインします: 非対応です", pt: "Esta rede entra com um certificado: sem suporte", zh: "此网络使用证书登录：不支持").into())),
+            (None, None) => APP.with_borrow_mut(|a| a.msg = Some(t!("Эта сеть входит сертификатом: такие сети не поддерживаются", "This network signs in with a certificate: not supported", ja: "このネットワークは証明書でサインインします: 非対応です", pt: "Esta rede entra com um certificado: sem suporte", zh: "此网络使用证书登录：不支持", es: "Esta red inicia sesión con un certificado: no compatible").into())),
         }
         SetTimer(hwnd, 2, 1500, None); // look again soon: the list changes as the connection goes
     }
@@ -1660,7 +1662,7 @@ unsafe fn wifi_menu(hwnd: HWND, x: i32, y: i32) {
         });
         let Some(n) = hit else { return };
         let Some(profile) = n.profile.clone() else { return };
-        let (on, off, forget) = (wide(t!("Подключить", "Connect", ja: "接続", pt: "Conectar", zh: "连接")), wide(t!("Отключить", "Disconnect", ja: "切断", pt: "Desconectar", zh: "断开连接")), wide(t!("Забыть сеть", "Forget network", ja: "ネットワークを削除", pt: "Esquecer rede", zh: "忘记网络")));
+        let (on, off, forget) = (wide(t!("Подключить", "Connect", ja: "接続", pt: "Conectar", zh: "连接", es: "Conectar")), wide(t!("Отключить", "Disconnect", ja: "切断", pt: "Desconectar", zh: "断开连接", es: "Desconectar")), wide(t!("Забыть сеть", "Forget network", ja: "ネットワークを削除", pt: "Esquecer rede", zh: "忘记网络", es: "Olvidar red")));
         let m = CreatePopupMenu();
         AppendMenuW(m, MF_STRING, 1, if n.connected { off.as_ptr() } else { on.as_ptr() });
         AppendMenuW(m, MF_STRING, 2, forget.as_ptr());
@@ -1682,7 +1684,12 @@ unsafe fn wifi_menu(hwnd: HWND, x: i32, y: i32) {
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if msg == winrust_common::style::msg() {
-            winrust_common::style::reload(); // the style changed in the topbar menu: repaint in it
+            let was = winrust_common::lang();
+            winrust_common::style::reload(); // the style (topbar menu) or the language (any WinRust window) changed
+            if winrust_common::lang() != was {
+                APP.with_borrow_mut(|a| a.pages = pages()); // titles and rows hold their texts
+                refresh_page(hwnd);
+            }
             frame(hwnd);
             InvalidateRect(hwnd, null(), 0);
             return 0;
@@ -1736,7 +1743,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                             if new {
                                 wifi::forget(&prof); // a wrong password is not kept: the next click asks again
                             }
-                            tf!("Не удалось подключиться к «{}»: {}", "Could not connect to \"{}\": {}", ja: "「{}」に接続できませんでした: {}", pt: "Não foi possível conectar a \"{}\": {}", zh: "无法连接到“{}”：{}", ssid, wifi::reason_text(reason))
+                            tf!("Не удалось подключиться к «{}»: {}", "Could not connect to \"{}\": {}", ja: "「{}」に接続できませんでした: {}", pt: "Não foi possível conectar a \"{}\": {}", zh: "无法连接到“{}”：{}", es: "No se pudo conectar a «{}»: {}", ssid, wifi::reason_text(reason))
                         });
                         APP.with_borrow_mut(|a| a.msg = m);
                     }
@@ -1762,7 +1769,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_TIMER if wp == 3 => {
                 KillTimer(hwnd, 3);
                 if let Some((ssid, ..)) = APP.with_borrow_mut(|a| a.connecting.take()) {
-                    APP.with_borrow_mut(|a| a.msg = Some(tf!("«{}» не ответила за 30 с", "\"{}\" did not answer in 30 s", ja: "「{}」が 30 秒以内に応答しませんでした", pt: "\"{}\" não respondeu em 30 s", zh: "“{}”在 30 s 内未响应", ssid)));
+                    APP.with_borrow_mut(|a| a.msg = Some(tf!("«{}» не ответила за 30 с", "\"{}\" did not answer in 30 s", ja: "「{}」が 30 秒以内に応答しませんでした", pt: "\"{}\" não respondeu em 30 s", zh: "“{}”在 30 s 内未响应", es: "«{}» no respondió en 30 s", ssid)));
                     InvalidateRect(hwnd, null(), 0);
                 }
                 0
@@ -1887,7 +1894,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         let others: Vec<_> = mons.iter().enumerate().filter(|(j, _)| *j != d.idx).map(|(_, m)| *m).collect();
                         let (x, y) = display::snap(d.cur.0, d.cur.1, m.w, m.h, &others);
                         if (x, y) != (m.x, m.y) && !display::move_monitor(d.idx, x, y) {
-                            APP.with_borrow_mut(|a| a.msg = Some(t!("Windows не приняла такое расположение", "Windows did not accept that arrangement", ja: "Windows がその配置を受け付けませんでした", pt: "O Windows não aceitou essa disposição", zh: "Windows 未接受该排列").into()));
+                            APP.with_borrow_mut(|a| a.msg = Some(t!("Windows не приняла такое расположение", "Windows did not accept that arrangement", ja: "Windows がその配置を受け付けませんでした", pt: "O Windows não aceitou essa disposição", zh: "Windows 未接受该排列", es: "Windows no aceptó esa disposición").into()));
                         }
                     } else {
                         display::select_monitor(d.idx); // a click picks the display the rows below act on
@@ -2049,7 +2056,7 @@ fn main() {
         let (inst, class) = (GetModuleHandleW(null()), wide("WinRustSettings"));
         let wc = WNDCLASSW { style: 0, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
         RegisterClassW(&wc);
-        let hwnd = CreateWindowExW(0, class.as_ptr(), wide(t!("Параметры", "Settings", ja: "設定", pt: "Configurações", zh: "设置")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 940 * dpi / 96, 620 * dpi / 96, null_mut(), null_mut(), inst, null());
+        let hwnd = CreateWindowExW(0, class.as_ptr(), wide(t!("Параметры", "Settings", ja: "設定", pt: "Configurações", zh: "设置", es: "Configuración")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 940 * dpi / 96, 620 * dpi / 96, null_mut(), null_mut(), inst, null());
         frame(hwnd);
         MAIN.store(hwnd as isize, std::sync::atomic::Ordering::Relaxed);
         wifi::watch(hwnd);

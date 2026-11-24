@@ -5,6 +5,8 @@ use crate::*;
 //
 //   plugin-launcher list
 //   plugin-launcher install <plugin>... --yes   (several names, or `all` for the defaults; without --yes it only prints warnings)
+//   rust-explorer: --shell also replaces the Explorer shell (and installs topbar if it is missing), --no-shell gives the shell
+//   back and keeps the file manager; with neither, install = file manager only and update keeps what is there
 //   plugin-launcher uninstall <plugin>
 //   plugin-launcher rollback --yes
 //   plugin-launcher autoupdate               (what the WinRust-update task runs as SYSTEM: src/update)
@@ -26,6 +28,11 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         let _ = writeln!(out, "{s}");
     };
     let yes = args.iter().any(|a| a == "--yes");
+    let shell = match (args.iter().any(|a| a == "--shell"), args.iter().any(|a| a == "--no-shell")) {
+        (true, true) => return { say(t!("--shell и --no-shell вместе: выберите одно", "--shell and --no-shell together: pick one", ja: "--shell と --no-shell は同時に指定できません: どちらかを選んでください", pt: "--shell e --no-shell juntos: escolha um", zh: "--shell 和 --no-shell 不能同时使用：请选一个", es: "--shell y --no-shell juntos: elige uno")); 2 },
+        (s, ns) => (s || ns).then_some(s),
+    };
+    set_rx_shell(shell);
     // `--lang zh` (or `--lang=zh`) also switches the interface language, so one elevated command installs and enables
     // it: the components restarted below read lang.txt and start in it.
     let lang_arg = args.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--lang=") {
@@ -38,7 +45,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     for a in args {
         if skip {
             skip = false;
-        } else if a == "--yes" || a.starts_with("--lang=") {
+        } else if matches!(a.as_str(), "--yes" | "--shell" | "--no-shell") || a.starts_with("--lang=") {
             continue;
         } else if a == "--lang" {
             skip = true;
@@ -50,13 +57,13 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     if let Some(code) = &lang_arg {
         let l = i18n::Lang::parse(code);
         i18n::set_lang(l);
-        say(&tf!("Язык: {}", "Language: {}", ja: "言語: {}", pt: "Idioma: {}", zh: "语言：{}", l.name()));
+        say(&tf!("Язык: {}", "Language: {}", ja: "言語: {}", pt: "Idioma: {}", zh: "语言：{}", es: "Idioma: {}", l.name()));
     }
-    let usage = t!("использование: plugin-launcher list | install <плагин>...|all --yes | update <плагин>|all | uninstall <плагин> | rollback --yes [--lang en|ru|ja|pt|zh]", "usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin>|all | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh]", ja: "使い方: plugin-launcher list | install <プラグイン>...|all --yes | update <プラグイン>|all | uninstall <プラグイン> | rollback --yes [--lang en|ru|ja|pt|zh]", pt: "uso: plugin-launcher list | install <plugin>...|all --yes | update <plugin>|all | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh]", zh: "用法：plugin-launcher list | install <插件>...|all --yes | update <插件>|all | uninstall <插件> | rollback --yes [--lang en|ru|ja|pt|zh]");
+    let usage = t!("использование: plugin-launcher list | install <плагин>...|all [--shell|--no-shell] --yes | update <плагин>|all [--shell|--no-shell] | uninstall <плагин> | rollback --yes [--lang en|ru|ja|pt|zh|es]", "usage: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] --yes | update <plugin>|all [--shell|--no-shell] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]", ja: "使い方: plugin-launcher list | install <プラグイン>...|all [--shell|--no-shell] --yes | update <プラグイン>|all [--shell|--no-shell] | uninstall <プラグイン> | rollback --yes [--lang en|ru|ja|pt|zh|es]", pt: "uso: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] --yes | update <plugin>|all [--shell|--no-shell] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]", zh: "用法：plugin-launcher list | install <插件>...|all [--shell|--no-shell] --yes | update <插件>|all [--shell|--no-shell] | uninstall <插件> | rollback --yes [--lang en|ru|ja|pt|zh|es]", es: "uso: plugin-launcher list | install <plugin>...|all [--shell|--no-shell] --yes | update <plugin>|all [--shell|--no-shell] | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh|es]");
     let result = match words.as_slice() {
         ["list"] => {
             for p in PLUGINS {
-                say(&format!("{:<16}{}", p.name, if p.actions.is_none() { t!("заглушка", "stub", ja: "未実装", pt: "esboço", zh: "占位") } else if (p.installed)() { t!("установлен", "installed", ja: "インストール済み", pt: "instalado", zh: "已安装") } else { t!("не установлен", "not installed", ja: "未インストール", pt: "não instalado", zh: "未安装") }));
+                say(&format!("{:<16}{}", p.name, if p.actions.is_none() { t!("заглушка", "stub", ja: "未実装", pt: "esboço", zh: "占位", es: "provisional") } else if (p.installed)() { t!("установлен", "installed", ja: "インストール済み", pt: "instalado", zh: "已安装", es: "instalado") } else { t!("не установлен", "not installed", ja: "未インストール", pt: "não instalado", zh: "未安装", es: "no instalado") }));
             }
             return 0;
         }
@@ -68,30 +75,36 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                     "all" => idx.extend(ready().filter(|&i| selected_by_default(PLUGINS[i].name, false))),
                     n => match find(n) {
                         Some(i) => idx.push(i),
-                        None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}")); 2 },
+                        None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}", es: "plugin desconocido: {n}")); 2 },
                     },
                 }
+            }
+            let rx = find(RUST_EXPLORER);
+            if shell == Some(true) && rx.is_some_and(|r| idx.contains(&r)) {
+                idx.extend(find(TOPBAR).filter(|&t| !(PLUGINS[t].installed)())); // the shell part needs the bar
             }
             idx.sort_unstable();
             idx.dedup();
             if !yes {
                 for &i in &idx {
-                    say(&format!("{}: {}", PLUGINS[i].name, PLUGINS[i].warn.get()));
+                    let warn = if Some(i) == rx && shell == Some(true) { RX_SHELL_WARN.get() } else { PLUGINS[i].warn.get() };
+                    say(&format!("{}: {warn}", PLUGINS[i].name));
                 }
-                return { say(t!("Ничего не изменено. Повторите с --yes, чтобы установить.", "Nothing changed. Repeat with --yes to install.", ja: "何も変更していません。--yes を付けてやり直してください。", pt: "Nada foi alterado. Repita com --yes para instalar.", zh: "没有任何更改。请加上 --yes 重新执行以安装。")); 2 };
+                return { say(t!("Ничего не изменено. Повторите с --yes, чтобы установить.", "Nothing changed. Repeat with --yes to install.", ja: "何も変更していません。--yes を付けてやり直してください。", pt: "Nada foi alterado. Repita com --yes para instalar.", zh: "没有任何更改。请加上 --yes 重新执行以安装。", es: "No se cambió nada. Repite con --yes para instalar.")); 2 };
             }
             // one that fails or is already there does not stop the rest
             let mut failed = false;
             for i in idx {
-                if (PLUGINS[i].installed)() {
-                    say(&tf!("{} уже установлен", "{} is already installed", ja: "{} はインストール済みです", pt: "{} já está instalado", zh: "{} 已经安装", PLUGINS[i].name));
+                // an installed rust-explorer with --shell / --no-shell is installed again to switch
+                if (PLUGINS[i].installed)() && !(Some(i) == rx && shell.is_some()) {
+                    say(&tf!("{} уже установлен", "{} is already installed", ja: "{} はインストール済みです", pt: "{} já está instalado", zh: "{} 已经安装", es: "{} ya está instalado", PLUGINS[i].name));
                     continue;
                 }
                 match install_plugin(i) {
                     Ok(m) => say(&m),
                     Err(e) => {
                         failed = true;
-                        say(&tf!("ошибка: {0}: {1}", "error: {0}: {1}", ja: "エラー: {0}: {1}", pt: "erro: {0}: {1}", zh: "错误：{0}：{1}", PLUGINS[i].name, e));
+                        say(&tf!("ошибка: {0}: {1}", "error: {0}: {1}", ja: "エラー: {0}: {1}", pt: "erro: {0}: {1}", zh: "错误：{0}：{1}", es: "error: {0}: {1}", PLUGINS[i].name, e));
                     }
                 }
             }
@@ -105,29 +118,29 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                     Ok(m) => say(&m),
                     Err(e) => {
                         failed = true;
-                        say(&tf!("ошибка: {0}: {1}", "error: {0}: {1}", ja: "エラー: {0}: {1}", pt: "erro: {0}: {1}", zh: "错误：{0}：{1}", PLUGINS[i].name, e));
+                        say(&tf!("ошибка: {0}: {1}", "error: {0}: {1}", ja: "エラー: {0}: {1}", pt: "erro: {0}: {1}", zh: "错误：{0}：{1}", es: "error: {0}: {1}", PLUGINS[i].name, e));
                     }
                 }
             }
             return if failed { 1 } else { 0 };
         }
         ["update", n] => match find(n) {
-            None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}")); 2 },
-            Some(i) if !(PLUGINS[i].installed)() => return { say(&tf!("{n} не установлен (используйте install)", "{n} is not installed (use install)", ja: "{n} はインストールされていません (install を使用してください)", pt: "{n} não está instalado (use install)", zh: "{n} 未安装（请使用 install）")); 2 },
+            None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}", es: "plugin desconocido: {n}")); 2 },
+            Some(i) if !(PLUGINS[i].installed)() => return { say(&tf!("{n} не установлен (используйте install)", "{n} is not installed (use install)", ja: "{n} はインストールされていません (install を使用してください)", pt: "{n} não está instalado (use install)", zh: "{n} 未安装（请使用 install）", es: "{n} no está instalado (usa install)")); 2 },
             Some(i) => install_plugin(i),
         },
         ["uninstall", n] => match find(n) {
-            None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}")); 2 },
-            Some(i) if !(PLUGINS[i].installed)() => return { say(&tf!("{n} не установлен", "{n} is not installed", ja: "{n} はインストールされていません", pt: "{n} não está instalado", zh: "{n} 未安装")); 0 },
+            None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}", es: "plugin desconocido: {n}")); 2 },
+            Some(i) if !(PLUGINS[i].installed)() => return { say(&tf!("{n} не установлен", "{n} is not installed", ja: "{n} はインストールされていません", pt: "{n} não está instalado", zh: "{n} 未安装", es: "{n} no está instalado")); 0 },
             Some(i) => uninstall_plugin(i),
         },
         ["autoupdate"] => autoupdate(),
         ["rollback"] if yes => rollback(),
-        ["rollback"] => return { say(t!("Удаляет все установленные плагины. Повторите с --yes.", "Removes every installed plugin. Repeat with --yes.", ja: "インストール済みのプラグインをすべて削除します。--yes を付けてやり直してください。", pt: "Remove todos os plugins instalados. Repita com --yes.", zh: "会移除所有已安装的插件。请加上 --yes 重新执行。")); 2 },
+        ["rollback"] => return { say(t!("Удаляет все установленные плагины. Повторите с --yes.", "Removes every installed plugin. Repeat with --yes.", ja: "インストール済みのプラグインをすべて削除します。--yes を付けてやり直してください。", pt: "Remove todos os plugins instalados. Repita com --yes.", zh: "会移除所有已安装的插件。请加上 --yes 重新执行。", es: "Quita todos los plugins instalados. Repite con --yes.")); 2 },
         _ => return { say(usage); 2 },
     };
     match result {
         Ok(m) => { say(&m); 0 }
-        Err(e) => { say(&tf!("ошибка: {e}", "error: {e}", ja: "エラー: {e}", pt: "erro: {e}", zh: "错误：{e}")); 1 }
+        Err(e) => { say(&tf!("ошибка: {e}", "error: {e}", ja: "エラー: {e}", pt: "erro: {e}", zh: "错误：{e}", es: "error: {e}")); 1 }
     }
 }
