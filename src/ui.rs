@@ -65,7 +65,11 @@ impl Ui {
         SetTextColor(self.dc, color);
         SetBkMode(self.dc, TRANSPARENT as i32);
         let mut r = RECT { left: self.px(b[0]), top: self.px(b[1]), right: self.px(b[2]), bottom: self.px(b[3]) };
+        let whole = r;
         DrawTextW(self.dc, wide(s).as_ptr(), -1, &mut r, flags | DT_NOPREFIX);
+        if flags & DT_END_ELLIPSIS != 0 {
+            winrust_common::tip::cut(self.dc, s, whole, flags); // shortened: the pointer resting on it shows it whole
+        }
         SelectObject(self.dc, of);
         DeleteObject(f);
     }
@@ -397,6 +401,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     let hair = 1.0 / s;
     let page = PAGE.get();
     let custom = CUSTOM.get();
+    winrust_common::tip::clear();
 
     // header: the name on the left, the language on the right, the accent line under it
     ui.shape([0.0, 0.0, w, HEAD_H], 0.0, argb(HEAD, 255));
@@ -1244,6 +1249,7 @@ pub(crate) unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
         WM_PAINT => paint(hwnd),
         WM_ERASEBKGND => return 1,
         WM_MOUSEMOVE => {
+            winrust_common::tip::track(hwnd, (lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32);
             let h = hit(hwnd, lp);
             if h != HOVER.get() {
                 HOVER.set(h);
@@ -1257,10 +1263,12 @@ pub(crate) unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
             return 1;
         }
         WM_MOUSELEAVE => {
+            winrust_common::tip::hide();
             HOVER.set(None);
             InvalidateRect(hwnd, null(), 0);
         }
         WM_LBUTTONUP => {
+            winrust_common::tip::hide();
             if let Some(i) = hit(hwnd, lp) {
                 click(hwnd, i);
             }
@@ -1277,6 +1285,7 @@ pub(crate) unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
         },
         WM_LANG_DONE => lang_changed(hwnd, wp != 0),
         WM_DONE => finished(hwnd),
+        WM_TIMER if winrust_common::tip::timer(hwnd, wp) => {}
         WM_TIMER if wp == 1 => {
             InvalidateRect(hwnd, null(), 0); // the progress page's animation
         }
