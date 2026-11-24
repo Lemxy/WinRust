@@ -65,7 +65,7 @@ struct Conn {
 
 fn auth_name(a: i32) -> &'static str {
     match a {
-        1 => t!("Открытая", "Open", ja: "オープン", pt: "Aberta", zh: "开放"),
+        1 => t!("Открытая", "Open", ja: "オープン", pt: "Aberta", zh: "开放", es: "Abrir"),
         2 => "WEP",
         3 => "WPA",
         4 => "WPA‑Personal",
@@ -73,7 +73,7 @@ fn auth_name(a: i32) -> &'static str {
         7 => "WPA2‑Personal",
         8 => "WPA3",
         9 => "WPA3‑Personal",
-        _ => t!("Защищено", "Secured", ja: "保護あり", pt: "Protegida", zh: "已加密"),
+        _ => t!("Защищено", "Secured", ja: "保護あり", pt: "Protegida", zh: "已加密", es: "Protegida"),
     }
 }
 
@@ -122,18 +122,18 @@ thread_local! {
 /// January..December in the UI language; Japanese and Chinese name the month by its number (see `month_title`).
 fn month_name(m: i32) -> &'static str {
     [
-        t!("Январь", "January", ja: "1月", pt: "Janeiro", zh: "1月"),
-        t!("Февраль", "February", ja: "2月", pt: "Fevereiro", zh: "2月"),
-        t!("Март", "March", ja: "3月", pt: "Março", zh: "3月"),
-        t!("Апрель", "April", ja: "4月", pt: "Abril", zh: "4月"),
-        t!("Май", "May", ja: "5月", pt: "Maio", zh: "5月"),
-        t!("Июнь", "June", ja: "6月", pt: "Junho", zh: "6月"),
-        t!("Июль", "July", ja: "7月", pt: "Julho", zh: "7月"),
-        t!("Август", "August", ja: "8月", pt: "Agosto", zh: "8月"),
-        t!("Сентябрь", "September", ja: "9月", pt: "Setembro", zh: "9月"),
-        t!("Октябрь", "October", ja: "10月", pt: "Outubro", zh: "10月"),
-        t!("Ноябрь", "November", ja: "11月", pt: "Novembro", zh: "11月"),
-        t!("Декабрь", "December", ja: "12月", pt: "Dezembro", zh: "12月"),
+        t!("Январь", "January", ja: "1月", pt: "Janeiro", zh: "1月", es: "Enero"),
+        t!("Февраль", "February", ja: "2月", pt: "Fevereiro", zh: "2月", es: "Febrero"),
+        t!("Март", "March", ja: "3月", pt: "Março", zh: "3月", es: "Marzo"),
+        t!("Апрель", "April", ja: "4月", pt: "Abril", zh: "4月", es: "Abril"),
+        t!("Май", "May", ja: "5月", pt: "Maio", zh: "5月", es: "Mayo"),
+        t!("Июнь", "June", ja: "6月", pt: "Junho", zh: "6月", es: "Junio"),
+        t!("Июль", "July", ja: "7月", pt: "Julho", zh: "7月", es: "Julio"),
+        t!("Август", "August", ja: "8月", pt: "Agosto", zh: "8月", es: "Agosto"),
+        t!("Сентябрь", "September", ja: "9月", pt: "Setembro", zh: "9月", es: "Septiembre"),
+        t!("Октябрь", "October", ja: "10月", pt: "Outubro", zh: "10月", es: "Octubre"),
+        t!("Ноябрь", "November", ja: "11月", pt: "Novembro", zh: "11月", es: "Noviembre"),
+        t!("Декабрь", "December", ja: "12月", pt: "Dezembro", zh: "12月", es: "Diciembre"),
     ][(m.clamp(1, 12) - 1) as usize]
 }
 
@@ -148,13 +148,13 @@ fn month_title(y: i32, m: i32) -> String {
 /// Weekday initials of the calendar's first row, Monday first.
 fn weekday_initials() -> [&'static str; 7] {
     [
-        t!("Пн", "Mo", ja: "月", pt: "seg", zh: "一"),
-        t!("Вт", "Tu", ja: "火", pt: "ter", zh: "二"),
-        t!("Ср", "We", ja: "水", pt: "qua", zh: "三"),
-        t!("Чт", "Th", ja: "木", pt: "qui", zh: "四"),
-        t!("Пт", "Fr", ja: "金", pt: "sex", zh: "五"),
-        t!("Сб", "Sa", ja: "土", pt: "sáb", zh: "六"),
-        t!("Вс", "Su", ja: "日", pt: "dom", zh: "日"),
+        t!("Пн", "Mo", ja: "月", pt: "seg", zh: "一", es: "Lu"),
+        t!("Вт", "Tu", ja: "火", pt: "ter", zh: "二", es: "Ma"),
+        t!("Ср", "We", ja: "水", pt: "qua", zh: "三", es: "Mi"),
+        t!("Чт", "Th", ja: "木", pt: "qui", zh: "四", es: "Ju"),
+        t!("Пт", "Fr", ja: "金", pt: "sex", zh: "五", es: "Vi"),
+        t!("Сб", "Sa", ja: "土", pt: "sáb", zh: "六", es: "Sá"),
+        t!("Вс", "Su", ja: "日", pt: "dom", zh: "日", es: "Do"),
     ]
 }
 
@@ -292,7 +292,7 @@ unsafe fn on_files(hw: HWND, hd: HDROP) {
     }
     DragFinish(hd);
     note(&match added.len() {
-        0 => t!("Уже в Пуске", "Already in Start", ja: "すでにスタートにあります", pt: "Já está no Iniciar", zh: "已在开始菜单中").to_string(),
+        0 => t!("Уже в Пуске", "Already in Start", ja: "すでにスタートにあります", pt: "Já está no Iniciar", zh: "已在开始菜单中", es: "Ya está en Inicio").to_string(),
         1 => format!("Added to Start: {}", added[0]),
         n => format!("Added {n} items to Start"),
     });
@@ -561,7 +561,7 @@ unsafe fn read_nets() {
             NOTE.set(String::new());
         } else if now_ms().saturating_sub(t0) > 25_000 {
             CONNECTING.set(None);
-            NOTE.set(tf!("Не удалось подключиться к «{ssid}»", "Could not connect to “{ssid}”", ja: "「{ssid}」に接続できませんでした", pt: "Não foi possível conectar a “{ssid}”", zh: "无法连接到“{ssid}”"));
+            NOTE.set(tf!("Не удалось подключиться к «{ssid}»", "Could not connect to “{ssid}”", ja: "「{ssid}」に接続できませんでした", pt: "Não foi possível conectar a “{ssid}”", zh: "无法连接到“{ssid}”", es: "No se pudo conectar a «{ssid}»"));
         }
     }
 }
@@ -577,7 +577,7 @@ unsafe fn forget(ssid: &str) {
     let w = wide(&p);
     let mut ok = false;
     for_each_wlan(|h, g| ok |= WlanDeleteProfile(h, g, w.as_ptr(), null()) == 0);
-    NOTE.set(if ok { tf!("Сеть «{ssid}» забыта", "Forgot “{ssid}”", ja: "「{ssid}」を削除しました", pt: "“{ssid}” esquecida", zh: "已忘记“{ssid}”") } else { tf!("Не удалось забыть «{ssid}»", "Could not forget “{ssid}”", ja: "「{ssid}」を削除できませんでした", pt: "Não foi possível esquecer “{ssid}”", zh: "无法忘记“{ssid}”") });
+    NOTE.set(if ok { tf!("Сеть «{ssid}» забыта", "Forgot “{ssid}”", ja: "「{ssid}」を削除しました", pt: "“{ssid}” esquecida", zh: "已忘记“{ssid}”", es: "Se olvidó «{ssid}»") } else { tf!("Не удалось забыть «{ssid}»", "Could not forget “{ssid}”", ja: "「{ssid}」を削除できませんでした", pt: "Não foi possível esquecer “{ssid}”", zh: "无法忘记“{ssid}”", es: "No se pudo olvidar «{ssid}»") });
     read_nets();
 }
 
@@ -615,7 +615,7 @@ unsafe fn wifi_join(n: &Net, pass: &str) {
         wifi_connect(&n.ssid, &n.g);
         start_connecting(&n.ssid);
     } else {
-        NOTE.set(t!("Не удалось сохранить сеть (неверный формат пароля?)", "Could not save the network (wrong password format?)", ja: "ネットワークを保存できませんでした (パスワードの形式が違いませんか?)", pt: "Não foi possível salvar a rede (formato de senha errado?)", zh: "无法保存网络（密码格式有误？）").into());
+        NOTE.set(t!("Не удалось сохранить сеть (неверный формат пароля?)", "Could not save the network (wrong password format?)", ja: "ネットワークを保存できませんでした (パスワードの形式が違いませんか?)", pt: "Não foi possível salvar a rede (formato de senha errado?)", zh: "无法保存网络（密码格式有误？）", es: "No se pudo guardar la red (¿formato de contraseña incorrecto?)").into());
     }
 }
 
@@ -665,11 +665,11 @@ const CTX_ROW: i32 = 34;
 fn ctx_items(ssid: &str) -> Vec<(&'static str, u8)> {
     NETS.with_borrow(|n| {
         let Some(n) = n.iter().find(|n| n.ssid == ssid) else { return vec![] };
-        let mut v = vec![if n.connected { (t!("Отключиться", "Disconnect", ja: "切断", pt: "Desconectar", zh: "断开连接"), 1) } else { (t!("Подключиться", "Connect", ja: "接続", pt: "Conectar", zh: "连接"), 0) }];
+        let mut v = vec![if n.connected { (t!("Отключиться", "Disconnect", ja: "切断", pt: "Desconectar", zh: "断开连接", es: "Desconectar"), 1) } else { (t!("Подключиться", "Connect", ja: "接続", pt: "Conectar", zh: "连接", es: "Conectar"), 0) }];
         if n.profile.is_some() {
-            v.push((t!("Забыть сеть", "Forget network", ja: "ネットワークを削除", pt: "Esquecer rede", zh: "忘记网络"), 2));
+            v.push((t!("Забыть сеть", "Forget network", ja: "ネットワークを削除", pt: "Esquecer rede", zh: "忘记网络", es: "Olvidar red"), 2));
         }
-        v.push((t!("Известные сети…", "Known networks…", ja: "既知のネットワーク…", pt: "Redes conhecidas…", zh: "已知网络…"), 3));
+        v.push((t!("Известные сети…", "Known networks…", ja: "既知のネットワーク…", pt: "Redes conhecidas…", zh: "已知网络…", es: "Redes conocidas…"), 3));
         v
     })
 }
@@ -803,6 +803,8 @@ thread_local! {
     static MITEMS: RefCell<Vec<MItem>> = const { RefCell::new(Vec::new()) };
     static MHEAD: RefCell<Option<(HICON, &'static str, String, String)>> = const { RefCell::new(None) }; // icon (or a glyph when null), title, subtitle
     static MPICK: RefCell<Option<Pick>> = const { RefCell::new(None) };
+    static REPLACING: Cell<bool> = const { Cell::new(false) }; // a menu pick is running: a menu it opens takes this one's place
+    static REUSED: Cell<bool> = const { Cell::new(false) }; // ...and it did: the window on screen now shows that menu
 }
 const MW: i32 = 272; // menu width
 const MROW: i32 = 38;
@@ -811,6 +813,23 @@ const MHEAD_H: i32 = 58;
 /// Menu flyout above the bar, centered on screen x `cx`. `pick` gets the index of the chosen item (not called on cancel).
 /// A right click while a menu is open replaces it.
 pub fn menu(cx: i32, head: Option<(HICON, &'static str, String, String)>, items: Vec<MItem>, pick: impl FnOnce(usize) + 'static) {
+    // opened from a pick of the menu on screen (the next settings page, the same page with a switch flipped): the same
+    // window shows the new items where it is, resized, redrawn at once. No new window: a new one, however quick, is blank
+    // for a frame, and closing and opening again made the menu blink on every click
+    if REPLACING.get() && is_open(Kind::Menu) {
+        let same_page = MHEAD.with_borrow(|h| h.as_ref().map(|h| h.2.clone())) == head.as_ref().map(|h| h.2.clone());
+        MITEMS.set(items);
+        MHEAD.set(head);
+        MPICK.set(Some(Box::new(pick)));
+        MENU_X.set(if vert() { cx } else { cx - sc(MW) / 2 });
+        if !same_page {
+            SCROLL.set(0);
+            SEL.set(0);
+        }
+        REUSED.set(true);
+        unsafe { reflow_menu() };
+        return;
+    }
     if is_open(Kind::Menu) {
         close_now();
     }
@@ -819,6 +838,20 @@ pub fn menu(cx: i32, head: Option<(HICON, &'static str, String, String)>, items:
     MPICK.set(Some(Box::new(pick)));
     MENU_X.set(if vert() { cx } else { cx - sc(MW) / 2 }); // along a side bar it holds the anchor y
     toggle(Kind::Menu);
+}
+
+/// The open menu's window fitted to its new items: size, place above the bar, rounded corners; painted before it returns.
+unsafe fn reflow_menu() {
+    let hw = FH.get();
+    let (w, h) = (sc(size(Kind::Menu).0), sc(size(Kind::Menu).1));
+    let sw = GetSystemMetrics(SM_CXSCREEN);
+    let x = if vert() { side_x(w) } else { MENU_X.get().min(sw - w - sc(8)).max(sc(8)) };
+    let fy = if vert() { (MENU_X.get() - h / 2).clamp(sc(8), GetSystemMetrics(SM_CYSCREEN) - h - sc(8)) } else { pop_y(h) };
+    FIN.set((x, fy));
+    SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 0);
+    SetWindowPos(hw, null_mut(), x, fy, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    InvalidateRect(hw, null(), 0);
+    UpdateWindow(hw);
 }
 
 /// (top, bottom) of each menu item in logical px, and the panel height.
@@ -843,14 +876,14 @@ fn menu_rows() -> (Vec<(i32, i32)>, i32) {
 pub fn context_menu(x: i32) {
     let pu = crate::purge_installed();
     let mut items = vec![
-        MItem::new(t!("Параметры Windows", "Windows Settings", ja: "Windows の設定", pt: "Configurações do Windows", zh: "Windows 设置")).hint("Win+I"),
-        MItem::new(t!("Персонализация", "Personalization", ja: "個人用設定", pt: "Personalização", zh: "个性化")),
-        MItem::new(t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器")).hint("Ctrl+Shift+Esc").sep(),
-        MItem::new(t!("Чистильщик диска", "Disk Cleaner", ja: "ディスク クリーナー", pt: "Limpador de Disco", zh: "磁盘清理")),
-        MItem::new(t!("Закрыть панель", "Close the bar", ja: "バーを閉じる", pt: "Fechar a barra", zh: "关闭任务栏")).danger().sep(),
+        MItem::new(t!("Параметры Windows", "Windows Settings", ja: "Windows の設定", pt: "Configurações do Windows", zh: "Windows 设置", es: "Configuración de Windows")).hint("Win+I"),
+        MItem::new(t!("Персонализация", "Personalization", ja: "個人用設定", pt: "Personalização", zh: "个性化", es: "Personalización")),
+        MItem::new(t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器", es: "Administrador de tareas")).hint("Ctrl+Shift+Esc").sep(),
+        MItem::new(t!("Чистильщик диска", "Disk Cleaner", ja: "ディスク クリーナー", pt: "Limpador de Disco", zh: "磁盘清理", es: "Limpiador de disco")),
+        MItem::new(t!("Закрыть панель", "Close the bar", ja: "バーを閉じる", pt: "Fechar a barra", zh: "关闭任务栏", es: "Cerrar la barra")).danger().sep(),
     ];
     if pu {
-        items.insert(4, MItem::new(t!("Удалить мусор Windows (необратимо)", "Remove Windows junk (irreversible)", ja: "Windows の不要なものを削除 (元に戻せません)", pt: "Remover lixo do Windows (irreversível)", zh: "删除 Windows 垃圾文件（不可恢复）")).danger());
+        items.insert(4, MItem::new(t!("Удалить мусор Windows (необратимо)", "Remove Windows junk (irreversible)", ja: "Windows の不要なものを削除 (元に戻せません)", pt: "Remover lixo do Windows (irreversível)", zh: "删除 Windows 垃圾文件（不可恢复）", es: "Quitar la basura de Windows (irreversible)")).danger());
     }
     menu(x, None, items, move |i| unsafe {
         let i = if pu && i == 4 { 99 } else { i };
@@ -1041,11 +1074,11 @@ unsafe fn app_menu(hw: HWND, i: usize, x: i32, y: i32) {
     let m = CreatePopupMenu();
     let path = wstr(&lnk);
     let file = !path.starts_with("shell:"); // Store apps have no file to run elevated or to show in a folder
-    let pin_label = if start_pinned(&path) { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单") };
+    let pin_label = if start_pinned(&path) { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除", es: "Quitar de Inicio") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单", es: "Agregar a Inicio") };
     let menu = [
-        (1, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")),
-        (2, t!("Запуск от имени администратора", "Run as administrator", ja: "管理者として実行", pt: "Executar como administrador", zh: "以管理员身份运行")),
-        (3, t!("Расположение файла", "Open file location", ja: "ファイルの場所を開く", pt: "Abrir local do arquivo", zh: "打开文件所在位置")),
+        (1, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开", es: "Abrir")),
+        (2, t!("Запуск от имени администратора", "Run as administrator", ja: "管理者として実行", pt: "Executar como administrador", zh: "以管理员身份运行", es: "Ejecutar como administrador")),
+        (3, t!("Расположение файла", "Open file location", ja: "ファイルの場所を開く", pt: "Abrir local do arquivo", zh: "打开文件所在位置", es: "Abrir ubicación del archivo")),
         (4, pin_label),
     ];
     for (id, label) in menu {
@@ -1095,7 +1128,7 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
                 None => {
                     // no answer from the radio list (still reading, or Windows hides it from us): do not sit silent, show Windows' page
                     crate::quick::refresh();
-                    NOTE.set(t!("Нет данных о Bluetooth, открываю параметры", "No Bluetooth state, opening Settings", ja: "Bluetooth の状態を取得できません。設定を開きます", pt: "Sem estado do Bluetooth, abrindo as Configurações", zh: "无法获取蓝牙状态，正在打开设置").into());
+                    NOTE.set(t!("Нет данных о Bluetooth, открываю параметры", "No Bluetooth state, opening Settings", ja: "Bluetooth の状態を取得できません。設定を開きます", pt: "Sem estado do Bluetooth, abrindo as Configurações", zh: "无法获取蓝牙状态，正在打开设置", es: "Sin estado de Bluetooth; abriendo Configuración").into());
                     open(&wide("ms-settings:bluetooth"));
                     close();
                 }
@@ -1107,10 +1140,10 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
                 let (nar, mag) = (crate::quick::running("Narrator.exe"), crate::quick::running("Magnify.exe"));
                 let (sticky, filter) = (crate::quick::sticky_keys(), crate::quick::filter_keys());
                 let items = vec![
-                    MItem::new(t!("Экранный диктор", "Narrator", ja: "ナレーター", pt: "Narrador", zh: "讲述人")).hint("Win+Ctrl+Enter").on(nar),
-                    MItem::new(t!("Экранная лупа", "Magnifier", ja: "拡大鏡", pt: "Lupa", zh: "放大镜")).hint("Win +/Esc").on(mag),
-                    MItem::new(t!("Залипание клавиш", "Sticky keys", ja: "固定キー機能", pt: "Teclas de Aderência", zh: "粘滞键")).on(sticky).sep(),
-                    MItem::new(t!("Фильтрация ввода", "Filter keys", ja: "フィルター キー機能", pt: "Teclas de Filtro", zh: "筛选键")).on(filter),
+                    MItem::new(t!("Экранный диктор", "Narrator", ja: "ナレーター", pt: "Narrador", zh: "讲述人", es: "Narrador")).hint("Win+Ctrl+Enter").on(nar),
+                    MItem::new(t!("Экранная лупа", "Magnifier", ja: "拡大鏡", pt: "Lupa", zh: "放大镜", es: "Lupa")).hint("Win +/Esc").on(mag),
+                    MItem::new(t!("Залипание клавиш", "Sticky keys", ja: "固定キー機能", pt: "Teclas de Aderência", zh: "粘滞键", es: "Teclas especiales")).on(sticky).sep(),
+                    MItem::new(t!("Фильтрация ввода", "Filter keys", ja: "フィルター キー機能", pt: "Teclas de Filtro", zh: "筛选键", es: "Teclas filtro")).on(filter),
                 ];
                 menu(pt.x, None, items, move |i| match i {
                     0 => keys(&[VK_LWIN, VK_CONTROL, VK_RETURN]),
@@ -1123,9 +1156,14 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
         },
         Act::Mute => toggle_mute(),
         Act::Menu(i) => {
-            close();
+            REUSED.set(false);
             if let Some(pick) = MPICK.take() {
+                REPLACING.set(true);
                 pick(i as usize);
+                REPLACING.set(false);
+            }
+            if !REUSED.get() {
+                close(); // the pick opened no other menu: this one fades out as usual
             }
         }
         Act::Settings(u) => {
@@ -1163,7 +1201,7 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
         }
         Act::NetOff => {
             for_each_wlan(|h, g| _ = WlanDisconnect(h, g, null()));
-            NOTE.set(t!("Отключено", "Disconnected", ja: "切断", pt: "Desconectado", zh: "已断开").into());
+            NOTE.set(t!("Отключено", "Disconnected", ja: "切断", pt: "Desconectado", zh: "已断开", es: "Desconectado").into());
         }
         Act::Ctx(j) => {
             let Some((ssid, ..)) = CTX.take() else { return };
@@ -1293,24 +1331,24 @@ unsafe fn paint(hw: HWND, k: Kind) {
             let ssid = NETS.with_borrow(|n| n.iter().find(|n| n.connected).map(|n| n.ssid.clone()));
             let wsub = match (q >= 0, ssid) {
                 (true, Some(s)) => s,
-                (true, None) => t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接").into(),
-                _ if NETS.with_borrow(|n| n.is_empty()) => t!("Выключен", "Off", ja: "オフ", pt: "Desligado", zh: "关").into(),
-                _ => t!("Не подключено", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接").into(),
+                (true, None) => t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接", es: "Conectado").into(),
+                _ if NETS.with_borrow(|n| n.is_empty()) => t!("Выключен", "Off", ja: "オフ", pt: "Desligado", zh: "关", es: "Desactivado").into(),
+                _ => t!("Не подключено", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接", es: "No conectado").into(),
             };
             let (bt, air, acc, eco) = (crate::quick::bluetooth(), crate::quick::airplane(), crate::quick::accessibility_on(), crate::quick::energy_saver());
             let onoff = |b: Option<bool>| match b {
-                Some(true) => t!("Вкл.", "On", ja: "オン", pt: "Ligado", zh: "开").to_string(),
-                Some(false) => t!("Выкл.", "Off", ja: "オフ", pt: "Desligado", zh: "关").to_string(),
-                None => t!("Нет", "None", ja: "なし", pt: "Nenhum", zh: "无").to_string(),
+                Some(true) => t!("Вкл.", "On", ja: "オン", pt: "Ligado", zh: "开", es: "Activado").to_string(),
+                Some(false) => t!("Выкл.", "Off", ja: "オフ", pt: "Desligado", zh: "关", es: "Desactivado").to_string(),
+                None => t!("Нет", "None", ja: "なし", pt: "Nenhum", zh: "无", es: "Ninguno").to_string(),
             };
             let states = [q >= 0, bt == Some(true), air == Some(true), acc, eco, false];
             let tiles = [
                 ("\u{E701}", "Wi‑Fi".to_string(), wsub),
-                ("\u{E702}", t!("Bluetooth", "Bluetooth", ja: "Bluetooth", pt: "Bluetooth", zh: "蓝牙").to_string(), onoff(bt)),
-                ("\u{E709}", t!("Авиарежим", "Airplane mode", ja: "機内モード", pt: "Modo avião", zh: "飞行模式").to_string(), onoff(air)),
-                ("\u{E776}", t!("Спец. возможности", "Accessibility", ja: "アクセシビリティ", pt: "Acessibilidade", zh: "辅助功能").to_string(), onoff(Some(acc))),
-                ("\u{E945}", t!("Экономия энергии", "Energy saver", ja: "省エネ", pt: "Economia de energia", zh: "节能模式").to_string(), onoff(Some(eco))),
-                ("\u{E7F0}", t!("Субтитры", "Live captions", ja: "ライブ キャプション", pt: "Legendas ao vivo", zh: "实时字幕").to_string(), String::new()),
+                ("\u{E702}", t!("Bluetooth", "Bluetooth", ja: "Bluetooth", pt: "Bluetooth", zh: "蓝牙", es: "Bluetooth").to_string(), onoff(bt)),
+                ("\u{E709}", t!("Авиарежим", "Airplane mode", ja: "機内モード", pt: "Modo avião", zh: "飞行模式", es: "Modo avión").to_string(), onoff(air)),
+                ("\u{E776}", t!("Спец. возможности", "Accessibility", ja: "アクセシビリティ", pt: "Acessibilidade", zh: "辅助功能", es: "Accesibilidad").to_string(), onoff(Some(acc))),
+                ("\u{E945}", t!("Экономия энергии", "Energy saver", ja: "省エネ", pt: "Economia de energia", zh: "节能模式", es: "Ahorro de energía").to_string(), onoff(Some(eco))),
+                ("\u{E7F0}", t!("Субтитры", "Live captions", ja: "ライブ キャプション", pt: "Legendas ao vivo", zh: "实时字幕", es: "Subtítulos en directo").to_string(), String::new()),
             ];
             for (i, (glyph, label, sub)) in tiles.iter().enumerate() {
                 let (tl, tt) = (16 + 112 * (i as i32 % 3), 16 + 84 * (i as i32 / 3));
@@ -1414,10 +1452,10 @@ unsafe fn paint(hw: HWND, k: Kind) {
             } else {
                 match state {
                     Link::Wifi(_) => None,
-                    Link::NoInternet(_) => Some((t!("Подключено, но интернета нет", "Connected, no internet", ja: "接続済み、インターネットなし", pt: "Conectado, sem internet", zh: "已连接，无 Internet").to_string(), WARN)),
-                    Link::Cable => Some((t!("Интернет по кабелю", "Online over a cable", ja: "有線でオンライン", pt: "Online por cabo", zh: "有线联网").into(), pal().dim)),
-                    Link::Offline if on => Some((t!("Не подключено", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接").into(), pal().dim)),
-                    Link::Offline => Some((t!("Выключен", "Turned off", ja: "オフ", pt: "Desligado", zh: "已关闭").into(), pal().dim)),
+                    Link::NoInternet(_) => Some((t!("Подключено, но интернета нет", "Connected, no internet", ja: "接続済み、インターネットなし", pt: "Conectado, sem internet", zh: "已连接，无 Internet", es: "Conectado, sin internet").to_string(), WARN)),
+                    Link::Cable => Some((t!("Интернет по кабелю", "Online over a cable", ja: "有線でオンライン", pt: "Online por cabo", zh: "有线联网", es: "En línea por cable").into(), pal().dim)),
+                    Link::Offline if on => Some((t!("Не подключено", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接", es: "No conectado").into(), pal().dim)),
+                    Link::Offline => Some((t!("Выключен", "Turned off", ja: "オフ", pt: "Desligado", zh: "已关闭", es: "Apagado").into(), pal().dim)),
                 }
             };
             SelectObject(dc, f_title);
@@ -1443,7 +1481,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             if let Some((i, p)) = pass {
                 let name = NETS.with_borrow(|n| n.get(i).map(|n| n.ssid.clone()).unwrap_or_default());
                 SelectObject(dc, f_txt);
-                text(dc, &tf!("Пароль для «{name}»", "Password for “{name}”", ja: "「{name}」のパスワード", pt: "Senha de “{name}”", zh: "“{name}”的密码"), r(18, 62, w - 18, 84), pal().text, DT_LEFT);
+                text(dc, &tf!("Пароль для «{name}»", "Password for “{name}”", ja: "「{name}」のパスワード", pt: "Senha de “{name}”", zh: "“{name}”的密码", es: "Contraseña para «{name}»"), r(18, 62, w - 18, 84), pal().text, DT_LEFT);
                 fill(dc, r(16, 90, w - 16, 128), pal().accent, sc(10));
                 fill(dc, r(18, 92, w - 18, 126), card, sc(8));
                 let dots = "•".repeat(p.chars().count());
@@ -1458,7 +1496,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 }
                 BUSY.set(true);
                 SelectObject(dc, f_small);
-                text(dc, t!("Enter — подключиться · Esc — отмена", "Enter — connect · Esc — cancel", ja: "Enter — 接続 · Esc — キャンセル", pt: "Enter — conectar · Esc — cancelar", zh: "Enter — 连接 · Esc — 取消"), r(18, 136, w - 18, 156), pal().dim, DT_LEFT);
+                text(dc, t!("Enter — подключиться · Esc — отмена", "Enter — connect · Esc — cancel", ja: "Enter — 接続 · Esc — キャンセル", pt: "Enter — conectar · Esc — cancelar", zh: "Enter — 连接 · Esc — 取消", es: "Enter — conectar · Esc — cancelar"), r(18, 136, w - 18, 156), pal().dim, DT_LEFT);
             } else {
                 let (rows, label, _) = wifi_rows();
                 let conn = CONN.with_borrow(|c| c.as_ref().map(|c| (c.q, c.phy, c.rx, c.tx)));
@@ -1468,11 +1506,11 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 NETS.with_borrow(|nets| {
                     if nets.is_empty() {
                         SelectObject(dc, f_txt);
-                        text(dc, if on { t!("Рядом нет сетей", "No networks nearby", ja: "近くにネットワークがありません", pt: "Nenhuma rede por perto", zh: "附近没有网络") } else { t!("Включите Wi‑Fi, чтобы увидеть сети", "Turn Wi‑Fi on to see networks", ja: "ネットワークを表示するには Wi‑Fi をオンにしてください", pt: "Ative o Wi‑Fi para ver as redes", zh: "开启 Wi‑Fi 以查看网络") }, r(18, 70, w - 18, 110), pal().dim, DT_LEFT);
+                        text(dc, if on { t!("Рядом нет сетей", "No networks nearby", ja: "近くにネットワークがありません", pt: "Nenhuma rede por perto", zh: "附近没有网络", es: "No hay redes cerca") } else { t!("Включите Wi‑Fi, чтобы увидеть сети", "Turn Wi‑Fi on to see networks", ja: "ネットワークを表示するには Wi‑Fi をオンにしてください", pt: "Ative o Wi‑Fi para ver as redes", zh: "开启 Wi‑Fi 以查看网络", es: "Activa el Wi‑Fi para ver las redes") }, r(18, 70, w - 18, 110), pal().dim, DT_LEFT);
                     }
                     if let Some(ly) = label {
                         SelectObject(dc, f_small);
-                        text(dc, t!("Другие сети", "Other networks", ja: "その他のネットワーク", pt: "Outras redes", zh: "其他网络"), r(20, ly + 2, w - 16, ly + 22), pal().dim, DT_LEFT);
+                        text(dc, t!("Другие сети", "Other networks", ja: "その他のネットワーク", pt: "Outras redes", zh: "其他网络", es: "Otras redes"), r(20, ly + 2, w - 16, ly + 22), pal().dim, DT_LEFT);
                     }
                     // the connected network on its own card, the others together on one, split by hairlines
                     let others: Vec<usize> = (0..nets.len()).filter(|&i| !nets[i].connected).collect();
@@ -1503,20 +1541,20 @@ unsafe fn paint(hw: HWND, k: Kind) {
                         wifi_glyph(dc, rc.left + sc(26), cy - sc(1), sc(16), lit, ink(arc), ink(mix(pal().dim, card, 0.55)), if n.connected && !online { 2 } else { 0 });
                         let saved = n.profile.is_some();
                         let (sub, sub_c) = if busy {
-                            (format!("{}{}", t!("Подключение", "Connecting", ja: "接続中", pt: "Conectando", zh: "正在连接"), &"...."[..(now / 400 % 4) as usize]), pal().accent)
+                            (format!("{}{}", t!("Подключение", "Connecting", ja: "接続中", pt: "Conectando", zh: "正在连接", es: "Conectando"), &"...."[..(now / 400 % 4) as usize]), pal().accent)
                         } else if n.connected {
                             let q = conn.map(|c| c.0).unwrap_or(n.q);
                             match conn {
-                                _ if !online => (t!("Подключено, без интернета", "Connected, no internet", ja: "接続済み、インターネットなし", pt: "Conectado, sem internet", zh: "已连接，无 Internet").into(), WARN),
+                                _ if !online => (t!("Подключено, без интернета", "Connected, no internet", ja: "接続済み、インターネットなし", pt: "Conectado, sem internet", zh: "已连接，无 Internet", es: "Conectado, sin internet").into(), WARN),
                                 // under the pointer the line shows the link details instead
-                                Some((_, _, rx, tx)) if open => (format!("↓{rx} ↑{tx} {} · {}", t!("Мбит/с", "Mbps", ja: "Mbps", pt: "Mbps", zh: "Mbps"), auth_name(n.auth)), pal().dim),
-                                Some((_, phy, ..)) => (format!("{} · {phy} · {q}%", t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接")), pal().dim),
-                                None => (format!("{} · {q}%", t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接")), pal().dim),
+                                Some((_, _, rx, tx)) if open => (format!("↓{rx} ↑{tx} {} · {}", t!("Мбит/с", "Mbps", ja: "Mbps", pt: "Mbps", zh: "Mbps", es: "Mbps"), auth_name(n.auth)), pal().dim),
+                                Some((_, phy, ..)) => (format!("{} · {phy} · {q}%", t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接", es: "Conectado")), pal().dim),
+                                None => (format!("{} · {q}%", t!("Подключено", "Connected", ja: "接続済み", pt: "Conectado", zh: "已连接", es: "Conectado")), pal().dim),
                             }
                         } else if !n.secure {
-                            (t!("Открытая сеть", "Open network", ja: "オープン ネットワーク", pt: "Rede aberta", zh: "开放网络").into(), WARN)
+                            (t!("Открытая сеть", "Open network", ja: "オープン ネットワーク", pt: "Rede aberta", zh: "开放网络", es: "Red abierta").into(), WARN)
                         } else if saved {
-                            (t!("Сохранена", "Saved", ja: "保存済み", pt: "Salva", zh: "已保存").into(), pal().dim)
+                            (t!("Сохранена", "Saved", ja: "保存済み", pt: "Salva", zh: "已保存", es: "Guardada").into(), pal().dim)
                         } else {
                             (String::new(), pal().dim)
                         };
@@ -1544,7 +1582,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                                 if let Some(&(ob, _)) = rs.iter().find(|(_, a)| *a == Act::NetOff) {
                                     g(Act::NetOff, ob, card, mix(card, BAD, 0.14), ob.bottom - ob.top);
                                     SelectObject(dc, f_semi);
-                                    text(dc, t!("Отключиться", "Disconnect", ja: "切断", pt: "Desconectar", zh: "断开连接"), ob, if hot(Act::NetOff) { BAD } else { pal().dim }, DT_CENTER);
+                                    text(dc, t!("Отключиться", "Disconnect", ja: "切断", pt: "Desconectar", zh: "断开连接", es: "Desconectar"), ob, if hot(Act::NetOff) { BAD } else { pal().dim }, DT_CENTER);
                                 }
                             } else {
                                 SelectObject(dc, f_glyph);
@@ -1552,7 +1590,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                             }
                         } else if open && !busy {
                             SelectObject(dc, f_semi);
-                            let action = if saved || !n.secure { t!("Подключить", "Connect", ja: "接続", pt: "Conectar", zh: "连接") } else { t!("Ввести пароль", "Enter password", ja: "パスワードを入力", pt: "Digite a senha", zh: "输入密码") };
+                            let action = if saved || !n.secure { t!("Подключить", "Connect", ja: "接続", pt: "Conectar", zh: "连接", es: "Conectar") } else { t!("Ввести пароль", "Enter password", ja: "パスワードを入力", pt: "Digite a senha", zh: "输入密码", es: "Escribe la contraseña") };
                             text(dc, action, RECT { left: rc.right - sc(130), right: rc.right - sc(16), ..rc }, pal().accent, DT_RIGHT);
                         } else if n.secure && !busy {
                             SelectObject(dc, f_gs);
@@ -1564,7 +1602,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             if let Some(&(lr, la)) = rs.iter().find(|(_, a)| matches!(a, Act::Settings(_))) {
                 g(la, lr, pal().bg, mix(pal().bg, pal().text, 0.05), sc(10));
                 SelectObject(dc, f_txt);
-                text(dc, t!("Параметры сети", "Network settings", ja: "ネットワーク設定", pt: "Configurações de rede", zh: "网络设置"), RECT { left: lr.left + sc(8), ..lr }, pal().accent, DT_LEFT);
+                text(dc, t!("Параметры сети", "Network settings", ja: "ネットワーク設定", pt: "Configurações de rede", zh: "网络设置", es: "Configuración de red"), RECT { left: lr.left + sc(8), ..lr }, pal().accent, DT_LEFT);
                 SelectObject(dc, f_gs);
                 text(dc, "\u{E76C}", RECT { left: lr.right - sc(34), ..lr }, pal().dim, DT_CENTER); // chevron right
             }
@@ -1596,7 +1634,9 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     let tile = r(14, 12, 48, 46);
                     fill(dc, tile, mix(pal().bg, pal().accent, 0.16), sc(10));
                     if !ic.is_null() {
-                        DrawIconEx(dc, tile.left + sc(5), tile.top + sc(5), *ic, sc(24), sc(24), 0, null_mut(), DI_NORMAL);
+                        // at the size the bar loaded it (16 px on the small bar): stretched it would blur
+                        let (cx, cy, s) = ((tile.left + tile.right) / 2, (tile.top + tile.bottom) / 2, icon_px());
+                        DrawIconEx(dc, cx - s / 2, cy - s / 2, *ic, s, s, 0, null_mut(), DI_NORMAL);
                     } else {
                         SelectObject(dc, f_glyph); // no app icon (Style, Language): the menu's own symbol
                         text(dc, glyph, tile, pal().accent, DT_CENTER);
@@ -1665,7 +1705,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             SelectObject(dc, f_txt);
             let q = QUERY.with_borrow(|q| q.clone());
             if q.is_empty() {
-                text(dc, t!("Введите для поиска", "Type to search apps", ja: "アプリを検索", pt: "Digite para pesquisar apps", zh: "输入以搜索应用"), r(64, 20, w - 64, 56), pal().dim, DT_LEFT);
+                text(dc, t!("Введите для поиска", "Type to search apps", ja: "アプリを検索", pt: "Digite para pesquisar apps", zh: "输入以搜索应用", es: "Escribe para buscar aplicaciones"), r(64, 20, w - 64, 56), pal().dim, DT_LEFT);
             } else {
                 text(dc, &q, r(64, 20, w - 64, 56), if SELALL.get() { pal().accent } else { pal().text }, DT_LEFT);
             }
@@ -1678,11 +1718,11 @@ unsafe fn paint(hw: HWND, k: Kind) {
             let f = filtered();
             if f.is_empty() {
                 if q.is_empty() {
-                    text(dc, t!("Здесь пока пусто", "Nothing here yet", ja: "まだ何もありません", pt: "Nada aqui ainda", zh: "这里还什么都没有"), r(24, 76, w - 24, 106), pal().text, DT_LEFT);
-                    text(dc, t!("Перетащите приложение или файл на кнопку «Пуск», чтобы добавить", "Drag an app or file onto the Start button to add it", ja: "スタート ボタンにアプリやファイルをドラッグして追加します", pt: "Arraste um app ou arquivo para o botão Iniciar para adicionar", zh: "把应用或文件拖到“开始”按钮即可添加"), r(24, 106, w - 24, 134), pal().dim, DT_LEFT);
-                    text(dc, t!("Или найдите приложение и добавьте его из меню по правой кнопке", "Or search an app and right-click it → Add to Start", ja: "またはアプリを検索し、右クリックして「スタートに追加」を選びます", pt: "Ou pesquise um app e use o menu do botão direito → Adicionar ao Iniciar", zh: "或者搜索应用，右键点击 → 添加到开始菜单"), r(24, 134, w - 24, 162), pal().dim, DT_LEFT);
+                    text(dc, t!("Здесь пока пусто", "Nothing here yet", ja: "まだ何もありません", pt: "Nada aqui ainda", zh: "这里还什么都没有", es: "Todavía no hay nada aquí"), r(24, 76, w - 24, 106), pal().text, DT_LEFT);
+                    text(dc, t!("Перетащите приложение или файл на кнопку «Пуск», чтобы добавить", "Drag an app or file onto the Start button to add it", ja: "スタート ボタンにアプリやファイルをドラッグして追加します", pt: "Arraste um app ou arquivo para o botão Iniciar para adicionar", zh: "把应用或文件拖到“开始”按钮即可添加", es: "Arrastra una aplicación o un archivo al botón Inicio para agregarlo"), r(24, 106, w - 24, 134), pal().dim, DT_LEFT);
+                    text(dc, t!("Или найдите приложение и добавьте его из меню по правой кнопке", "Or search an app and right-click it → Add to Start", ja: "またはアプリを検索し、右クリックして「スタートに追加」を選びます", pt: "Ou pesquise um app e use o menu do botão direito → Adicionar ao Iniciar", zh: "或者搜索应用，右键点击 → 添加到开始菜单", es: "O busca una aplicación y haz clic derecho → Agregar a Inicio"), r(24, 134, w - 24, 162), pal().dim, DT_LEFT);
                 } else {
-                    text(dc, t!("Приложения не найдены", "No apps found", ja: "アプリが見つかりません", pt: "Nenhum app encontrado", zh: "未找到应用"), r(24, 76, w - 24, 116), pal().dim, DT_LEFT);
+                    text(dc, t!("Приложения не найдены", "No apps found", ja: "アプリが見つかりません", pt: "Nenhum app encontrado", zh: "未找到应用", es: "No se encontraron aplicaciones"), r(24, 76, w - 24, 116), pal().dim, DT_LEFT);
                 }
             }
             let rs = rects(k);
@@ -1709,16 +1749,16 @@ unsafe fn paint(hw: HWND, k: Kind) {
                         let ic = ICONS.with_borrow_mut(|m| {
                             *m.entry(app.1.clone()).or_insert_with(|| {
                                 let t = lnk_target(&app.1);
-                                lnk_icon(&app.1, &t)
+                                lnk_icon_at(&app.1, &t, sc(24))
                             })
                         });
                         if !ic.is_null() {
-                            DrawIconEx(dc, rc.left + sc(13), (rc.top + rc.bottom - icon_px()) / 2, ic, icon_px(), icon_px(), 0, null_mut(), DI_NORMAL); // at its loaded size: no stretching
+                            DrawIconEx(dc, rc.left + sc(13), (rc.top + rc.bottom) / 2 - sc(12), ic, sc(24), sc(24), 0, null_mut(), DI_NORMAL); // at its loaded size: no stretching
                         }
                         let store = wstr(&app.1).starts_with("shell:");
                         text(dc, &app.0, RECT { left: rc.left + sc(52), top: rc.top, right: rc.right - sc(110), bottom: rc.bottom }, pal().text, DT_LEFT);
                         SelectObject(dc, f_small);
-                        let kind = if sel && !q.is_empty() { "Enter ↵" } else if store { t!("Приложение", "App", ja: "アプリ", pt: "App", zh: "应用") } else { "" };
+                        let kind = if sel && !q.is_empty() { "Enter ↵" } else if store { t!("Приложение", "App", ja: "アプリ", pt: "App", zh: "应用", es: "Aplicación") } else { "" };
                         text(dc, kind, RECT { left: rc.right - sc(110), top: rc.top, right: rc.right - sc(14), bottom: rc.bottom }, pal().dim, DT_RIGHT);
                         SelectObject(dc, f_txt);
                     }
@@ -1734,8 +1774,8 @@ unsafe fn paint(hw: HWND, k: Kind) {
             SelectObject(dc, f_small);
             let note = NOTE.with_borrow(|n| n.clone());
             let hint = match CONFIRM.get() {
-                2 => t!("Нажмите ещё раз для перезагрузки", "Click again to restart", ja: "もう一度クリックで再起動", pt: "Clique de novo para reiniciar", zh: "再次点击以重启").to_string(),
-                3 => t!("Нажмите ещё раз для выключения", "Click again to shut down", ja: "もう一度クリックでシャットダウン", pt: "Clique de novo para desligar", zh: "再次点击以关机").to_string(),
+                2 => t!("Нажмите ещё раз для перезагрузки", "Click again to restart", ja: "もう一度クリックで再起動", pt: "Clique de novo para reiniciar", zh: "再次点击以重启", es: "Haz clic de nuevo para reiniciar").to_string(),
+                3 => t!("Нажмите ещё раз для выключения", "Click again to shut down", ja: "もう一度クリックでシャットダウン", pt: "Clique de novo para desligar", zh: "再次点击以关机", es: "Haz clic de nuevo para apagar").to_string(),
                 _ if !note.is_empty() => note,
                 _ => std::env::var("USERNAME").unwrap_or_default(),
             };
@@ -1752,7 +1792,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
     DeleteObject(bmp);
     DeleteDC(dc);
     if BUSY.get() {
-        SetTimer(hw, 2, 16, None); // next animation frame
+        SetTimer(hw, 2, 15, None); // next animation frame (16 would wait two 15.6 ms ticks)
     } else {
         KillTimer(hw, 2);
     }

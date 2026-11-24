@@ -11,7 +11,8 @@ use std::{
     process::Command,
     ptr::{null, null_mut},
     thread,
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
+    time::Instant,
     collections::HashMap,
     sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed},
 };
@@ -29,6 +30,7 @@ mod shot;
 mod lang;
 mod settings;
 mod thumbs;
+mod glass;
 use {tray::*, status::*, run::*, shot::*, lang::*, settings::*};
 use windows::{
     Win32::{
@@ -45,7 +47,7 @@ use windows_sys::Win32::{
         Dwm::DwmGetWindowAttribute,
         Gdi::*,
         GdiPlus::{
-            FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath, GdipFillPath, GdipSetPixelOffsetMode,
+            FillModeAlternate, GdipAddPathArc, GdipAddPathRectangle, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath, GdipFillPath, GdipSetPixelOffsetMode,
             GdipSetSmoothingMode, GdiplusStartup, GdiplusStartupInput, GpBrush, GpGraphics, GpPath, GpSolidFill, PixelOffsetModeHalf, SmoothingModeAntiAlias,
             GdipCreatePen1, GdipDeletePen, GdipDrawArc, GdipDrawLine, GdipFillEllipse, GdipSetPenEndCap, GdipSetPenStartCap, GpPen, LineCapRound, UnitPixel,
         },
@@ -125,7 +127,15 @@ const BAR_H: i32 = 40;
 const NONE: i32 = -1;
 const SEARCH: i32 = -10;
 const TASKVIEW: i32 = -14; // Task View button (virtual desktops), right of search (#83)
-const LEAD: i32 = 2; // slots before Start: search, Task View
+/// The slots before Start, left to right: the search button and Task View, each unless switched off in the bar settings.
+fn leads() -> Vec<i32> {
+    [(SEARCH, i18n::style::show_search()), (TASKVIEW, i18n::style::show_taskview())].into_iter().filter(|l| l.1).map(|l| l.0).collect()
+}
+
+/// How many slots come before Start.
+fn lead() -> i32 {
+    leads().len() as i32
+}
 const CLOCK: i32 = -4;
 const LANG: i32 = -6;
 const WIFI_I: i32 = -7;
@@ -158,6 +168,25 @@ struct Pin {
     aumid: String,  // lower-case AppUserModelID the shortcut carries (a browser profile's own, #132), "" if none
     icon: HICON,
 }
+
+impl Pin {
+    /// Whether `exe` (lower-case, from exe_of) is the app this pin starts. Squirrel apps (Discord, Slack, GitHub Desktop)
+    /// are pinned as "Update.exe --processStart Discord.exe" and run from a versioned app-x.y.z folder beside it; matched
+    /// by path alone, the pin stayed dark and the running app got a second button.
+    fn runs(&self, exe: &str) -> bool {
+        if self.target.is_empty() || exe.is_empty() {
+            return false;
+        }
+        if self.target == exe {
+            return true;
+        }
+        let Some(dir) = self.target.strip_suffix("update.exe") else { return false };
+        let args = self.args.to_lowercase();
+        let started = args.split_once("--processstart").and_then(|(_, rest)| rest.trim_start_matches(['=', ' ']).split_whitespace().next()).map(|s| s.trim_matches('"').to_string());
+        started.is_some_and(|name| exe.starts_with(dir) && exe.rsplit('\\').next() == Some(name.as_str()))
+    }
+}
+
 struct Btn {
     pin: Option<usize>,
     wins: Vec<HWND>,
@@ -310,6 +339,17 @@ unsafe fn tf_progress(n: i32) -> f32 {
     ease(((age - 25.0 * n as f32) / 200.0).clamp(0.0, 1.0))
 }
 
+thread_local! {
+    // when an icon of the tray flyout was right-clicked: its app is opening a menu, the flyout stays up meanwhile
+    static TF_MENU_AT: Cell<u64> = const { Cell::new(0) };
+}
+
+/// A popup menu is on screen (the one an app opens from its tray icon).
+unsafe fn menu_up() -> bool {
+    let m = FindWindowW(wide("#32768").as_ptr(), null());
+    !m.is_null() && IsWindowVisible(m) != 0
+}
+
 unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let cell_at = |lp: LPARAM| -> i32 {
         let (x, y) = ((lp & 0xffff) as i16 as i32 - sc(8), ((lp >> 16) & 0xffff) as i16 as i32 - sc(8));
@@ -322,11 +362,17 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         if i < n { i } else { -1 }
     };
     match msg {
+        WM_ERASEBKGND => 1,
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
-            let dc = BeginPaint(hwnd, &mut ps);
+            let wdc = BeginPaint(hwnd, &mut ps);
             let mut r: RECT = zeroed();
             GetClientRect(hwnd, &mut r);
+            // drawn off screen, then copied in one go: the fade repaints every 15 ms, and drawn straight onto the window each
+            // frame showed the empty panel for a moment before the icons came back (the flicker)
+            let dc = CreateCompatibleDC(wdc);
+            let bmp = CreateCompatibleBitmap(wdc, r.right, r.bottom);
+            let ob = SelectObject(dc, bmp);
             fill(dc, r, pal().line, sc(12));
             fill(dc, RECT { left: 1, top: 1, right: r.right - 1, bottom: r.bottom - 1 }, pal().bg, sc(12));
             let (cols, _, _) = fly_size();
@@ -344,7 +390,8 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         tip = ti.tip.clone();
                     }
                     if !ti.icon.is_null() {
-                        let sz = (sc(20) as f32 * (0.4 + 0.6 * tf_progress(n as i32))) as i32; // pops in
+                        // pops in, then sits at the size the icon was made for (tray::sharp): stretched to 20 it blurred
+                        let sz = (sc(16) as f32 * (0.4 + 0.6 * tf_progress(n as i32))) as i32;
                         DrawIconEx(dc, x + sc(19) - sz / 2, y + sc(18) - sz / 2, ti.icon, sz, sz, 0, null_mut(), DI_NORMAL);
                     }
                 }
@@ -356,6 +403,10 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             DrawTextW(dc, wide(&tip).as_ptr(), -1, &mut tr, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
             SelectObject(dc, of);
             DeleteObject(f);
+            BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, ob);
+            DeleteObject(bmp);
+            DeleteDC(dc);
             EndPaint(hwnd, &ps);
             0
         }
@@ -379,6 +430,11 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 if msg == WM_MBUTTONDOWN {
                     toggle_shown(&key);
                     InvalidateRect(hwnd, null(), 0);
+                } else if msg == WM_RBUTTONDOWN {
+                    // the app's menu opens over the flyout, which stays (as in Windows) until that menu and the focus are gone
+                    TF_MENU_AT.set(now_ms());
+                    tray_click(t, false);
+                    SetTimer(hwnd, 2, 150, None);
                 } else {
                     ShowWindow(hwnd, SW_HIDE);
                     InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0); // the bar's chevron turns with it
@@ -388,8 +444,21 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             0
         }
         WM_ACTIVATE if wp & 0xffff == 0 => {
-            ShowWindow(hwnd, SW_HIDE);
-            InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0); // the bar's chevron turns with it
+            if now_ms().saturating_sub(TF_MENU_AT.get()) > 2000 {
+                ShowWindow(hwnd, SW_HIDE);
+                InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0); // the bar's chevron turns with it
+            }
+            0
+        }
+        WM_TIMER if wp == 2 => {
+            // after a right click: hide once the app's menu is closed and the focus went somewhere else
+            let settling = now_ms().saturating_sub(TF_MENU_AT.get()) < 600; // the app takes a moment to open its menu
+            if !settling && !menu_up() && GetForegroundWindow() != hwnd {
+                KillTimer(hwnd, 2);
+                TF_MENU_AT.set(0);
+                ShowWindow(hwnd, SW_HIDE);
+                InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0);
+            }
             0
         }
         WM_TIMER => {
@@ -439,11 +508,11 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 unsafe fn tip_text(h: i32) -> String {
     match h {
         SEARCH => "Search".into(),
-        TASKVIEW => t!("Представление задач", "Task View", ja: "タスク ビュー", pt: "Visão de Tarefas").into(),
+        TASKVIEW => t!("Представление задач", "Task View", ja: "タスク ビュー", pt: "Visão de Tarefas", es: "Vista de tareas").into(),
         0 => "Start".into(),
         TAPP => "Hidden icons".into(),
-        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式").into(),
-        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho", zh: "显示桌面").into(),
+        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式", es: "Estilo").into(),
+        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho", zh: "显示桌面", es: "Mostrar escritorio").into(),
         CLOCK => {
             let mut t: SYSTEMTIME = zeroed();
             GetLocalTime(&mut t);
@@ -451,12 +520,12 @@ unsafe fn tip_text(h: i32) -> String {
             let n = GetDateFormatW(0x0400, 2, &t, null(), b.as_mut_ptr(), 80).max(1) as usize - 1; // DATE_LONGDATE
             String::from_utf16_lossy(&b[..n])
         }
-        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", zh: "输入语言：{}", layout_names(layouts().1).0),
+        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", zh: "输入语言：{}", es: "Idioma de entrada: {}", layout_names(layouts().1).0),
         WIFI_I => match net() {
-            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%", zh: "Wi‑Fi · 信号 {q}%"),
-            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet", zh: "Wi‑Fi 已连接，无 Internet").into(),
-            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo", zh: "有线网络").into(),
-            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接").into(),
+            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%", zh: "Wi‑Fi · 信号 {q}%", es: "Wi‑Fi · señal {q}%"),
+            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet", zh: "Wi‑Fi 已连接，无 Internet", es: "Wi‑Fi conectado, sin internet").into(),
+            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo", zh: "有线网络", es: "Internet por cable").into(),
+            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接", es: "No conectado").into(),
         },
         VOL_I => vol_tip(),
         BAT_I => match BAT.get() {
@@ -831,7 +900,10 @@ unsafe extern "system" fn collect(h: HWND, lp: LPARAM) -> i32 {
     let mut cls = [0u16; 32];
     let n = GetClassNameW(h, cls.as_mut_ptr(), 32) as usize;
     let ours = String::from_utf16_lossy(&cls[..n]) == "topbar";
-    if IsWindowVisible(h) != 0 && GetWindow(h, GW_OWNER).is_null() && cloaked == 0 && !ours && GetWindowTextLengthW(h) > 0 && (ex & WS_EX_TOOLWINDOW == 0 || ex & WS_EX_APPWINDOW != 0) {
+    // a tool window that cannot be activated is an overlay (a full-screen layer of a tray app), even with WS_EX_APPWINDOW:
+    // such apps take their tab off Windows' taskbar (ITaskbarList::DeleteTab), which nothing outside Explorer can see
+    let overlay = ex & WS_EX_TOOLWINDOW != 0 && ex & 0x0800_0000 != 0; // WS_EX_NOACTIVATE
+    if IsWindowVisible(h) != 0 && GetWindow(h, GW_OWNER).is_null() && cloaked == 0 && !ours && GetWindowTextLengthW(h) > 0 && (ex & WS_EX_TOOLWINDOW == 0 || ex & WS_EX_APPWINDOW != 0) && !overlay {
         (*(lp as *mut Vec<HWND>)).push(h);
     }
     1
@@ -888,9 +960,14 @@ unsafe fn lnk_target(lnk: &[u16]) -> String {
     .unwrap_or_default()
 }
 
-/// The target's own icon: SHGetFileInfo on the .lnk adds the shortcut arrow, so that is only the fallback.
+/// The target's own icon at the bar's size: SHGetFileInfo on the .lnk adds the shortcut arrow, so that is only the fallback.
 unsafe fn lnk_icon(lnk: &[u16], target: &str) -> HICON {
-    let ic = item_icon(&resolve_cmd(&wstr_of(lnk)), icon_px());
+    lnk_icon_at(lnk, target, icon_px())
+}
+
+/// `lnk_icon` at `px` pixels (menus keep theirs whatever the bar's size).
+unsafe fn lnk_icon_at(lnk: &[u16], target: &str, px: i32) -> HICON {
+    let ic = item_icon(&resolve_cmd(&wstr_of(lnk)), px);
     if !ic.is_null() {
         return ic;
     }
@@ -906,10 +983,29 @@ unsafe fn lnk_icon(lnk: &[u16], target: &str) -> HICON {
     icon
 }
 
-/// Size app icons are drawn at (24 logical px, like the Windows 11 taskbar). Icons are loaded at exactly this size:
-/// a 32 px icon stretched by DrawIconEx comes out jagged.
+/// Size app icons are drawn at: 24 logical px like the Windows taskbar, 16 on the small bar like its small buttons (24 filled
+/// almost the whole height there). Icons are loaded at exactly this size: one stretched by DrawIconEx comes out jagged.
 fn icon_px() -> i32 {
-    sc(24)
+    sc(if i18n::style::bar_size() == 0 { 16 } else { 24 })
+}
+
+thread_local! { static ICONS_AT: Cell<i32> = const { Cell::new(0) }; } // the size the loaded icons have
+
+/// After the bar size changed, the pins and running apps get their icons again at the new size.
+unsafe fn reload_icons() {
+    if ICONS_AT.replace(icon_px()) == icon_px() {
+        return;
+    }
+    META.with_borrow_mut(|m| m.clear());
+    let old: Vec<HICON> = EXE_ICONS.with_borrow_mut(|m| m.drain().map(|(_, i)| i).collect());
+    let pins: Vec<(Vec<u16>, String)> = PINS.with_borrow(|p| p.iter().map(|p| (p.lnk.clone(), p.target.clone())).collect());
+    let fresh: Vec<HICON> = pins.iter().map(|(lnk, target)| lnk_icon(lnk, target)).collect();
+    let old_pins: Vec<HICON> = PINS.with_borrow_mut(|p| p.iter_mut().zip(fresh).map(|(p, i)| std::mem::replace(&mut p.icon, i)).collect());
+    refresh_windows(); // the buttons take the new ones
+    // ours to free: a window's own icon (WM_GETICON) never went into these
+    old.into_iter().chain(old_pins).filter(|i| !i.is_null()).for_each(|i| {
+        DestroyIcon(i);
+    });
 }
 
 /// Icon of a file, shortcut (its target's icon, no arrow) or shell item ("shell:AppsFolder\<app id>") rendered by the
@@ -1187,6 +1283,7 @@ unsafe fn load_pins() {
         let aumid = lnk_aumid(&lnk).to_lowercase();
         PINS.with_borrow_mut(|p| p.push(Pin { lnk, target, args, aumid, icon }));
     }
+    ICONS_AT.set(icon_px());
     // once: a File Explorer button for the installed file manager (the marker keeps an unpinned one gone)
     let marker = appdata_file("topbar-explorer-pin.txt");
     let rx = std::env::var_os("ProgramFiles").map(|pf| PathBuf::from(pf).join(r"rust-explorer\rust-explorer.exe"));
@@ -1204,10 +1301,10 @@ fn refresh_buttons() {
     let mut loose: Vec<HWND> = Vec::new();
     for w in wins {
         let exe = unsafe { exe_of(w) };
-        // pins of one exe (two browser profiles, #132) tell their windows apart by AppUserModelID; a pin or window without one
-        // takes any window of its exe
+        // pins of one app (two browser profiles, #132) tell their windows apart by AppUserModelID; a pin or window without one
+        // takes any window of its app
         let pin = PINS.with_borrow(|p| {
-            let mine: Vec<usize> = (0..p.len()).filter(|&i| !p[i].target.is_empty() && p[i].target == exe).collect();
+            let mine: Vec<usize> = (0..p.len()).filter(|&i| p[i].runs(&exe)).collect();
             if mine.is_empty() {
                 return None;
             }
@@ -1302,8 +1399,11 @@ fn refresh_status() {
             // The empty-tray check below misses this when some icons already reached the bar.
             announce();
         }
-        if TAPPS.with_borrow(|t| t.is_empty()) && n % 4 == 2 {
-            announce(); // no icons yet (apps started before us, or explorer restarted): ask them to register again
+        // no icons yet (apps started before us, or explorer restarted): ask them to register again. Every 4 s for the first
+        // minute, then once a minute: a PC with no tray apps at all should not wake every window in the session forever
+        let ask = if n < 60 { n % 4 == 2 } else { n % 60 == 2 };
+        if ask && TAPPS.with_borrow(|t| t.is_empty()) {
+            announce();
         }
         if n % 3 == 0 {
             read_wifi();
@@ -1339,17 +1439,41 @@ struct Layout {
 fn layout(w: i32) -> Layout {
     let gap = sc(4);
     let clock = (w - sc(96), w - sc(6));
-    let sys = (clock.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), clock.0 - sc(4));
+    // language 42 + wifi 32 + volume 32, and the battery's part only when there is a battery (an empty slot looked odd)
+    let sys = (clock.0 - sc(4) - sc(if BAT.get().0 >= 0 { 216 } else { 110 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD; // + the search and Task View slots
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + lead(); // + the search and Task View slots
     let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
-    // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + 1).min(n);
-    // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
+    // the whole group centred, like Windows 11: every button counts, the open windows too, and the row glides to its new
+    // place when one comes or goes (it never runs into the tray: then it shifts left)
     let right_limit = w - margin - (n * (bw + gap) - gap);
-    let centered = (w - (fixed * (bw + gap) - gap)) / 2;
-    Layout { x0: if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, apps, sys, clock } // clear of the gear
+    let centered = (w - (n * (bw + gap) - gap)) / 2;
+    let x0 = if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)); // clear of the gear
+    Layout { x0: glide_x0(x0), bw, gap, apps, sys, clock }
+}
+
+thread_local! { static X0: Cell<(i32, i32, u64)> = const { Cell::new((i32::MIN, 0, 0)) }; } // the row's glide: from, to, since
+
+/// The row's start on its way to `target` (eased over 220 ms); asks for the next frame while it moves.
+fn glide_x0(target: i32) -> i32 {
+    let (from, to, t0) = X0.get();
+    let now = unsafe { now_ms() };
+    if from == i32::MIN {
+        X0.set((target, target, now));
+        return target;
+    }
+    let t = (now.saturating_sub(t0) as f32 / 220.0).min(1.0);
+    let cur = from + ((to - from) as f32 * (1.0 - (1.0 - t).powi(3))).round() as i32;
+    if target != to {
+        X0.set((cur, target, now));
+        BUSY.set(true);
+        return cur;
+    }
+    if cur != to {
+        BUSY.set(true);
+    }
+    cur
 }
 
 unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
@@ -1373,9 +1497,10 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
     }
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD;
+    let leads = leads();
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + leads.len() as i32;
     let (d, i) = (x - l.x0, (x - l.x0) / (l.bw + l.gap));
-    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD }
+    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else { leads.get(i as usize).copied().unwrap_or(i - leads.len() as i32) }
 }
 
 // ---------- animation ----------
@@ -1392,8 +1517,12 @@ fn ease(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Milliseconds since boot, to the millisecond. GetTickCount64 alone moves in 15.6 ms steps, so a frame saw 0, 15 or 31 ms
+/// go by and fades and glides stuttered; it only gives the starting point here, the performance counter the rest.
 unsafe fn now_ms() -> u64 {
-    GetTickCount64()
+    static START: OnceLock<(u64, Instant)> = OnceLock::new();
+    let (boot, t0) = START.get_or_init(|| (GetTickCount64(), Instant::now()));
+    boot + t0.elapsed().as_millis() as u64
 }
 
 /// Eased 0..1 hover value of one element: glides toward `on` (1) / off (0) instead of jumping. Sets BUSY while it moves,
@@ -1419,7 +1548,7 @@ unsafe fn glow(dc: HDC, key: i32, on: bool, r: RECT, from: u32, to: u32, rad: i3
     let t = hv(key, on);
     let p = press_t(key);
     if t > 0.01 || p > 0.0 {
-        fill(dc, r, mix(mix(from, to, t), pal().accent, 0.5 * p), rad);
+        pill(dc, r, from, &[(to, t), (pal().accent, 0.5 * p)], rad);
     }
 }
 
@@ -1618,20 +1747,70 @@ unsafe fn fill(dc: HDC, r: RECT, c: u32, rad: i32) {
         DeleteObject(b);
         return;
     }
+    smooth(g);
+    let path = round_path(r, rad);
+    fill_path(g, path, argb(c, 255));
+    GdipDeletePath(path);
+    GdipDeleteGraphics(g);
+}
+
+/// Anti-aliased GDI+ drawing; pixel i spans [i, i+1), so straight edges stay crisp.
+unsafe fn smooth(g: *mut GpGraphics) {
     GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
-    GdipSetPixelOffsetMode(g, PixelOffsetModeHalf); // pixel i spans [i, i+1): straight edges stay crisp
-    let (x, y, d) = (r.left as f32, r.top as f32, (rad as f32).min(w).min(h));
+    GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+}
+
+/// `r` as a GDI+ path, its corners rounded by `rad` (the corner diameter; 0 square). The caller deletes it.
+unsafe fn round_path(r: RECT, rad: i32) -> *mut GpPath {
+    let (x, y, w, h) = (r.left as f32, r.top as f32, (r.right - r.left) as f32, (r.bottom - r.top) as f32);
+    let d = (rad as f32).min(w).min(h);
     let mut path: *mut GpPath = null_mut();
     GdipCreatePath(FillModeAlternate, &mut path);
-    GdipAddPathArc(path, x, y, d, d, 180.0, 90.0);
-    GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0);
-    GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
-    GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
+    if d <= 0.0 {
+        GdipAddPathRectangle(path, x, y, w, h);
+    } else {
+        GdipAddPathArc(path, x, y, d, d, 180.0, 90.0);
+        GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0);
+        GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
+        GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
+    }
     GdipClosePathFigure(path);
+    path
+}
+
+unsafe fn fill_path(g: *mut GpGraphics, path: *mut GpPath, argb: u32) {
     let mut br: *mut GpSolidFill = null_mut();
-    GdipCreateSolidFill(0xFF00_0000 | (c & 255) << 16 | (c & 0xFF00) | (c >> 16 & 255), &mut br); // COLORREF -> ARGB
+    GdipCreateSolidFill(argb, &mut br);
     GdipFillPath(g, br as *mut GpBrush, path);
     GdipDeleteBrush(br as *mut GpBrush);
+}
+
+/// COLORREF (0x00BBGGRR) and an alpha -> GDI+ ARGB.
+fn argb(c: u32, a: u8) -> u32 {
+    (a as u32) << 24 | (c & 255) << 16 | (c & 0xFF00) | (c >> 16 & 255)
+}
+
+/// A highlight: `layers` of colour, each laid over the one before at its strength (0..1), on whatever `r` shows; `from` is
+/// the bar colour there. A see-through bar (glass.rs) gets each layer blended in and recorded, so the highlight fades in
+/// over the clear background instead of popping up solid; anywhere else it is the one colour they mix to, as always.
+unsafe fn pill(dc: HDC, r: RECT, from: u32, layers: &[(u32, f32)], rad: i32) {
+    let Some(rec) = glass::recorder(dc) else {
+        fill(dc, r, layers.iter().fold(from, |c, &(to, t)| mix(c, to, t)), rad);
+        return;
+    };
+    let mut g: *mut GpGraphics = null_mut();
+    if r.right <= r.left || r.bottom <= r.top || GdipCreateFromHDC(dc, &mut g) != 0 || g.is_null() {
+        return;
+    }
+    smooth(g);
+    let path = round_path(r, if style().square() { 0 } else { rad });
+    for &(c, t) in layers {
+        let a = (t.clamp(0.0, 1.0) * 255.0).round() as u8;
+        if a > 0 {
+            fill_path(g, path, argb(c, a));
+            fill_path(rec, path, argb(c, a));
+        }
+    }
     GdipDeletePath(path);
     GdipDeleteGraphics(g);
 }
@@ -1749,29 +1928,29 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { dim }, DT_CENTER);
 
-    let sb = cell(l.x0, l.bw);
-    glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { dim }, DT_CENTER);
-    let tb = cell(l.x0 + l.bw + l.gap, l.bw);
-    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { dim }, DT_CENTER);
+    let lead = lead();
+    for (k, id) in leads().into_iter().enumerate() {
+        let r = cell(l.x0 + k as i32 * (l.bw + l.gap), l.bw);
+        glow(dc, id, hot == id, r, pal().bg, pal().hover, sc(8));
+        text(dc, lead_glyph(id), r, if hot == id { pal().text } else { dim }, DT_CENTER);
+    }
 
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let y = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let y = l.x0 + (i as i32 + lead) * (l.bw + l.gap);
             let r = cell(y, l.bw);
             let mid = y + l.bw / 2;
             let act = b.wins.contains(&fg);
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
-                fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(8));
+                pill(dc, r, pal().bg, &[(pal().hover, th), (active_bg, ta), (pal().accent, 0.5 * tp)], sc(8));
             }
             if att {
-                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
+                pill(dc, r, pal().bg, &[(pal().accent, 0.4)], sc(8));
             }
             if i == 0 {
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_px() as f32 / 3.0) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32; // as big as an app icon
                 let g = sc(1).max(1);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
@@ -1823,7 +2002,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let grp = cell(l.sys.0 + sc(44), l.sys.1 - l.sys.0 - sc(44));
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
-        fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
+        pill(dc, grp, pal().bg, &[(pal().hover, tg), (pal().accent, 0.5 * pg)], sc(8));
     }
     text(dc, &lang_name(), cell(l.sys.0, sc(42)), pal().text, DT_CENTER);
     net_icon(dc, cx, l.sys.0 + sc(58), sc(17), f_glyph);
@@ -1934,10 +2113,18 @@ unsafe fn paint(hwnd: HWND) {
     GetClientRect(hwnd, &mut cr);
     let h = cr.bottom;
     BUSY.set(false);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, h));
+    // with the blur the bar is painted where its pixels can be reached (glass.rs); otherwise as always
+    let glass = if glass::see_through() { glass::dib(wdc, cr.right, h) } else { None };
+    let dc = CreateCompatibleDC(wdc);
+    let bmp = glass.map_or_else(|| CreateCompatibleBitmap(wdc, cr.right, h), |(b, _)| b);
     let old = SelectObject(dc, bmp);
     // the background (gradient, facets, hairlines) is the same every frame: drawn once per size / style, then copied
     BitBlt(dc, 0, 0, cr.right, h, bg_layer(wdc, cr), 0, 0, SRCCOPY);
+    let px_count = (cr.right * h).max(0) as usize;
+    if let Some((_, px)) = glass {
+        glass::remember_backdrop(px, px_count, BG.get().2);
+        glass::record(dc, cr.right, h);
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let [f_txt, f_small, f_glyph, f_bold] = bar_fonts();
     let of = SelectObject(dc, f_txt);
@@ -1962,32 +2149,35 @@ unsafe fn paint(hwnd: HWND) {
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
 
-    // search button (left of Start)
-    let sb = RECT { left: l.x0, top, right: l.x0 + l.bw, bottom: bot };
-    glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
+    // the search and Task View buttons (left of Start), the ones that are on
     SelectObject(dc, f_glyph);
-    text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
-    let tb = RECT { left: l.x0 + l.bw + l.gap, top, right: l.x0 + 2 * l.bw + l.gap, bottom: bot };
-    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    let leads = leads();
+    for (k, &id) in leads.iter().enumerate() {
+        let x = l.x0 + k as i32 * (l.bw + l.gap);
+        let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
+        glow(dc, id, hot == id, r, pal().bg, pal().hover, sc(8));
+        text(dc, lead_glyph(id), r, if hot == id { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    }
+    let lead = leads.len() as i32;
 
     // Start, pinned apps, open windows (center)
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let x = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
-            let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
+            let x = l.x0 + (i as i32 + lead) * (l.bw + l.gap);
+            let r = app_cell(x, l.bw, top, bot);
             let act = b.wins.contains(&fg);
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
-                fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(8));
+                pill(dc, r, pal().bg, &[(pal().hover, th), (active_bg, ta), (pal().accent, 0.5 * tp)], sc(6));
             }
             if att {
-                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
+                pill(dc, r, pal().bg, &[(pal().accent, 0.4)], sc(6));
             }
+            let mid = (r.top + r.bottom) / 2;
             if i == 0 {
                 // Windows logo in four tiles, lit from the top left; grows a little on hover, squeezes on click
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_px() as f32 / 3.0) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32; // as big as an app icon
                 let (g, cx) = (sc(1).max(1), (r.left + r.right) / 2);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
@@ -2003,14 +2193,16 @@ unsafe fn paint(hwnd: HWND) {
             let ic = if ic.is_null() { b.wins.first().map_or(ic, |&w| icon_of(w)) } else { ic }; // a pin whose icon failed to load (#91)
             let key = b.pin.map(|p| -(p as isize) - 1).or_else(|| b.wins.first().map(|&w| w as isize)).unwrap_or(0);
             // squeezes on click, grows in when new, lifts a pixel on hover
-            let isz = (icon_px().min(l.bw - sc(6)) as f32 * (1.0 - 0.18 * tp) * (0.55 + 0.45 * appear(key))) as i32;
+            // the size the icon was loaded at (scaling a loaded icon by any amount blurs it); the square only frames it
+            let isz = (icon_px().min(r.bottom - r.top - sc(2)) as f32 * (1.0 - 0.18 * tp) * (0.55 + 0.45 * appear(key))) as i32;
             if !ic.is_null() {
-                DrawIconEx(dc, x + (l.bw - isz) / 2, mid - isz / 2 - sc(2) - (sc(1) as f32 * th) as i32, ic, isz, isz, 0, null_mut(), DI_NORMAL);
+                // centred in the square, a hair above the middle to leave the pill its room
+                DrawIconEx(dc, (r.left + r.right - isz) / 2, mid - isz / 2 - sc(1) - (sc(1) as f32 * th) as i32, ic, isz, isz, 0, null_mut(), DI_NORMAL);
             }
             if !b.wins.is_empty() {
                 let min = b.wins.iter().all(|&w| IsIconic(w) != 0);
-                let pw = sc(6) + (sc(12) as f32 * ta) as i32; // the running-app pill stretches when its window is active
-                let py = bot - sc(4);
+                let pw = sc(6) + (sc(10) as f32 * ta) as i32; // the running-app pill stretches when its window is active
+                let py = r.bottom - sc(4);
                 let col = if act || att { pal().accent } else if min { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
                 fill(dc, RECT { left: x + (l.bw - pw) / 2, top: py, right: x + (l.bw + pw) / 2, bottom: py + sc(3) }, col, sc(3));
                 if b.wins.len() > 1 {
@@ -2050,7 +2242,7 @@ unsafe fn paint(hwnd: HWND) {
     let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
-        fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
+        pill(dc, grp, pal().bg, &[(pal().hover, tg), (pal().accent, 0.5 * pg)], sc(8));
     }
     let mut x = tb.left + sc(10);
     text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
@@ -2085,13 +2277,16 @@ unsafe fn paint(hwnd: HWND) {
     text(dc, &dt, RECT { left: cb.left, top: mid - sc(1), right: cb.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
     }
 
+    if let Some((_, px)) = glass {
+        glass::finish(px, px_count, (255 * i18n::style::bar_opacity() as u32 / 100) as u8);
+    }
     BitBlt(wdc, 0, 0, cr.right, h, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
     SelectObject(dc, old);
     DeleteObject(bmp);
     DeleteDC(dc);
     if BUSY.get() {
-        SetTimer(hwnd, 4, 16, None); // next animation frame
+        SetTimer(hwnd, 4, 15, None); // next animation frame (16 would wait two 15.6 ms ticks: 32 frames a second)
     } else {
         KillTimer(hwnd, 4);
     }
@@ -2130,6 +2325,13 @@ unsafe fn msix_app_id(lnk: &str) -> Option<String> {
     fly::apps_folder().into_iter().map(|a| a.1).find(|id| id.to_lowercase().starts_with(&prefix))
 }
 
+/// The installed rust-explorer, if any.
+fn rust_explorer() -> Option<String> {
+    let pf = std::env::var("ProgramFiles").ok()?;
+    let p = std::path::Path::new(&pf).join(r"rust-explorer\rust-explorer.exe");
+    p.is_file().then(|| p.to_string_lossy().into_owned())
+}
+
 /// Starts a Store app by its app id. false = it did not start (the caller falls back to explorer).
 unsafe fn activate_app(aumid: &str) -> bool {
     use windows::Win32::UI::Shell::{ACTIVATEOPTIONS, ApplicationActivationManager, IApplicationActivationManager};
@@ -2143,6 +2345,16 @@ unsafe fn activate_app(aumid: &str) -> bool {
 unsafe fn open(path: &[u16]) {
     let n = path.iter().position(|&c| c == 0).unwrap_or(path.len());
     let p = String::from_utf16_lossy(&path[..n]);
+    // Windows' File Explorer (the exe, or a pin / shortcut to it) is the WinRust file manager once that is installed;
+    // the pin keeps its look
+    let low = p.to_lowercase();
+    let explorer = low.ends_with("\\explorer.exe") || low == "explorer.exe" || (low.ends_with(".lnk") && lnk_target(&wide(&p)).ends_with("\\explorer.exe"));
+    if explorer {
+        if let Some(rx) = rust_explorer() {
+            winrust_common::launch::program(&rx);
+            return;
+        }
+    }
     if p.to_lowercase().ends_with(".lnk") {
         bump(&p);
     }
@@ -2177,7 +2389,7 @@ fn wstr_of(w: &[u16]) -> String {
     String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())])
 }
 
-/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows"; "3 个窗口" (no plural in Chinese).
+/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows"; "3 个窗口" (no plural in Chinese); "2 ventanas".
 fn windows_ru(n: usize) -> String {
     use i18n::Lang;
     let w = match lang!() {
@@ -2185,6 +2397,7 @@ fn windows_ru(n: usize) -> String {
         Lang::Pt => if n == 1 { "janela" } else { "janelas" },
         Lang::Ja => "ウィンドウ",
         Lang::Zh => "个窗口",
+        Lang::Es => if n == 1 { "ventana" } else { "ventanas" },
         Lang::Ru => match (n % 10, n % 100) {
             (1, x) if x != 11 => "окно",
             (2..=4, x) if !(12..=14).contains(&x) => "окна",
@@ -2215,9 +2428,9 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
     let stem = std::path::Path::new(&launch).file_stem().unwrap_or_default().to_string_lossy().to_string();
     let name: String = stem.chars().take(1).flat_map(char::to_uppercase).chain(stem.chars().skip(1)).collect();
     let sub = match (wins.len(), pin.is_some()) {
-        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução", zh: "已固定 · 未运行").to_string(),
-        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", zh: "已固定 · {}", windows_ru(n)),
-        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", zh: "运行中 · {}", windows_ru(n)),
+        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução", zh: "已固定 · 未运行", es: "Anclado · sin ejecutar").to_string(),
+        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", zh: "已固定 · {}", es: "Anclado · {}", windows_ru(n)),
+        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", zh: "运行中 · {}", es: "En ejecución · {}", windows_ru(n)),
     };
     let icon = if picon.is_null() { bicon } else { picon };
     let mut items: Vec<(fly::MItem, A)> = Vec::new();
@@ -2229,30 +2442,30 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
         }
     }
     if !launch.is_empty() {
-        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela", zh: "新建窗口") });
+        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开", es: "Abrir") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela", zh: "新建窗口", es: "Nueva ventana") });
         items.push((if items.is_empty() { it } else { it.sep() }, A::Open));
     }
     if pin.is_some() {
-        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra", zh: "从任务栏取消固定")), A::Pin));
+        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra", zh: "从任务栏取消固定", es: "Desanclar de la barra")), A::Pin));
     } else if !exe.is_empty() {
-        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra", zh: "固定到任务栏")), A::Pin));
+        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra", zh: "固定到任务栏", es: "Anclar a la barra")), A::Pin));
     }
     if let Some(p) = pin.filter(|_| !lnk.is_empty()) {
         let n = PINS.with_borrow(|p| p.len());
         if p > 0 {
-            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima", zh: "上移") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda", zh: "左移") }), A::Left));
+            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima", zh: "上移", es: "Mover arriba") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda", zh: "左移", es: "Mover a la izquierda") }), A::Left));
         }
         if p + 1 < n {
-            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo", zh: "下移") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita", zh: "右移") }), A::Right));
+            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo", zh: "下移", es: "Mover abajo") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita", zh: "右移", es: "Mover a la derecha") }), A::Right));
         }
     }
     if !launch.is_empty() {
         let s = fly::start_pinned(&launch);
-        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单") }), A::Start));
+        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除", es: "Quitar de Inicio") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单", es: "Agregar a Inicio") }), A::Start));
     }
     if !wins.is_empty() {
-        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas", zh: "关闭所有窗口") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela", zh: "关闭窗口") }).hint("Alt+F4").sep(), A::Close));
-        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo", zh: "结束进程")).danger(), A::Kill));
+        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas", zh: "关闭所有窗口", es: "Cerrar todas las ventanas") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela", zh: "关闭窗口", es: "Cerrar ventana") }).hint("Alt+F4").sep(), A::Close));
+        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo", zh: "结束进程", es: "Finalizar proceso")).danger(), A::Kill));
     }
     let acts: Vec<A> = items.iter().map(|x| x.1).collect();
     let items = items.into_iter().map(|x| x.0).collect();
@@ -2374,7 +2587,8 @@ unsafe fn pin_exe(path: &str, args: &str) {
     let exe = if is_lnk { lnk_target(&wide(path)) } else { path.to_lowercase() };
     let args = if is_lnk { lnk_args(&wide(path)) } else { args.to_string() };
     let exe = exe.as_str();
-    if exe.is_empty() || PINS.with_borrow(|p| p.iter().any(|p| p.target == exe && p.args == args)) {
+    // a running Squirrel app's own exe counts as pinned when its Update.exe pin is there
+    if exe.is_empty() || PINS.with_borrow(|p| p.iter().any(|p| (p.target == exe && p.args == args) || (!is_lnk && p.target != exe && p.runs(exe)))) {
         return;
     }
     let stem = std::path::Path::new(if is_lnk { path } else { exe }).file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -2486,33 +2700,33 @@ unsafe fn open_launcher() -> bool {
 /// Right click on Start: the Win+X menu (Explorer's own is gone with the bar).
 unsafe fn start_menu() {
     let bar = BAR.load(Relaxed) as HWND;
-    // (label in ru/en/ja/pt/zh, target); "!" targets are actions of ours, the rest goes through `open`
-    let tools: [(&str, &str, &str, &str, &str, &str); 15] = [
-        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "应用和功能", "ms-settings:appsfeatures"),
-        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "电源选项", "powercfg.cpl"),
-        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "事件查看器", "eventvwr.msc"),
-        ("Система", "System", "システム", "Sistema", "系统", "ms-settings:about"),
-        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "设备管理器", "devmgmt.msc"),
-        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "网络连接", "ms-settings:network"),
-        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "磁盘管理", "diskmgmt.msc"),
-        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "计算机管理", "compmgmt.msc"),
-        ("Терминал", "Terminal", "ターミナル", "Terminal", "终端", "!term"),
-        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "任务管理器", "taskmgr.exe"),
-        ("Параметры", "Settings", "設定", "Configurações", "设置", "ms-settings:"),
-        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "文件资源管理器", "shell:MyComputerFolder"),
-        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "运行", "!run"),
-        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "桌面", "!desktop"),
-        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "任务视图", "!taskview"),
+    // (label in ru/en/ja/pt/zh/es, target); "!" targets are actions of ours, the rest goes through `open`
+    let tools: [(&str, &str, &str, &str, &str, &str, &str); 15] = [
+        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "应用和功能", "Aplicaciones y características", "ms-settings:appsfeatures"),
+        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "电源选项", "Opciones de energía", "powercfg.cpl"),
+        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "事件查看器", "Visor de eventos", "eventvwr.msc"),
+        ("Система", "System", "システム", "Sistema", "系统", "Sistema", "ms-settings:about"),
+        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "设备管理器", "Administrador de dispositivos", "devmgmt.msc"),
+        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "网络连接", "Conexiones de red", "ms-settings:network"),
+        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "磁盘管理", "Administración de discos", "diskmgmt.msc"),
+        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "计算机管理", "Administración de equipos", "compmgmt.msc"),
+        ("Терминал", "Terminal", "ターミナル", "Terminal", "终端", "Terminal", "!term"),
+        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "任务管理器", "Administrador de tareas", "taskmgr.exe"),
+        ("Параметры", "Settings", "設定", "Configurações", "设置", "Configuración", "ms-settings:"),
+        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "文件资源管理器", "Explorador de archivos", "shell:MyComputerFolder"),
+        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "运行", "Ejecutar", "!run"),
+        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "桌面", "Escritorio", "!desktop"),
+        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "任务视图", "Vista de tareas", "!taskview"),
     ];
-    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "锁定", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "睡眠", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "重启", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "关机", "!shutdown")];
+    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "锁定", "Bloquear", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "睡眠", "Suspender", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "重启", "Reiniciar", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "关机", "Apagar", "!shutdown")];
     let mut items = Vec::new();
     let mut targets = Vec::new();
-    for (i, (ru, en, ja, pt, zh, to)) in tools.iter().chain(power.iter()).enumerate() {
-        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt, zh: *zh));
+    for (i, (ru, en, ja, pt, zh, es, to)) in tools.iter().chain(power.iter()).enumerate() {
+        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt, zh: *zh, es: *es));
         items.push(if i == tools.len() { it.sep() } else { it });
         targets.push(*to);
     }
-    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar", zh: "启动").to_string(), String::new());
+    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar", zh: "启动", es: "Iniciar").to_string(), String::new());
     fly::menu(tip_cx(&bar_layout(bar), 0), Some(head), items, move |i| {
         let Some(&to) = targets.get(i) else { return };
         let quiet = |c: &mut Command| { let _ = c.creation_flags(NO_WINDOW).spawn(); };
@@ -2627,8 +2841,8 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
         CLOCK => {
             // right click: like Windows 11, a menu with the date and time and notification settings (#126)
             let items = vec![
-                fly::MItem::new(t!("Настройка даты и времени", "Adjust date and time", ja: "日付と時刻を調整する", pt: "Ajustar data e hora")),
-                fly::MItem::new(t!("Параметры уведомлений", "Notification settings", ja: "通知の設定", pt: "Configurações de notificação")),
+                fly::MItem::new(t!("Настройка даты и времени", "Adjust date and time", ja: "日付と時刻を調整する", pt: "Ajustar data e hora", es: "Ajustar fecha y hora")),
+                fly::MItem::new(t!("Параметры уведомлений", "Notification settings", ja: "通知の設定", pt: "Configurações de notificação", es: "Configuración de notificaciones")),
             ];
             fly::menu(tip_cx(&bar_layout(BAR.load(Relaxed) as HWND), CLOCK), None, items, |i| {
                 if i == 0 {
@@ -2701,7 +2915,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     let exe = exe_of(w);
     let i = BTNS.with_borrow(|b| b.iter().position(|b| b.wins.contains(&w)).or_else(|| b.iter().position(|b| !exe.is_empty() && b.wins.first().is_some_and(|&x| exe_of(x) == exe))));
     let x = match i {
-        Some(i) => l.x0 + (i as i32 + LEAD) * (l.bw + l.gap),
+        Some(i) => l.x0 + (i as i32 + lead()) * (l.bw + l.gap),
         None => (l.x0 + l.apps.0) / 2, // no button (yet): the middle of the bar
     };
     if vert() {
@@ -2713,13 +2927,24 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     (*info).rc = RECT { left: x, top, right: x + l.bw, bottom: top + bar_h() - sc(8) };
 }
 
+fn lead_glyph(id: i32) -> &'static str {
+    if id == SEARCH { "\u{E721}" } else { "\u{E7C4}" }
+}
+
+/// The highlight of an app button: a rounded square around the icon, centred in its slot and in the bar's height, so it
+/// looks the same at every bar size and scale (the old one was the slot's full height: tall and narrow on a big bar).
+fn app_cell(x: i32, bw: i32, top: i32, bot: i32) -> RECT {
+    let side = (bot - top).min(bw).min(sc(40)).max(sc(24));
+    let (cx, cy) = (x + bw / 2, (top + bot) / 2);
+    RECT { left: cx - side / 2, top: cy - side / 2, right: cx - side / 2 + side, bottom: cy - side / 2 + side }
+}
+
 /// Screen x of the middle of a bar element, for its tooltip and menus.
 unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
     // along the bar: screen x for a bottom bar, screen y for a side bar
     (if vert() { 0 } else { bar_x_w().0 }) + match h {
         GEAR => sc(GEAR_X.0 + GEAR_X.1 / 2),
-        SEARCH => l.x0 + l.bw / 2,
-        TASKVIEW => l.x0 + (l.bw + l.gap) + l.bw / 2,
+        SEARCH | TASKVIEW => l.x0 + leads().iter().position(|&x| x == h).unwrap_or(0) as i32 * (l.bw + l.gap) + l.bw / 2,
         CLOCK => (l.clock.0 + l.clock.1) / 2,
         SHOWDESK => l.clock.1 + sc(3),
         LANG => l.sys.0 + sc(21),
@@ -2727,7 +2952,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
         VOL_I => l.sys.0 + sc(90),
         BAT_I => l.sys.0 + sc(130),
         t if (TAPP..TAPP + 100).contains(&t) => l.apps.0 + (t - TAPP) * sc(24) + sc(12),
-        i => l.x0 + (i + LEAD) * (l.bw + l.gap) + l.bw / 2,
+        i => l.x0 + (i + lead()) * (l.bw + l.gap) + l.bw / 2,
     }
 }
 
@@ -2770,6 +2995,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             hide_taskbar();
             place(hwnd);
         }
+        return 0;
+    }
+    if msg != 0 && msg == i18n::style::msg() {
+        // someone switched the look or the language (the installer, rust-settings, our own gear): repaint in it
+        i18n::style::reload();
+        onedrive_recheck();
+        relook(false);
         return 0;
     }
     match msg {
@@ -2970,7 +3202,8 @@ fn main() {
         let dc = GetDC(null_mut());
         SCALE.set(GetDeviceCaps(dc, LOGPIXELSX as i32) as f32 / 96.0);
         ReleaseDC(null_mut(), dc);
-        SHOWN.set(std::fs::read_to_string(appdata_file("topbar-tray.txt")).ok().map(|s| s.lines().map(str::to_string).collect()));
+        // our own list once the user moved an icon; before that, what Windows 11 shows on its taskbar
+        SHOWN.set(std::fs::read_to_string(appdata_file("topbar-tray.txt")).ok().map(|s| s.lines().map(str::to_string).collect()).or_else(windows_promoted));
         load_pins();
         fly::init(GetModuleHandleW(null()));
         thread::spawn(fly::load_apps);
@@ -2988,6 +3221,7 @@ fn main() {
         ChangeWindowMessageFilterEx(HOST.get(), WM_COPYDATA, MSGFLT_ALLOW, null_mut());
         ChangeWindowMessageFilterEx(hwnd, CALLBACK, MSGFLT_ALLOW, null_mut());
         ChangeWindowMessageFilterEx(hwnd, TB_MSG.get(), MSGFLT_ALLOW, null_mut()); // explorer restarted (it runs unelevated)
+        ChangeWindowMessageFilterEx(hwnd, i18n::style::msg(), MSGFLT_ALLOW, null_mut()); // look / language from unelevated windows
         // files dragged from a normal-rights app onto the (elevated) bar: Start button = add to Start, elsewhere = pin
         DragAcceptFiles(hwnd, 1);
         for m in [WM_DROPFILES, 0x49 /* WM_COPYGLOBALDATA */, WM_COPYDATA] {
@@ -3020,6 +3254,7 @@ fn main() {
         hide_taskbar();
         place(hwnd);
         refresh();
+        onedrive_recheck(); // remembers the OneDrive switch as it is now
         announce(); // apps already running re-add their icons to us
         SetTimer(hwnd, 1, 1000, None); // status poll; windows come from win_event
         BAR.store(hwnd as isize, Relaxed);
@@ -3105,6 +3340,18 @@ mod tests {
         let f = super::msix_family(r"C:\Program Files\WindowsApps\Claude_5.11492.5.0_x64__pzs8sxrjxfjjc\app\claude.exe");
         assert_eq!(f, Some(("claude_pzs8sxrjxfjjc".into(), r"app\claude.exe".into())));
         assert_eq!(super::msix_family(r"C:\Program Files\Steam\steam.exe"), None);
+    }
+
+    #[test]
+    fn a_squirrel_pin_owns_its_running_app() {
+        let pin = |target: &str, args: &str| super::Pin { lnk: vec![], target: target.into(), args: args.into(), aumid: String::new(), icon: std::ptr::null_mut() };
+        let discord = pin(r"c:\users\a\appdata\local\discord\update.exe", "--processStart Discord.exe");
+        assert!(discord.runs(r"c:\users\a\appdata\local\discord\app-1.0.9269\discord.exe"));
+        assert!(!discord.runs(r"c:\users\a\appdata\local\slack\app-4.41.0\slack.exe")); // another Squirrel app
+        assert!(!discord.runs(r"c:\users\a\appdata\local\discord\app-1.0.9269\other.exe"));
+        assert!(pin(r"c:\x\update.exe", r#"--processStart="Slack.exe""#).runs(r"c:\x\app-1\slack.exe"));
+        assert!(pin(r"c:\program files\opera\opera.exe", "").runs(r"c:\program files\opera\opera.exe"));
+        assert!(!pin("", "").runs(""));
     }
 
     #[test]

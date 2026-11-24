@@ -21,7 +21,37 @@ pub fn get_dword(path: &str, name: &str) -> Option<u32> {
     raw(path, Some(name)).and_then(|(ty, b)| (ty == 4 && b.len() >= 4).then(|| u32::from_le_bytes(b[..4].try_into().unwrap())))
 }
 
-fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
+/// A REG_SZ / REG_EXPAND_SZ read natively (not expanded); None when missing or of another type.
+pub fn get_str(path: &str, name: &str) -> Option<String> {
+    let (ty, b) = raw(path, Some(name))?;
+    if ty != 1 && ty != 2 {
+        return None;
+    }
+    let w: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+    Some(String::from_utf16_lossy(&w))
+}
+
+/// The names of a key's subkeys, read natively (empty when it has none or cannot be opened).
+pub fn subkeys(path: &str) -> Vec<String> {
+    use windows_sys::Win32::System::Registry::*;
+    let Some(k) = open(path) else { return vec![] };
+    let mut out = vec![];
+    let mut name = [0u16; 256]; // key names are at most 255 characters
+    unsafe {
+        for i in 0.. {
+            let mut len = name.len() as u32;
+            if RegEnumKeyExW(k, i, name.as_mut_ptr(), &mut len, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) != 0 {
+                break;
+            }
+            out.push(String::from_utf16_lossy(&name[..len as usize]));
+        }
+        RegCloseKey(k);
+    }
+    out
+}
+
+/// `path` opened for reading; the caller closes it.
+fn open(path: &str) -> Option<windows_sys::Win32::System::Registry::HKEY> {
     use windows_sys::Win32::System::Registry::*;
     let (root, sub) = path.split_once('\\').unwrap_or((path, ""));
     let root = match root.to_ascii_uppercase().as_str() {
@@ -31,13 +61,16 @@ fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
         "HKCR" | "HKEY_CLASSES_ROOT" => HKEY_CLASSES_ROOT,
         _ => return None,
     };
+    let sub: Vec<u16> = sub.encode_utf16().chain([0]).collect();
+    let mut k = std::ptr::null_mut();
+    (unsafe { RegOpenKeyExW(root, sub.as_ptr(), 0, KEY_READ, &mut k) } == 0).then_some(k)
+}
+
+fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
+    use windows_sys::Win32::System::Registry::*;
     let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let sub = w(sub);
+    let k = open(path)?;
     unsafe {
-        let mut k = std::ptr::null_mut();
-        if RegOpenKeyExW(root, sub.as_ptr(), 0, KEY_READ, &mut k) != 0 {
-            return None;
-        }
         let r = match name {
             None => Some((0, vec![])),
             Some(n) => {
@@ -118,5 +151,9 @@ mod tests {
         assert!(!exists(r"BAD\x", None));
         assert!(get_dword(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentMajorVersionNumber").is_some_and(|v| v >= 10));
         assert_eq!(get_dword(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ProductName"), None, "REG_SZ is not a DWORD");
+        assert!(get_str(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ProductName").is_some_and(|s| s.starts_with("Windows")));
+        assert_eq!(get_str(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentMajorVersionNumber"), None, "a DWORD is not a string");
+        assert!(subkeys(r"HKLM\SOFTWARE").iter().any(|k| k == "Microsoft"));
+        assert!(subkeys(r"HKLM\SOFTWARE\no-such-key-winrust").is_empty());
     }
 }
