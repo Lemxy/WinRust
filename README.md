@@ -54,6 +54,14 @@ of the bar that was clicked.
 Windows 7, Windows 10 and Windows 11 styles (this is the Windows 10 one), pinned apps, independent hover per column, wheel
 scrolling, right-click on a tile (open, run as administrator, **uninstall**, pin), adjustable position and size.
 
+### Context menu
+
+![Context menu](docs/screenshots/context-menu.png)
+
+The desktop and file menus are ours: frosted, rounded, with icons, shortcuts and one submenu level. A file gets
+"Abrir con…" (our own centred picker, with a Browse button) and "Más opciones…" opens the native shell menu for the verbs
+we do not cover.
+
 ### Notifications
 
 ![Notification centre](docs/screenshots/notifications.png)

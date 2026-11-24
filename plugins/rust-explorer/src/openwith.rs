@@ -19,10 +19,11 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HWND, RECT, ERROR_MORE_DATA, ERROR_SUCCESS, S_OK},
+    Foundation::{CloseHandle, GetLastError, HWND, RECT, ERROR_MORE_DATA, ERROR_SUCCESS, S_OK},
     Graphics::Gdi::*,
     Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
     System::{
+        Environment::ExpandEnvironmentStringsW,
         LibraryLoader::GetModuleHandleW,
         Registry::{
             RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW,
@@ -103,33 +104,26 @@ unsafe fn string_value(h: HKEY, name: Option<&str>) -> Option<String> {
     let units: Vec<u16> = b.chunks_exact(2).take(len as usize / 2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let s = String::from_utf16_lossy(&units);
     let s = s.trim_end_matches('\0').to_string();
-    Some(if ty == REG_EXPAND_SZ { expand(&s) } else { s })
+    Some(if ty == REG_EXPAND_SZ { expand_env(&s) } else { s })
 }
 
 /// `%SystemRoot%\x` -> the value of the variable (REG_EXPAND_SZ commands are written that way).
-fn expand(s: &str) -> String {
-    let mut out = String::new();
-    let mut rest = s;
-    while let Some(i) = rest.find('%') {
-        out.push_str(&rest[..i]);
-        let after = &rest[i + 1..];
-        let Some(j) = after.find('%') else {
-            out.push_str(&rest[i..]);
-            return out;
-        };
-        let var = &after[..j];
-        match std::env::var(var) {
-            Ok(v) => out.push_str(&v),
-            Err(_) => {
-                out.push('%');
-                out.push_str(var);
-                out.push('%');
-            }
+/// `%SystemRoot%\system32\NOTEPAD.EXE` -> `C:\Windows\system32\NOTEPAD.EXE`. CreateProcessW expands nothing, so the
+/// variables have to be resolved before an exe name or a command line reaches it.
+fn expand_env(s: &str) -> String {
+    unsafe {
+        let src = wc(s);
+        let n = ExpandEnvironmentStringsW(src.as_ptr(), ptr::null_mut(), 0);
+        if n == 0 {
+            return s.to_string();
         }
-        rest = &after[j + 1..];
+        let mut buf = vec![0u16; n as usize];
+        let n = ExpandEnvironmentStringsW(src.as_ptr(), buf.as_mut_ptr(), n);
+        if n == 0 || n as usize > buf.len() {
+            return s.to_string();
+        }
+        String::from_utf16_lossy(&buf[..(n as usize).saturating_sub(1)])
     }
-    out.push_str(rest);
-    out
 }
 
 unsafe fn subkeys(h: HKEY) -> Vec<String> {
@@ -242,11 +236,11 @@ unsafe fn user_choice(key: &str) -> Option<String> {
     v.filter(|v| !v.trim().is_empty())
 }
 
-/// True when the file's type has an association: the double click then keeps going straight through ShellExecute.
+/// True when the file's type has an association: the double click then starts it without asking.
 ///
 /// The registry is asked first, on purpose: `AssocQueryString` answers with `OpenWith.exe` for a type nobody
-/// registered, and it is not to be trusted alone. A ProgID only counts when it resolves to a command - a default
-/// value pointing at nothing is not an association, and ShellExecute on it would end in Windows' own picker.
+/// registered, and it is not to be trusted alone. A ProgID only has to *exist* - the exe behind it may need
+/// `%Variables%` expanded or live in a folder this process cannot stat, and that is no reason to ask again.
 pub fn associated(file: &Path) -> bool {
     let Some(ext) = file.extension() else { return false };
     let key = format!(".{}", ext.to_string_lossy().to_lowercase());
@@ -256,12 +250,24 @@ pub fn associated(file: &Path) -> bool {
             return true;
         }
         // what we wrote (or any app installer wrote) as the type's ProgID
-        if class_progid(&key).is_some_and(|p| progid_resolves(&p)) {
+        if class_progid(&key).is_some_and(|p| class_exists(&p)) {
             return true;
         }
         // the shell's own answer, when it is a real handler rather than OpenWith.exe
         assoc_exe(&key).is_some()
     }
+}
+
+/// The ProgID is a registered class (`HKCR\<progid>` opens): the type has an owner, whether or not its exe can be
+/// verified here.
+unsafe fn class_exists(progid: &str) -> bool {
+    for (root, pre) in CLASS_ROOTS {
+        if let Some(k) = open_key(root, &format!("{pre}{progid}")) {
+            RegCloseKey(k);
+            return true;
+        }
+    }
+    false
 }
 
 /// A candidate in the list.
@@ -274,7 +280,26 @@ struct App {
     progid: Option<String>,
 }
 
-fn app_of(exe: PathBuf, name: Option<String>, progid: Option<String>) -> App {
+/// The exe as a real path: `%SystemRoot%\system32\NOTEPAD.EXE` and a bare `notepad.exe` both come out as
+/// `C:\Windows\System32\notepad.exe`. CreateProcessW expands nothing, so this has to happen before it is called -
+/// it is also what gives the row a real icon and a readable path.
+fn resolve_exe(exe: &Path) -> PathBuf {
+    let s = expand_env(&exe.to_string_lossy());
+    let p = PathBuf::from(s.trim().trim_matches('"'));
+    if p.is_absolute() && p.is_file() {
+        return p;
+    }
+    // a bare name (or a path that is gone): the system folder and App Paths are where the shell would look
+    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+        if let Some(found) = unsafe { app_path(name) } {
+            return found;
+        }
+    }
+    p
+}
+
+unsafe fn app_of(exe: PathBuf, name: Option<String>, progid: Option<String>) -> App {
+    let exe = resolve_exe(&exe);
     let name = name
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
@@ -452,17 +477,17 @@ fn candidates(file: &Path) -> Vec<App> {
     let mut extra = Vec::new();
     if ["txt", "log", "ini", "md", "json", "xml", "csv"].contains(&ext.as_str()) {
         if let Some(exe) = system_exe("notepad.exe") {
-            extra.push(app_of(exe, None, None));
+            extra.push(unsafe { app_of(exe, None, None) });
         }
     }
     if ["html", "htm", "url"].contains(&ext.as_str()) {
         if let Some(exe) = unsafe { assoc_exe(".html") } {
-            extra.push(app_of(exe, None, None));
+            extra.push(unsafe { app_of(exe, None, None) });
         }
     }
     if crate::is_pic(file) {
         if let Some(exe) = system_exe("mspaint.exe") {
-            extra.push(app_of(exe, None, None));
+            extra.push(unsafe { app_of(exe, None, None) });
         }
     }
     for app in extra {
