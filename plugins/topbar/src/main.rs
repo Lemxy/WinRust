@@ -168,6 +168,25 @@ struct Pin {
     aumid: String,  // lower-case AppUserModelID the shortcut carries (a browser profile's own, #132), "" if none
     icon: HICON,
 }
+
+impl Pin {
+    /// Whether `exe` (lower-case, from exe_of) is the app this pin starts. Squirrel apps (Discord, Slack, GitHub Desktop)
+    /// are pinned as "Update.exe --processStart Discord.exe" and run from a versioned app-x.y.z folder beside it; matched
+    /// by path alone, the pin stayed dark and the running app got a second button.
+    fn runs(&self, exe: &str) -> bool {
+        if self.target.is_empty() || exe.is_empty() {
+            return false;
+        }
+        if self.target == exe {
+            return true;
+        }
+        let Some(dir) = self.target.strip_suffix("update.exe") else { return false };
+        let args = self.args.to_lowercase();
+        let started = args.split_once("--processstart").and_then(|(_, rest)| rest.trim_start_matches(['=', ' ']).split_whitespace().next()).map(|s| s.trim_matches('"').to_string());
+        started.is_some_and(|name| exe.starts_with(dir) && exe.rsplit('\\').next() == Some(name.as_str()))
+    }
+}
+
 struct Btn {
     pin: Option<usize>,
     wins: Vec<HWND>,
@@ -1282,10 +1301,10 @@ fn refresh_buttons() {
     let mut loose: Vec<HWND> = Vec::new();
     for w in wins {
         let exe = unsafe { exe_of(w) };
-        // pins of one exe (two browser profiles, #132) tell their windows apart by AppUserModelID; a pin or window without one
-        // takes any window of its exe
+        // pins of one app (two browser profiles, #132) tell their windows apart by AppUserModelID; a pin or window without one
+        // takes any window of its app
         let pin = PINS.with_borrow(|p| {
-            let mine: Vec<usize> = (0..p.len()).filter(|&i| !p[i].target.is_empty() && p[i].target == exe).collect();
+            let mine: Vec<usize> = (0..p.len()).filter(|&i| p[i].runs(&exe)).collect();
             if mine.is_empty() {
                 return None;
             }
@@ -2568,7 +2587,8 @@ unsafe fn pin_exe(path: &str, args: &str) {
     let exe = if is_lnk { lnk_target(&wide(path)) } else { path.to_lowercase() };
     let args = if is_lnk { lnk_args(&wide(path)) } else { args.to_string() };
     let exe = exe.as_str();
-    if exe.is_empty() || PINS.with_borrow(|p| p.iter().any(|p| p.target == exe && p.args == args)) {
+    // a running Squirrel app's own exe counts as pinned when its Update.exe pin is there
+    if exe.is_empty() || PINS.with_borrow(|p| p.iter().any(|p| (p.target == exe && p.args == args) || (!is_lnk && p.target != exe && p.runs(exe)))) {
         return;
     }
     let stem = std::path::Path::new(if is_lnk { path } else { exe }).file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -3320,6 +3340,18 @@ mod tests {
         let f = super::msix_family(r"C:\Program Files\WindowsApps\Claude_5.11492.5.0_x64__pzs8sxrjxfjjc\app\claude.exe");
         assert_eq!(f, Some(("claude_pzs8sxrjxfjjc".into(), r"app\claude.exe".into())));
         assert_eq!(super::msix_family(r"C:\Program Files\Steam\steam.exe"), None);
+    }
+
+    #[test]
+    fn a_squirrel_pin_owns_its_running_app() {
+        let pin = |target: &str, args: &str| super::Pin { lnk: vec![], target: target.into(), args: args.into(), aumid: String::new(), icon: std::ptr::null_mut() };
+        let discord = pin(r"c:\users\a\appdata\local\discord\update.exe", "--processStart Discord.exe");
+        assert!(discord.runs(r"c:\users\a\appdata\local\discord\app-1.0.9269\discord.exe"));
+        assert!(!discord.runs(r"c:\users\a\appdata\local\slack\app-4.41.0\slack.exe")); // another Squirrel app
+        assert!(!discord.runs(r"c:\users\a\appdata\local\discord\app-1.0.9269\other.exe"));
+        assert!(pin(r"c:\x\update.exe", r#"--processStart="Slack.exe""#).runs(r"c:\x\app-1\slack.exe"));
+        assert!(pin(r"c:\program files\opera\opera.exe", "").runs(r"c:\program files\opera\opera.exe"));
+        assert!(!pin("", "").runs(""));
     }
 
     #[test]
