@@ -1,12 +1,15 @@
-//! Bringing our own popup (Start, the search card) to the front with the keyboard focus. Windows refuses the foreground to a
-//! process that did not get the last input: the popup then shows, but typing goes to the old window (#72). Used by topbar
-//! and rs-launcher; call it on the thread that owns `h`.
+//! Bringing windows to the front: `force()` for our own popups (Start, the search card) that need keyboard focus
+//! even without recent input (#72), and `activate()` for switching to another application's window (restoring it if
+//! minimized without disrupting exclusive-fullscreen games).
 use windows_sys::Win32::{
     Foundation::HWND,
     System::Threading::{AttachThreadInput, GetCurrentThreadId},
     UI::{
-        Input::KeyboardAndMouse::{INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP, SendInput, SetFocus, VK_MENU},
-        WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow},
+        Input::KeyboardAndMouse::{INPUT, INPUT_KEYBOARD, IsWindowEnabled, KEYEVENTF_KEYUP, SendInput, SetFocus, VK_MENU},
+        WindowsAndMessaging::{
+            AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetLastActivePopup, GetWindowThreadProcessId,
+            IsIconic, IsWindow, IsWindowVisible, SW_RESTORE, SetForegroundWindow, ShowWindow, SwitchToThisWindow,
+        },
     },
 };
 
@@ -35,6 +38,83 @@ pub fn force(h: HWND) {
         }
         SetFocus(h); // detaching drops this thread's keyboard focus; without it the window gets no typing
     }
+}
+
+/// Switches to another application's window `w` (restoring it first if minimized).
+/// Acquires foreground rights before calling `ShowWindow(w, SW_RESTORE)` so a minimized exclusive-fullscreen game is
+/// not restored behind the current window (causing DXGI to immediately re-minimize it), and avoids injecting synthetic
+/// Alt keys once `SetForegroundWindow` succeeds.
+pub fn activate(w: HWND) {
+    unsafe {
+        if w.is_null() || IsWindow(w) == 0 {
+            return;
+        }
+        let target = last_active_popup(w);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(target, &mut pid);
+        let iconic = IsIconic(w) != 0;
+
+        // Already un-minimized and we hold foreground rights (e.g. a click on the bar): switch directly without
+        // attaching thread queues or injecting keys.
+        if !iconic {
+            if pid != 0 {
+                AllowSetForegroundWindow(pid);
+            }
+            if SetForegroundWindow(target) != 0 {
+                return;
+            }
+        }
+
+        // 1) Share the current foreground thread's input queue *before* restoring/activating so we inherit foreground
+        // permission during ShowWindow(SW_RESTORE) and AllowSetForegroundWindow(pid).
+        let me = GetCurrentThreadId();
+        let fg = GetForegroundWindow();
+        let ft = if !fg.is_null() { GetWindowThreadProcessId(fg, std::ptr::null_mut()) } else { 0 };
+        let attach = ft != 0 && ft != me && AttachThreadInput(me, ft, 1) != 0;
+        if pid != 0 {
+            AllowSetForegroundWindow(pid);
+        }
+        if iconic {
+            ShowWindow(w, SW_RESTORE);
+        }
+        BringWindowToTop(target);
+        let ok = SetForegroundWindow(target) != 0;
+        if attach {
+            AttachThreadInput(me, ft, 0);
+        }
+
+        // 2) Fallback only when SetForegroundWindow actually failed (looking at the desktop with no attachable
+        // foreground thread, or UIPI refused AttachThreadInput). Never run this after a successful cross-process
+        // SetForegroundWindow: GetForegroundWindow() can lag behind an exclusive-fullscreen mode switch, and a
+        // synthetic Alt tap then knocks the game right back out of fullscreen.
+        if !ok && !is_fg(w, target) {
+            keys(&[(VK_MENU, false), (0xE8, false), (0xE8, true)]);
+            if pid != 0 {
+                AllowSetForegroundWindow(pid);
+            }
+            if IsIconic(w) != 0 {
+                ShowWindow(w, SW_RESTORE);
+            }
+            BringWindowToTop(target);
+            let ok2 = SetForegroundWindow(target) != 0;
+            keys(&[(VK_MENU, true)]);
+            if !ok2 && !is_fg(w, target) {
+                SwitchToThisWindow(target, 1);
+            }
+        }
+    }
+}
+
+fn last_active_popup(w: HWND) -> HWND {
+    unsafe {
+        let p = GetLastActivePopup(w);
+        if !p.is_null() && p != w && IsWindowVisible(p) != 0 && IsWindowEnabled(p) != 0 { p } else { w }
+    }
+}
+
+fn is_fg(w: HWND, target: HWND) -> bool {
+    let fg = unsafe { GetForegroundWindow() };
+    !fg.is_null() && (fg == target || fg == w)
 }
 
 fn keys(k: &[(u16, bool)]) {

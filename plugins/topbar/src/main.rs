@@ -228,6 +228,8 @@ thread_local! {
     static TF_ANIM: Cell<(u64, i32, i32)> = const { Cell::new((0, 0, 0)) }; // tray flyout: when it opened, its final x, y
     static FHOT: Cell<i32> = const { Cell::new(-1) };
     static HOT: Cell<i32> = const { Cell::new(NONE) };
+    static DOWN_BTN: Cell<i32> = const { Cell::new(NONE) }; // app button pressed on WM_LBUTTONDOWN, activated on WM_LBUTTONUP
+    static NEED_PLACE: Cell<bool> = const { Cell::new(false) }; // display/pos change arrived while fullscreen; run place() after leaving fullscreen
     static ORDER: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // unpinned windows in the order their buttons were added
     static HV: RefCell<HashMap<i32, (f32, u64)>> = RefCell::new(HashMap::new()); // hover fade per element: (0..1, last update ms)
     static BUSY: Cell<bool> = const { Cell::new(false) }; // a fade is still running: the painter asks for another frame
@@ -548,13 +550,29 @@ unsafe fn alt_tab(back: bool) {
         if n == 0 {
             return SWITCHING.store(false, Relaxed);
         }
-        SW.set((v, if n == 1 { 0 } else if back { n - 1 } else { 1 }));
+        let fg = GetForegroundWindow();
+        let fg_root = if fg.is_null() { null_mut() } else { GetAncestor(fg, GA_ROOTOWNER) };
+        let idx = initial_alt_tab_index(&v, fg_root, back);
+        SW.set((v, idx));
         SW_MON.set(mon);
         sw_layout(sw);
     } else {
         SW.with_borrow_mut(|(v, i)| *i = if back { (*i + v.len() - 1) % v.len() } else { (*i + 1) % v.len() });
     }
     InvalidateRect(sw, null(), 0);
+}
+
+/// First card highlighted when the Alt+Tab grid opens: the previous window (`1`) when `v[0]` is already
+/// the active app, or `0` when the desktop (not in `v`) is currently in front.
+fn initial_alt_tab_index(v: &[HWND], fg_root: HWND, back: bool) -> usize {
+    let n = v.len();
+    if n <= 1 {
+        return 0;
+    }
+    if back {
+        return n - 1;
+    }
+    if !fg_root.is_null() && v[0] == fg_root { 1 } else { 0 }
 }
 
 /// Sizes the switcher for its windows (centered on its monitor) and puts the live previews on the cards.
@@ -604,10 +622,7 @@ unsafe fn alt_done(cancel: bool) {
     });
     let (v, i) = SW.take();
     if let Some(&w) = v.get(i).filter(|_| !cancel) {
-        if IsIconic(w) != 0 {
-            ShowWindow(w, SW_RESTORE);
-        }
-        force_fg(w);
+        switch_to(w);
     }
 }
 
@@ -713,7 +728,13 @@ unsafe fn hide_taskbar_if_shown() {
 }
 
 /// Reserves the bottom strip of the primary monitor (maximized windows stay above it).
+/// Deferred while a fullscreen app owns the display: changing the work area or reasserting HWND_TOPMOST
+/// during an exclusive-fullscreen mode switch knocks the game back to the desktop.
 unsafe fn place(hwnd: HWND) {
+    if FULLSCREEN.load(Relaxed) {
+        NEED_PLACE.set(true);
+        return;
+    }
     apply_opacity(hwnd);
     let (cx, cy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
     let mut ab: APPBARDATA = zeroed();
@@ -1321,7 +1342,9 @@ fn refresh_status() {
             })
         });
         // explorer re-raises its own Shell_TrayWnd now and then; ours must stay in front so apps keep finding it first
-        SetWindowPos(HOST.get(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if !FULLSCREEN.load(Relaxed) {
+            SetWindowPos(HOST.get(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
     }
 }
 
@@ -1472,9 +1495,27 @@ unsafe fn bar_anim(hwnd: HWND) {
     SetTimer(hwnd, 5, 15, None);
 }
 
+/// Hides the bar immediately without animating: an exclusive-fullscreen game drops back to the desktop if an
+/// elevated topmost bar keeps calling SetWindowPos(HWND_TOPMOST) over it while sliding out.
+unsafe fn hide_bar_now(hwnd: HWND) {
+    KillTimer(hwnd, 5);
+    KillTimer(hwnd, 4);
+    BAR_P.set(0.0);
+    fly::close_now();
+    hide_tip(hwnd);
+    thumbs::hide_preview();
+    if IsWindowVisible(hwnd) != 0 {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
 unsafe fn bar_step(hwnd: HWND) {
-    // hides for a fullscreen game or video, and with "auto-hide" on while the pointer is away (never otherwise: not over the desktop, not in any style)
-    let target = if FULLSCREEN.load(Relaxed) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) { 0.0 } else { 1.0 };
+    if FULLSCREEN.load(Relaxed) {
+        hide_bar_now(hwnd);
+        return;
+    }
+    // hides with "auto-hide" on while the pointer is away (never otherwise: not over the desktop, not in any style)
+    let target = if i18n::style::autohide() && DESK_HIDE.load(Relaxed) { 0.0 } else { 1.0 };
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1493,26 +1534,59 @@ unsafe fn bar_step(hwnd: HWND) {
     }
 }
 
+/// Converts a `WINDOWPLACEMENT::rcNormalPosition` (workspace coords) back to screen coords on `mon`.
+fn work_to_screen(r: RECT, work: RECT, mon: RECT) -> RECT {
+    let (dx, dy) = (work.left - mon.left, work.top - mon.top);
+    RECT { left: r.left + dx, top: r.top + dy, right: r.right + dx, bottom: r.bottom + dy }
+}
+
+/// True when `w` covers (or, when minimized, will restore to cover) the whole primary monitor.
+unsafe fn is_fullscreen_window(w: HWND, bar: HWND) -> bool {
+    if w.is_null() || w == bar || IsWindowVisible(w) == 0 {
+        return false;
+    }
+    let mut cls = [0u16; 64];
+    let n = GetClassNameW(w, cls.as_mut_ptr(), 64).max(0) as usize;
+    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
+        return false; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
+    }
+    let caption = GetWindowLongW(w, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
+    let (r, m, zoomed) = if IsIconic(w) != 0 {
+        // A minimized window sits at (-32000, -32000): check where Windows will restore it.
+        let mut wp: WINDOWPLACEMENT = zeroed();
+        wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+        if GetWindowPlacement(w, &mut wp) == 0 {
+            return false;
+        }
+        let mut mi: MONITORINFO = zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
+            return false;
+        }
+        let tool = GetWindowLongW(w, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0;
+        let r = if tool { wp.rcNormalPosition } else { work_to_screen(wp.rcNormalPosition, mi.rcWork, mi.rcMonitor) };
+        (r, mi.rcMonitor, wp.flags & WPF_RESTORETOMAXIMIZED != 0)
+    } else {
+        let mut r: RECT = zeroed();
+        GetWindowRect(w, &mut r);
+        let mut mi: MONITORINFO = zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
+            return false;
+        }
+        (r, mi.rcMonitor, IsZoomed(w) != 0)
+    };
+    (m.left, m.top) == (0, 0) && covers_monitor(r, m, caption, zoomed)
+}
+
 /// True when the foreground window covers the whole primary monitor (game, F11 video, presentation).
 /// A maximized window does not: the bar's reserved strip keeps it below the bar.
 unsafe fn fullscreen_now(bar: HWND) -> bool {
     let fg = GetForegroundWindow();
-    if fg.is_null() || fg == bar || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
+    if fg.is_null() || IsIconic(fg) != 0 {
         return false;
     }
-    let mut cls = [0u16; 64];
-    let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
-    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
-        return false; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
-    }
-    let mut r: RECT = zeroed();
-    GetWindowRect(fg, &mut r);
-    let mut mi: MONITORINFO = zeroed();
-    mi.cbSize = size_of::<MONITORINFO>() as u32;
-    GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi);
-    let m = mi.rcMonitor;
-    let caption = GetWindowLongW(fg, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
-    (m.left, m.top) == (0, 0) && covers_monitor(r, m, caption, IsZoomed(fg) != 0)
+    is_fullscreen_window(fg, bar)
 }
 
 /// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); but a game in "borderless
@@ -1551,11 +1625,15 @@ unsafe fn fs_update(hwnd: HWND) {
     }
     if FULLSCREEN.swap(fs, Relaxed) != fs {
         if fs {
-            fly::close_now();
-            hide_tip(hwnd);
-            thumbs::hide_preview();
+            hide_bar_now(hwnd);
+        } else {
+            if NEED_PLACE.replace(false) {
+                place(hwnd);
+            }
+            bar_anim(hwnd);
         }
-        bar_anim(hwnd);
+    } else if !fs && NEED_PLACE.replace(false) {
+        place(hwnd);
     }
     // the 250 ms watch is only needed while the pointer decides (auto-hide, dock, desktop, bar away); otherwise
     // the foreground event, ABN_FULLSCREENAPP and the 1 s tick call this
@@ -1594,6 +1672,17 @@ unsafe fn dock_covered() -> bool {
 /// SetForegroundWindow that also works when the request comes from a keyboard hook (we have not "received input" then).
 unsafe fn force_fg(hw: HWND) {
     winrust_common::fg::force(hw);
+}
+
+/// Switches to another application's window (restoring it if minimized). Hides the bar first when switching to a
+/// fullscreen window on the primary monitor so the topmost bar does not disrupt a DXGI fullscreen transition.
+pub(crate) unsafe fn switch_to(w: HWND) {
+    let bar = BAR.load(Relaxed) as HWND;
+    if !bar.is_null() && is_fullscreen_window(w, bar) {
+        FULLSCREEN.store(true, Relaxed);
+        hide_bar_now(bar);
+    }
+    winrust_common::fg::activate(w);
 }
 
 /// Fills `r` (right / bottom exclusive) in colour `c`; `rad` > 0 rounds the corners (rad = corner diameter), anti-aliased
@@ -2259,12 +2348,7 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
     let first_pid = wins.first().map_or(0, |&w| { let mut pid = 0; GetWindowThreadProcessId(w, &mut pid); pid });
     fly::menu(tip_cx(&bar_layout(hwnd), h), Some((icon, "", name, sub)), items, move |i| {
         match acts.get(i).copied() {
-            Some(A::Win(w)) => {
-                if IsIconic(w) != 0 {
-                    ShowWindow(w, SW_RESTORE);
-                }
-                force_fg(w);
-            }
+            Some(A::Win(w)) => switch_to(w),
             Some(A::Open) => open(&wide(&launch)),
             Some(A::Pin) => {
                 // by path, not by the index seen when the menu opened: PINS may have changed meanwhile
@@ -2574,10 +2658,7 @@ unsafe fn win_num(n: usize) {
     if wins.len() == 1 && i.is_some() {
         ShowWindow(w, SW_MINIMIZE);
     } else {
-        if IsIconic(w) != 0 {
-            ShowWindow(w, SW_RESTORE);
-        }
-        force_fg(w);
+        switch_to(w);
     }
 }
 
@@ -2675,10 +2756,7 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
                     if wins.contains(&fg) && IsIconic(fg) == 0 {
                         ShowWindow(fg, SW_MINIMIZE);
                     } else {
-                        if IsIconic(w) != 0 {
-                            ShowWindow(w, SW_RESTORE);
-                        }
-                        SetForegroundWindow(w);
+                        switch_to(w);
                     }
                 }
                 _ => {}
@@ -2799,7 +2877,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             } else if GetKeyboardLayout(tid) as usize == before {
                 let w = app_window();
                 if GetForegroundWindow() != w {
-                    force_fg(w); // Win+Space switches the window in front: put the app back there first
+                    switch_to(w); // Win+Space switches the window in front: put the app back there first
                 }
                 keys(&[VK_LWIN, VK_SPACE]); // the app ignored the request: the system switcher always works (with explorer)
             }
@@ -2858,6 +2936,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSELEAVE => {
             hide_tip(hwnd);
+            DOWN_BTN.set(NONE);
             HOT.set(-1);
             InvalidateRect(hwnd, null(), 0);
         }
@@ -2880,23 +2959,44 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if h != NONE {
                 press(h);
             }
-            if h == NONE && msg == WM_RBUTTONDOWN {
-                fly::context_menu(x); // right click on an empty spot
-            } else if h >= 1 && msg == WM_RBUTTONDOWN {
-                app_menu(hwnd, h);
+            if h >= 1 && msg == WM_LBUTTONDOWN {
+                // Switch / launch app buttons on release (like the Windows taskbar and preview / Alt+Tab cards):
+                // activating on DOWN leaves the mouse button held during AttachThreadInput and fullscreen restore.
+                DOWN_BTN.set(h);
             } else {
-                click(h, msg == WM_LBUTTONDOWN, msg == WM_MBUTTONDOWN);
+                DOWN_BTN.set(NONE);
+                if h == NONE && msg == WM_RBUTTONDOWN {
+                    fly::context_menu(x); // right click on an empty spot
+                } else if h >= 1 && msg == WM_RBUTTONDOWN {
+                    app_menu(hwnd, h);
+                } else {
+                    click(h, msg == WM_LBUTTONDOWN, msg == WM_MBUTTONDOWN);
+                }
             }
             InvalidateRect(hwnd, null(), 0);
+        }
+        WM_LBUTTONUP => {
+            let down = DOWN_BTN.replace(NONE);
+            let h = hit(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
+            if down >= 1 && h == down {
+                click(h, true, false);
+                if IsWindowVisible(hwnd) != 0 {
+                    InvalidateRect(hwnd, null(), 0);
+                }
+            }
         }
         CALLBACK => {
             if wp == ABN_FULLSCREENAPP as usize {
                 fs_update(hwnd);
             } else if wp == ABN_POSCHANGED as usize {
-                place(hwnd);
+                NEED_PLACE.set(true);
+                fs_update(hwnd);
             }
         }
-        WM_DISPLAYCHANGE => place(hwnd),
+        WM_DISPLAYCHANGE => {
+            NEED_PLACE.set(true);
+            fs_update(hwnd);
+        }
         WM_DESTROY => {
             let mut ab: APPBARDATA = zeroed();
             ab.cbSize = size_of::<APPBARDATA>() as u32;
@@ -3069,13 +3169,31 @@ mod tests {
 
     #[test]
     fn borderless_games_count_as_fullscreen() {
-        use super::{RECT, covers_monitor};
+        use super::{RECT, covers_monitor, work_to_screen};
         let m = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
         assert!(covers_monitor(m, m, false, false)); // plain borderless / exclusive fullscreen
         assert!(covers_monitor(m, m, true, false)); // borderless window that kept its caption style
         assert!(!covers_monitor(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, m, true, true)); // framed maximized window (#88)
         assert!(!covers_monitor(m, m, true, true)); // a maximized window is never a game
         assert!(!covers_monitor(RECT { left: 0, top: 0, right: 1920, bottom: 1032 }, m, false, false)); // leaves the bar's strip
+        // minimized fullscreen restore rect (workspace coords) under bottom, top and left bars
+        let bot_w = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+        assert!(covers_monitor(work_to_screen(m, bot_w, m), m, false, false));
+        let top_w = RECT { left: 0, top: 40, right: 1920, bottom: 1080 };
+        assert!(covers_monitor(work_to_screen(RECT { left: 0, top: -40, right: 1920, bottom: 1040 }, top_w, m), m, false, false));
+        let left_w = RECT { left: 60, top: 0, right: 1920, bottom: 1080 };
+        assert!(covers_monitor(work_to_screen(RECT { left: -60, top: 0, right: 1860, bottom: 1080 }, left_w, m), m, false, false));
+    }
+
+    #[test]
+    fn alt_tab_initial_selection_respects_desktop_focus() {
+        use super::{HWND, initial_alt_tab_index};
+        let (a, b, c) = (1usize as HWND, 2usize as HWND, 3usize as HWND);
+        assert_eq!(initial_alt_tab_index(&[a, b, c], a, false), 1); // active app is v[0]: switch to previous
+        assert_eq!(initial_alt_tab_index(&[a, b, c], a, true), 2); // Shift+Alt+Tab goes to last
+        assert_eq!(initial_alt_tab_index(&[a, b, c], 99usize as HWND, false), 0); // desktop in front: pick v[0]
+        assert_eq!(initial_alt_tab_index(&[a, b, c], std::ptr::null_mut(), false), 0);
+        assert_eq!(initial_alt_tab_index(&[a], a, false), 0);
     }
 
     #[test]
