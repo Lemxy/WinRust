@@ -56,6 +56,20 @@ fn parse_disabled(out: &str) -> std::collections::HashSet<String> {
 const APPROVED: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved";
 
 /// The exe a Run command line points at, %VARS% expanded; None when it is not an .exe we can tell apart (scripts, URIs).
+/// Quotes the executable of a Run command so `cmd /c start ""` does not stop at the first space
+/// (an unquoted `C:\Program Files\Rainmeter\Rainmeter.exe` was being started as `C:\Program`).
+fn quote_exe(c: &str) -> String {
+    if c.starts_with('"') {
+        return c.to_string();
+    }
+    if let Some(i) = c.to_lowercase().find(".exe") {
+        let end = i + 4;
+        if c[..end].contains(' ') {
+            return format!("\"{}\"{}", &c[..end], &c[end..]);
+        }
+    }
+    c.to_string()
+}
 fn exe_path(cmd: &str) -> Option<String> {
     let mut c = cmd.trim().to_string();
     while let Some(a) = c.find('%') {
@@ -226,7 +240,7 @@ fn run_shell() {
     let list = autostart();
     log(&format!("autostart: {} entries", list.len()));
     for c in list {
-        let r = quiet("cmd").raw_arg(format!("/c start \"\" {c}")).creation_flags(NO_WINDOW).spawn();
+        let r = quiet("cmd").raw_arg(format!("/c start \"\" {}", quote_exe(&c))).creation_flags(NO_WINDOW).spawn();
         log(&format!("start {c} -> {:?}", r.map(|_| ())));
     }
     thread::sleep(Duration::from_secs(4)); // topbar may already have been started by its own Run entry
