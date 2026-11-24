@@ -57,10 +57,14 @@ fn is_junk(name: &str) -> bool {
     !keep && JUNK.iter().any(|p| n.starts_with(&p.to_lowercase()) || (p.len() >= 5 && !p.contains('.') && n.contains(&p.to_lowercase())))
 }
 
+#[derive(Clone, PartialEq, Debug)]
 enum Item {
     Appx { full: String, name: String },
     Prov { pkg: String, name: String },
 }
+
+/// Exit code of `--apply` when some items could not be removed but the rest was: the installer reports it as a warning.
+const PARTIAL: i32 = 3;
 
 fn run(prog: &str, args: &[&str]) -> (bool, String) {
     match Command::new(prog).args(args).output() {
@@ -71,6 +75,29 @@ fn run(prog: &str, args: &[&str]) -> (bool, String) {
 
 fn ps(script: &str) -> (bool, String) {
     run("powershell", &["-NoProfile", "-NonInteractive", "-Command", script])
+}
+
+/// A removal command; its error is PowerShell's first line about it ("Deployment failed with HRESULT ...").
+fn ps_do(script: &str) -> Result<(), String> {
+    match Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", script]).output() {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(160).collect()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn remove(i: &Item) -> Result<(), String> {
+    match i {
+        Item::Appx { full, .. } => ps_do(&format!("Remove-AppxPackage -Package '{full}' -AllUsers -ErrorAction Stop")),
+        Item::Prov { pkg, .. } => ps_do(&format!("Remove-AppxProvisionedPackage -Online -PackageName '{pkg}' -ErrorAction Stop")),
+    }
+}
+
+fn label(i: &Item) -> String {
+    match i {
+        Item::Appx { name, .. } => tf!("приложение {name}", "app {name}", ja: "アプリ {name}", pt: "app {name}", zh: "应用 {name}", es: "app {name}"),
+        Item::Prov { name, .. } => tf!("подготовлено {name}", "provisioned {name}", ja: "プロビジョニング {name}", pt: "provisionado {name}", zh: "预置应用 {name}", es: "en imagen {name}"),
+    }
 }
 
 /// `appx|FullName|Name|NonRemovable` and `prov|PackageName|DisplayName` lines of the listing script.
@@ -140,32 +167,51 @@ fn plan(od: bool, edge: bool) {
     }
 }
 
-fn apply(od: bool, edge: bool) -> Result<(), String> {
+/// Err((exit code, text)): 1 = nothing could be done, PARTIAL = some items are left.
+fn apply(od: bool, edge: bool) -> Result<(), (i32, String)> {
     let dir = PathBuf::from(env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join("winrust-purge");
-    fs::create_dir_all(&dir).map_err(|e| tf!("{0}: {1} (нужны права администратора)", "{0}: {1} (run as admin)", ja: "{0}: {1} (管理者として実行してください)", pt: "{0}: {1} (execute como admin)", zh: "{0}: {1}（请以管理员身份运行）", es: "{0}: {1} (ejecuta como administrador)", dir.display(), e))?;
-    let mut log = fs::OpenOptions::new().create(true).append(true).open(dir.join("removed.txt")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| (1, tf!("{0}: {1} (нужны права администратора)", "{0}: {1} (run as admin)", ja: "{0}: {1} (管理者として実行してください)", pt: "{0}: {1} (execute como admin)", zh: "{0}: {1}（请以管理员身份运行）", es: "{0}: {1} (ejecuta como administrador)", dir.display(), e)))?;
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(dir.join("removed.txt")).map_err(|e| (1, e.to_string()))?;
     let mut failed = 0;
-    let mut did = |what: String, ok: bool| {
-        println!("{}  {what}", if ok { t!("удалено", "removed", ja: "削除しました", pt: "removido", zh: "已移除", es: "quitado") } else { t!("ОШИБКА ", "FAILED ", ja: "失敗   ", pt: "FALHOU ", zh: "失败   ", es: "FALLÓ") });
-        if ok {
-            let _ = writeln!(log, "{what}");
-        } else {
-            failed += 1;
+    let mut did = |what: String, r: Result<(), String>| {
+        let mark = if r.is_ok() { t!("удалено", "removed", ja: "削除しました", pt: "removido", zh: "已移除", es: "quitado") } else { t!("ОШИБКА ", "FAILED ", ja: "失敗   ", pt: "FALHOU ", zh: "失败   ", es: "FALLÓ  ") };
+        println!("{mark}  {what}");
+        match r {
+            Ok(()) => {
+                let _ = writeln!(log, "{what}");
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("{} {what}{}", mark.trim_end(), if e.is_empty() { String::new() } else { format!(": {e}") }); // for the installer's warning
+            }
         }
     };
-    for i in found()? {
-        match i {
-            Item::Appx { full, name } => did(tf!("приложение {name}", "app {name}", ja: "アプリ {name}", pt: "app {name}", zh: "应用 {name}", es: "app {name}"), ps(&format!("Remove-AppxPackage -Package '{full}' -AllUsers -ErrorAction Stop")).0),
-            Item::Prov { pkg, name } => did(tf!("подготовлено {name}", "provisioned {name}", ja: "プロビジョニング {name}", pt: "provisionado {name}", zh: "预置应用 {name}", es: "en imagen {name}"), ps(&format!("Remove-AppxProvisionedPackage -Online -PackageName '{pkg}' -ErrorAction Stop")).0),
+    let ok = |b: bool| if b { Ok(()) } else { Err(String::new()) };
+    // the image's copies first: some Windows builds take the installed copies along (or the other way round), and with
+    // the image clean a copy that refuses to go is at least not handed to new users
+    let (prov, appx): (Vec<Item>, Vec<Item>) = found().map_err(|e| (1, e))?.into_iter().partition(|i| matches!(i, Item::Prov { .. }));
+    let mut retry = vec![];
+    for i in prov.into_iter().chain(appx) {
+        match remove(&i) {
+            Ok(()) => did(label(&i), Ok(())),
+            Err(e) => retry.push((i, e)),
+        }
+    }
+    // a second look at what failed: gone with its other half counts as removed, still there gets one more try
+    if !retry.is_empty() {
+        let left = found().unwrap_or_default();
+        for (i, e) in retry {
+            let r = if !left.contains(&i) { Ok(()) } else { remove(&i).map_err(|e2| if e2.is_empty() { e } else { e2 }) };
+            did(label(&i), r);
         }
     }
     for t in TASKS.iter().filter(|t| task_exists(t)) {
-        did(tf!("задача {t}", "task {t}", ja: "タスク {t}", pt: "tarefa {t}", zh: "任务 {t}", es: "tarea {t}"), run("schtasks.exe", &["/Delete", "/TN", t, "/F"]).0);
+        did(tf!("задача {t}", "task {t}", ja: "タスク {t}", pt: "tarefa {t}", zh: "任务 {t}", es: "tarea {t}"), ok(run("schtasks.exe", &["/Delete", "/TN", t, "/F"]).0));
     }
     if od {
         let _ = run("taskkill", &["/f", "/im", "OneDrive.exe"]);
         match onedrive_setup() {
-            Some(p) => did("OneDrive".into(), run(&p.display().to_string(), &["/uninstall"]).0),
+            Some(p) => did("OneDrive".into(), ok(run(&p.display().to_string(), &["/uninstall"]).0)),
             None => println!("{}", t!("пропуск  OneDrive: не найден", "skip     OneDrive: not present", ja: "スキップ OneDrive: 見つかりません", pt: "pular    OneDrive: não encontrado", zh: "跳过     OneDrive：未安装", es: "omite    OneDrive: no existe")),
         }
     }
@@ -174,13 +220,13 @@ fn apply(od: bool, edge: bool) -> Result<(), String> {
             // Windows only lets Edge go outside the EU when this value exists
             Some(p) => {
                 let _ = run("reg", &["add", r"HKLM\SOFTWARE\Microsoft\EdgeUpdateDev", "/v", "AllowUninstall", "/t", "REG_SZ", "/d", "", "/f"]);
-                did(t!("Edge (по возможности, Windows может отказать)", "Edge (best effort, Windows may refuse)", ja: "Edge (可能な範囲で。Windows が拒否することがあります)", pt: "Edge (melhor esforço, o Windows pode recusar)", zh: "Edge（尽力而为，Windows 可能会拒绝）", es: "Edge (con lo que se pueda, Windows puede negarse)").into(), run(&p.display().to_string(), &["--uninstall", "--system-level", "--verbose-logging", "--force-uninstall"]).0)
+                did(t!("Edge (по возможности, Windows может отказать)", "Edge (best effort, Windows may refuse)", ja: "Edge (可能な範囲で。Windows が拒否することがあります)", pt: "Edge (melhor esforço, o Windows pode recusar)", zh: "Edge（尽力而为，Windows 可能会拒绝）", es: "Edge (con lo que se pueda, Windows puede negarse)").into(), ok(run(&p.display().to_string(), &["--uninstall", "--system-level", "--verbose-logging", "--force-uninstall"]).0))
             }
             None => println!("{}", t!("пропуск  Edge: не найден", "skip     Edge: not present", ja: "スキップ Edge: 見つかりません", pt: "pular    Edge: não encontrado", zh: "跳过     Edge：未安装", es: "omite    Edge: no existe")),
         }
     }
     println!("{}", tf!("\nОтменить это нельзя. Журнал удалённого: {}", "\nThis cannot be undone. A log of what was removed: {}", ja: "\nこの操作は元に戻せません。削除したもののログ: {}", pt: "\nIsto não pode ser desfeito. Registro do que foi removido: {}", zh: "\n此操作无法撤销。已移除内容的日志：{}", es: "\nEsto no se puede deshacer. Registro de lo que se quitó: {}", dir.join("removed.txt").display()));
-    if failed > 0 { Err(tf!("не удалось выполнить: {} (нужны права администратора)", "{} item(s) failed (run as administrator)", ja: "{} 件失敗しました (管理者として実行してください)", pt: "{} item(ns) falharam (execute como administrador)", zh: "{} 项失败（请以管理员身份运行）", es: "fallaron {} elemento(s) (ejecuta como administrador)", failed)) } else { Ok(()) }
+    if failed > 0 { Err((PARTIAL, tf!("не удалось выполнить: {} (нужны права администратора)", "{} item(s) failed (run as administrator)", ja: "{} 件失敗しました (管理者として実行してください)", pt: "{} item(ns) falharam (execute como administrador)", zh: "{} 项失败（请以管理员身份运行）", es: "fallaron {} elemento(s) (ejecuta como administrador)", failed))) } else { Ok(()) }
 }
 
 fn main() {
@@ -215,9 +261,9 @@ Pulsa Enter para cerrar."));
         plan(has("--onedrive"), has("--edge"));
         Ok(())
     };
-    if let Err(e) = r {
+    if let Err((code, e)) = r {
         eprintln!("{e}");
-        std::process::exit(1);
+        std::process::exit(code);
     }
 }
 

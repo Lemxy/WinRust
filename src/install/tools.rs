@@ -123,7 +123,19 @@ pub(crate) fn db_uninstall() -> Result<(), String> {
 /// purge.exe itself; there is nothing to put back. OneDrive and Edge are not part of it (`purge.exe --apply --onedrive --edge`).
 pub(crate) fn pu_install() -> Result<(), String> {
     tool_install("purge.exe", &pu_dir(), None)?;
-    out(&pu_dir().join("purge.exe").display().to_string(), &["--apply"]).map(|_| ())
+    let exe = pu_dir().join("purge.exe");
+    let o = Command::new(&exe).arg("--apply").creation_flags(0x0800_0000).output().map_err(|e| format!("{}: {e}", exe.display()))?;
+    let err = String::from_utf8_lossy(&o.stderr).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ");
+    match o.status.code() {
+        Some(0) => Ok(()),
+        // a few items stayed, everything else is gone for good: purge has run (an automatic rollback would only delete
+        // purge.exe and bring nothing back), the leftovers are a warning; running it again tries them once more
+        Some(3) => {
+            WARN.lock().unwrap().push(err);
+            Ok(())
+        }
+        _ => Err(format!("{}: {}{}", exe.display(), String::from_utf8_lossy(&o.stdout).trim(), if err.is_empty() { String::new() } else { format!(" {err}") })),
+    }
 }
 
 pub(crate) fn pu_uninstall() -> Result<(), String> {
