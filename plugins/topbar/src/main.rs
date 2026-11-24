@@ -2185,7 +2185,6 @@ unsafe fn open(path: &[u16]) {
     }
 }
 
-/// Starts the disk cleaner (rs-du, installed next to the task manager) elevated: it reads the raw volume.
 /// Right-click menu of an app button, like the Windows taskbar's jump list: pin / unpin, close, end process.
 fn wstr_of(w: &[u16]) -> String {
     String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())])
@@ -2468,11 +2467,14 @@ unsafe fn open_purge() {
     }
 }
 
+/// The disk cleaner, elevated (it reads the raw volumes): WinRust Disk's cleaner page when that is installed, a window for
+/// every drive; else rs-du's list in a console (it comes with the task manager).
 unsafe fn open_cleaner() {
-    let Some(pf) = std::env::var_os("ProgramFiles") else { return };
-    let exe = PathBuf::from(pf).join(r"rtaskmgr\rs-du.exe");
+    let Some(pf) = std::env::var_os("ProgramFiles").map(PathBuf::from) else { return };
+    let disk = pf.join(r"wiztree\wiztree.exe");
+    let (exe, args) = if disk.is_file() { (disk, "--clean") } else { (pf.join(r"rtaskmgr\rs-du.exe"), "--clean --ask") };
     if exe.is_file() {
-        ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe.to_string_lossy()).as_ptr(), wide("C: --clean --ask").as_ptr(), null(), SW_SHOWNORMAL);
+        ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe.to_string_lossy()).as_ptr(), wide(args).as_ptr(), null(), SW_SHOWNORMAL);
     }
 }
 
