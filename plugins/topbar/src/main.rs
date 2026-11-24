@@ -3637,7 +3637,7 @@ fn main() {
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
             if m.message == WM_HOTKEY && m.wParam == HOTKEY_SHOT as usize {
-                shot::rs_shot_start(&["--region"]);
+                shot::rs_shot_start(&[]);
                 continue;
             }
             TranslateMessage(&m);

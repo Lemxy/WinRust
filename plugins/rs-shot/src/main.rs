@@ -46,6 +46,8 @@ pub(crate) enum Encoder {
 #[derive(Clone)]
 pub(crate) struct Opts {
     pub mode: Mode,
+    /// True when --region/--full/--monitor/--window was given: CLI sources skip the selection bar.
+    pub source_explicit: bool,
     pub delay: u32,
     pub cursor: bool,
     pub clipboard: bool,
@@ -112,6 +114,7 @@ Recording (WGC + Media Foundation first, ffmpeg bridge when needed):
   --no-audio                      video only
 
 Keys: PrintScreen / Win+Shift+S = Photo + Region; Win+Alt+R = Video + Region (through the WinRust shell).
+      In the bar, choosing a source acts at once: Region -> drag, Full/Monitor -> immediate, Window -> click it.
       While recording: Win+Alt+S or Esc stops (Fn is firmware and cannot be a shortcut).
       In the editor: Ctrl+S save+copy, Ctrl+C copy, Ctrl+Z/Y undo/redo, Esc close.
 ";
@@ -119,6 +122,7 @@ Keys: PrintScreen / Win+Shift+S = Photo + Region; Win+Alt+R = Video + Region (th
 fn parse(a: &[String]) -> Result<Opts, String> {
     let mut o = Opts {
         mode: Mode::Region,
+        source_explicit: false,
         delay: 0,
         cursor: false,
         clipboard: false,
@@ -139,11 +143,21 @@ fn parse(a: &[String]) -> Result<Opts, String> {
             a.get(*i).cloned().unwrap_or_default()
         };
         match a[i].as_str() {
-            "--full" => o.mode = Mode::Full,
-            "--region" => o.mode = Mode::Region,
-            "--window" => o.mode = Mode::Window,
+            "--full" => {
+                o.mode = Mode::Full;
+                o.source_explicit = true;
+            }
+            "--region" => {
+                o.mode = Mode::Region;
+                o.source_explicit = true;
+            }
+            "--window" => {
+                o.mode = Mode::Window;
+                o.source_explicit = true;
+            }
             "--monitor" => {
                 o.mode = Mode::Monitor;
+                o.source_explicit = true;
                 if let Some(n) = a.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
                     o.monitor = Some(n.saturating_sub(1));
                     i += 1;
@@ -189,7 +203,7 @@ fn parse(a: &[String]) -> Result<Opts, String> {
 /// Interactive `--record`: the same selection bar as PrintScreen, preselected on Vídeo + Región. Explicit
 /// `--monitor/--window/--full` and `--no-ui` keep the direct, bar-less path.
 fn start_record(o: &Opts) -> i32 {
-    if o.no_ui || o.mode != Mode::Region {
+    if o.no_ui || o.mode != Mode::Region || o.source_explicit {
         return record::run(o);
     }
     let Some(pick) = overlay::choose(overlay::Options {
@@ -206,13 +220,18 @@ fn start_record(o: &Opts) -> i32 {
 
 fn capture(o: &Opts) -> i32 {
     if o.mode == Mode::Region {
-        let Some(pick) = overlay::choose(overlay::Options {
-            video: false,
-            kind: overlay::Kind::Region,
-            delay: o.delay,
-            cursor: o.cursor,
-            want_image: true,
-        }) else {
+        let pick = if o.source_explicit {
+            overlay::select_direct(o.cursor, true, o.delay)
+        } else {
+            overlay::choose(overlay::Options {
+                video: false,
+                kind: overlay::Kind::Region,
+                delay: o.delay,
+                cursor: o.cursor,
+                want_image: true,
+            })
+        };
+        let Some(pick) = pick else {
             return 0;
         };
         return after_pick(pick, o);

@@ -63,8 +63,8 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
                         keybd_event(0xE8, 0, 0, 0);
                         keybd_event(0xE8, 0, KEYEVENTF_KEYUP, 0);
                     }
-                    // rs-shot when installed (region + editor); otherwise the bar's own clipper/screenshot, as before
-                    if !rs_shot_start(&["--region"]) {
+                    // rs-shot when installed (default bar: Photo + Region); otherwise the bar's own clipper, as before
+                    if !rs_shot_start(&[]) {
                         PostMessageW(BAR.load(Relaxed) as HWND, SNIP, snip_key as usize, 0); // wp 1: PrtSc, 0: Win+Shift+S
                     }
                 }

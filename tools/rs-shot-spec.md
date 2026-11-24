@@ -48,13 +48,15 @@ Overlay behaviour: **one window over the whole virtual desktop** (all monitors, 
 pixels), desktop frozen and dimmed, dragged rectangle stays bright; accent 2 px border, eight handles, live “W × H”
 badge, thirds guide lines, hint pill on the cursor monitor. A selection can be dragged **across monitor boundaries**;
 mouse positions come from `GetCursorPos` rather than WM_MOUSE lparam so mixed-DPI monitors stay coherent. Esc or right
-click cancels; a click without a drag picks the window under the pointer (or the monitor).
+click cancels. In direct `--region` mode a click without a drag picks the window under the pointer (or its monitor).
 
 **Bottom selection bar** (Snipping-Tool style) on the cursor monitor: **Photo | Video**, **Region | Full | Monitor |
-Window**, delay `0/2/5/10 s`, and **Capture/Record**. `PrintScreen` opens Photo+Region, `Win+Alt+R` opens Video+Region;
-`--region`/`--record` set the same defaults. The bar moves above the selection when the selection reaches the bottom,
-and stays on the cursor monitor as the pointer crosses screens. Existing explicit `--full/--monitor/--window` paths stay
-direct; `--record --window/--monitor/--full` stays direct too.
+Window**, delay `0/2/5/10 s`. There is **no Capture/Record button**: choosing a source acts at once. **Region** enters drag
+mode and captures/starts recording on release; **Full** and **Monitor** act immediately; **Window** enters aim mode
+(hover outline) and the next click captures/starts recording that window. `PrintScreen` opens Photo+Region, `Win+Alt+R`
+opens Video+Region. Explicit CLI sources (`--region/--full/--monitor/--window`, also with `--record`) use the direct
+path with **no bar**. The bar moves above the selection when the selection reaches the bottom,
+and stays on the cursor monitor as the pointer crosses screens.
 
 **Repaint:** all three surfaces are double-buffered. The overlay keeps the frozen desktop and a full virtual-size back
 buffer; a paint copies only the dirty rectangle from the dim image, draws there, and makes one `BitBlt` to the screen.
@@ -314,9 +316,12 @@ Ctrl+C copy, Ctrl+wheel zoom, Esc close/cancel.
 - **ffmpeg bridge**: `--record --monitor --duration 3 --fps 10 --out …mp4` produced a 102 KB file; `ffprobe` reports
   `h264`, 1360 × 768, 31 frames, 3.109 s (~9.97 fps). A forced ffmpeg failure (`.txt` output) left neither an output
   file nor a frame folder.
-- **Selection bar / multi-monitor**: `--region` showed Photo+Region, `--record` showed Video+Region; a drag from
-  (1200,300) to (1500,450) crossed the 1360 px monitor boundary and produced a 300 × 150 capture. The bar followed the
-  cursor monitor and its Capture button finished the selection (300 × 200 in the click test).
+- **Selection bar / no action button**: `--region` (CLI) shows the dim overlay with no bar and captures on mouse release;
+  default `rs-shot` shows Photo+Region; clicking **Region** then dragging opens the editor; clicking **Full** opens it
+  immediately; clicking **Window** then a window captures that window. A drag from (1200,300) to (1500,450) crossed the
+  1360 px monitor boundary and produced a 300 × 150 capture; the bar followed the cursor monitor.
+- **Video source without a button**: `--record --out …` → Video+Region bar; clicking Region and dragging started an
+  unlimited recording immediately, Esc finalized it (H.264, 2.05 s) and the process exited 0.
 - **No hang**: `--record --window --duration 3` exits 0 in ~3.5 s; `--record --window --duration 2 --no-ui
   --encoder wgc` exits 0 in ~2.4 s; `--record --monitor --duration 2 --no-ui --encoder ffmpeg` exits 0 in ~2.3 s,
   all with valid H.264 MP4s and no leftover `rs-shot-rec-*` folders.
@@ -388,14 +393,14 @@ Capture/editor:
 - `Could not save the screenshot`
 
 Selection bar:
-- `Photo`, `Video`, `Region`, `Full`, `Monitor`, `Window`, `Record`, `Capture`
+- `Photo`, `Video`, `Region`, `Full`, `Monitor`, `Window`
+- `Photo mode`, `Video mode`
 - `audio`, `mute`
 - `Drag to select a region · Esc cancels`
-- `The bottom button captures the full screen · Esc cancels`
-- `The bottom button captures this monitor · Esc cancels`
-- `Point at a window and press the bottom button · Esc cancels`
-- `Win+Alt+R records · the bottom button captures`
-- `Win+Alt+R records · the bottom button starts`
+- `Full screen · Esc cancels`
+- `This monitor · Esc cancels`
+- `Click a window to capture it · Esc cancels`
+- `Click a window to start recording · Esc cancels`
 
 Recording:
 - `Headless recording needs --duration N (seconds): there is no Stop button to end it.`

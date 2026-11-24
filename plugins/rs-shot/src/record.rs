@@ -99,13 +99,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
         None => match o.mode {
             crate::Mode::Region if o.no_ui => Source::Rect(cap::monitor_rect(None)), // no overlay to select with: cursor monitor
             crate::Mode::Region => {
-                let Some(p) = overlay::choose(overlay::Options {
-                    video: true,
-                    kind: overlay::Kind::Region,
-                    delay: o.delay,
-                    cursor: o.cursor,
-                    want_image: false,
-                }) else {
+                let Some(p) = overlay::select_direct(o.cursor, false, 0) else {
                     return 0;
                 };
                 if let Some(h) = p.window {

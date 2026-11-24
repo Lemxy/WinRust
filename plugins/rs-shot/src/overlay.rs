@@ -82,6 +82,8 @@ struct St {
     hover: Option<usize>,
     last_hover: Option<RECT>,
     target: Option<HWND>,
+    /// The floating bar is shown for the default/hotkey flow; explicit `--region` uses drag-only direct mode.
+    bar: bool,
 }
 
 thread_local! {
@@ -129,10 +131,20 @@ fn inval(hw: HWND, r: RECT) {
 
 /// Shows the picker. `video` preselects Vídeo, `kind` the capture type, `delay` the 0/2/5/10 starting point.
 pub fn choose(opt: Options) -> Option<Pick> {
-    unsafe { run(opt) }
+    unsafe { run(opt, true) }
 }
 
-unsafe fn run(opt: Options) -> Option<Pick> {
+/// CLI `--region`: no floating bar, just drag the region; the release finishes. Clicking a window still picks it.
+pub fn select_direct(cursor: bool, want_image: bool, delay: u32) -> Option<Pick> {
+    unsafe {
+        run(
+            Options { video: false, kind: Kind::Region, delay, cursor, want_image },
+            false,
+        )
+    }
+}
+
+unsafe fn run(opt: Options, bar: bool) -> Option<Pick> {
     SetThreadDpiAwarenessContext(-4isize as _); // physical pixels on every screen
     let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -186,6 +198,7 @@ unsafe fn run(opt: Options) -> Option<Pick> {
         hover: None,
         last_hover: None,
         target: None,
+        bar,
     }));
 
     let cls = ui::wide("rs-shot-overlay");
@@ -286,7 +299,6 @@ enum Act {
     Video,
     Kind(Kind),
     Delay,
-    Go,
 }
 
 fn scale(hw: HWND) -> i32 {
@@ -298,7 +310,7 @@ unsafe fn bar_rect(hw: HWND) -> RECT {
     let s = scale(hw);
     let mon = ST.with_borrow(|st| st.as_ref().map(|s| s.mon.work).unwrap_or(RECT { left: 0, top: 0, right: 1, bottom: 1 }));
     let mx = (mon.right - mon.left).max(1);
-    let bw = (760 * s).min(mx - 24);
+    let bw = (600 * s).min(mx - 24);
     let bh = 64 * s;
     let x = mon.left + (mx - bw) / 2;
     let mut y = mon.bottom - bh - 16 * s;
@@ -335,8 +347,6 @@ fn buttons(hw: HWND, bar: RECT) -> Vec<(RECT, Act)> {
     }
     x += 6 * s;
     add(&mut v, &mut x, top, h, gap, 58 * s, Act::Delay);
-    let action = (bar.right - pad - x).max(96 * s);
-    add(&mut v, &mut x, top, h, 0, action, Act::Go);
     v
 }
 
@@ -408,7 +418,9 @@ unsafe fn paint(hw: HWND) {
         hint(bdc, hw);
     }
 
-    draw_bar(bdc, hw, hover);
+    if ST.with_borrow(|s| s.as_ref().map(|s| s.bar).unwrap_or(false)) {
+        draw_bar(bdc, hw, hover);
+    }
     SelectClipRgn(bdc, null_mut());
     DeleteObject(clip as HGDIOBJ);
     BitBlt(hdc, p.left, p.top, p.right - p.left, p.bottom - p.top, bdc, p.left, p.top, SRCCOPY);
@@ -419,26 +431,28 @@ unsafe fn hint(dc: HDC, hw: HWND) {
     let mon = ST.with_borrow(|s| s.as_ref().map(|s| s.mon.work).unwrap_or(RECT { left: 0, top: 0, right: 1, bottom: 1 }));
     let s = scale(hw);
     let (kind, video) = ST.with_borrow(|s| s.as_ref().map(|s| (s.kind, s.video)).unwrap_or((Kind::Region, false)));
-    let a = if kind == Kind::Region {
-        t!(
+    let a = match kind {
+        Kind::Region => t!(
             "Протяните мышью, чтобы выбрать область · Esc — отмена",
             "Drag to select a region · Esc cancels",
             ja: "ドラッグして範囲を選択 · Esc でキャンセル",
             pt: "Arraste para selecionar uma região · Esc cancela",
             zh: "拖动选择区域 · Esc 取消"
-        )
-    } else {
-        match kind {
-            Kind::Full => t!("Кнопка снизу снимет весь экран · Esc — отмена", "The bottom button captures the full screen · Esc cancels", ja: "下のボタンで全画面をキャプチャ · Esc でキャンセル", pt: "O botão inferior captura a tela inteira · Esc cancela", zh: "底部按钮截取全屏 · Esc 取消"),
-            Kind::Monitor => t!("Кнопка снизу снимет этот монитор · Esc — отмена", "The bottom button captures this monitor · Esc cancels", ja: "下のボタンでこのモニターをキャプチャ · Esc でキャンセル", pt: "O botão inferior captura este monitor · Esc cancela", zh: "底部按钮截取此显示器 · Esc 取消"),
-            Kind::Window => t!("Наведите на окно и нажмите кнопку снизу · Esc — отмена", "Point at a window and press the bottom button · Esc cancels", ja: "ウィンドウを指して下のボタンを押す · Esc でキャンセル", pt: "Aponte para uma janela e pressione o botão inferior · Esc cancela", zh: "指向窗口并按底部按钮 · Esc 取消"),
-            Kind::Region => unreachable!(),
+        ),
+        Kind::Full => t!("Весь экран · Esc — отмена", "Full screen · Esc cancels", ja: "全画面 · Esc でキャンセル", pt: "Tela inteira · Esc cancela", zh: "全屏 · Esc 取消"),
+        Kind::Monitor => t!("Этот монитор · Esc — отмена", "This monitor · Esc cancels", ja: "このモニター · Esc でキャンセル", pt: "Este monitor · Esc cancela", zh: "此显示器 · Esc 取消"),
+        Kind::Window => {
+            if video {
+                t!("Щёлкните окно, чтобы начать запись · Esc — отмена", "Click a window to start recording · Esc cancels", ja: "ウィンドウをクリックして録画開始 · Esc でキャンセル", pt: "Clique em uma janela para começar a gravar · Esc cancela", zh: "单击窗口开始录制 · Esc 取消")
+            } else {
+                t!("Щёлкните окно, чтобы снять его · Esc — отмена", "Click a window to capture it · Esc cancels", ja: "ウィンドウをクリックしてキャプチャ · Esc でキャンセル", pt: "Clique em uma janela para capturá-la · Esc cancela", zh: "单击窗口进行截图 · Esc 取消")
+            }
         }
     };
     let b = if video {
-        t!("Win+Alt+R — запись · кнопка внизу — начать", "Win+Alt+R records · the bottom button starts", ja: "Win+Alt+R で録画 · 下のボタンで開始", pt: "Win+Alt+R grava · o botão inferior inicia", zh: "Win+Alt+R 录制 · 底部按钮开始")
+        t!("Режим видео", "Video mode", ja: "動画モード", pt: "Modo vídeo", zh: "视频模式")
     } else {
-        t!("Win+Alt+R — запись · кнопка внизу — снимок", "Win+Alt+R records · the bottom button captures", ja: "Win+Alt+R で録画 · 下のボタンでキャプチャ", pt: "Win+Alt+R grava · o botão inferior captura", zh: "Win+Alt+R 录制 · 底部按钮截图")
+        t!("Режим фото", "Photo mode", ja: "写真モード", pt: "Modo foto", zh: "照片模式")
     };
     let f = ui::make_font(15 * s, 600, winrust_common::style::ui_face());
     let f2 = ui::make_font(12 * s, 400, winrust_common::style::ui_face());
@@ -460,8 +474,8 @@ unsafe fn draw_bar(dc: HDC, hw: HWND, hover: Option<usize>) {
     // shadow-ish dark plate with a hairline and the project radius
     ui::rounded(dc, bar, rgb(22, 22, 24), 12 * s);
     ui::outline(dc, bar, pal().line, 1);
-    let (video, kind, delay, has_sel) = ST.with_borrow(|st| {
-        st.as_ref().map(|s| (s.video, s.kind, s.delay, s.from.is_some())).unwrap_or((false, Kind::Region, 0, false))
+    let (video, kind, delay) = ST.with_borrow(|st| {
+        st.as_ref().map(|s| (s.video, s.kind, s.delay)).unwrap_or((false, Kind::Region, 0))
     });
     let f = ui::make_font(11 * s, 600, winrust_common::style::ui_face());
     let fg = ui::make_font(18 * s, 400, winrust_common::style::icon_face());
@@ -486,18 +500,6 @@ unsafe fn draw_bar(dc: HDC, hw: HWND, hover: Option<usize>) {
                 ui::text(dc, g, RECT { left: r.left, top: r.top + 4 * s, right: r.right, bottom: r.top + 28 * s }, fg, col, DT_CENTER as u32);
                 ui::text(dc, lab, RECT { left: r.left, top: r.top + 28 * s, right: r.right, bottom: r.bottom - 2 * s }, f, if is_active { pal().accent } else { pal().dim }, DT_CENTER as u32);
             }
-            continue;
-        }
-        if matches!(act, Act::Go) {
-            let enabled = kind != Kind::Region || has_sel;
-            let col = if enabled { pal().accent } else { pal().line };
-            ui::rounded(dc, r, if enabled { col } else { pal().active }, 8 * s);
-            let label = if video {
-                t!("Записать", "Record", ja: "録画", pt: "Gravar", zh: "录制")
-            } else {
-                t!("Снять", "Capture", ja: "撮影", pt: "Capturar", zh: "截图")
-            };
-            ui::text(dc, label, r, f, if enabled { rgb(255, 255, 255) } else { pal().dim }, DT_CENTER as u32);
             continue;
         }
         if matches!(act, Act::Delay) {
@@ -598,12 +600,15 @@ unsafe fn act(hw: HWND, a: Act) {
             ST.with_borrow_mut(|s| {
                 if let Some(s) = s {
                     s.kind = k;
-                    if k != Kind::Region {
-                        s.from = None;
-                        s.dragging = false;
-                    }
+                    s.from = None;
+                    s.dragging = false;
                 }
             });
+            // Full screen and Monitor act at once; Region waits for the drag, Window for the next click.
+            if matches!(k, Kind::Full | Kind::Monitor) {
+                go(hw);
+                return;
+            }
             full = true;
             refresh_bar = true;
         }
@@ -613,10 +618,6 @@ unsafe fn act(hw: HWND, a: Act) {
                 s.delay = DELAYS[(i + 1) % DELAYS.len()];
             }
         }),
-        Act::Go => {
-            go(hw);
-            return;
-        }
     }
     if full {
         InvalidateRect(hw, null(), 0);
@@ -626,10 +627,10 @@ unsafe fn act(hw: HWND, a: Act) {
 }
 
 unsafe fn go(hw: HWND) {
-    let mut p = POINT { x: 0, y: 0 };
-    GetCursorPos(&mut p);
-    let (kind, video, delay, sel, vx, vy) = ST.with_borrow(|s| {
-        s.as_ref().map(|s| (s.kind, s.video, s.delay, s.from.map(|f| client_rect(f, s.to)), s.vx, s.vy)).unwrap_or((Kind::Region, false, 0, None, 0, 0))
+    let (kind, video, delay, sel, vx, vy, mon) = ST.with_borrow(|s| {
+        s.as_ref()
+            .map(|s| (s.kind, s.video, s.delay, s.from.map(|f| client_rect(f, s.to)), s.vx, s.vy, s.mon.rc))
+            .unwrap_or((Kind::Region, false, 0, None, 0, 0, RECT { left: 0, top: 0, right: 0, bottom: 0 }))
     });
     let (rect, window) = match kind {
         Kind::Region => {
@@ -637,7 +638,7 @@ unsafe fn go(hw: HWND) {
             (RECT { left: r.left + vx, top: r.top + vy, right: r.right + vx, bottom: r.bottom + vy }, None)
         }
         Kind::Full => (cap::full_rect(), None),
-        Kind::Monitor => (monitors::at(p.x, p.y).rc, None),
+        Kind::Monitor => (mon, None),
         Kind::Window => {
             let target = ST.with_borrow(|s| s.as_ref().and_then(|s| s.target));
             let h = target.or_else(|| {
@@ -653,6 +654,41 @@ unsafe fn go(hw: HWND) {
             s.pick = Some(PickData { rect, window, video, kind, delay });
         }
     });
+    DestroyWindow(hw);
+}
+
+/// Direct (`--region`, no bar): release finishes; a click without a drag falls back to the window under the pointer.
+unsafe fn finish_direct(hw: HWND) {
+    let (vx, vy, delay) = ST.with_borrow(|s| s.as_ref().map(|s| (s.vx, s.vy, s.delay)).unwrap_or((0, 0, 0)));
+    if let Some(r) = selection() {
+        if r.right - r.left >= 3 && r.bottom - r.top >= 3 {
+            let screen = RECT { left: r.left + vx, top: r.top + vy, right: r.right + vx, bottom: r.bottom + vy };
+            ST.with_borrow_mut(|s| {
+                if let Some(s) = s {
+                    s.pick = Some(PickData { rect: screen, window: None, video: false, kind: Kind::Region, delay });
+                }
+            });
+            DestroyWindow(hw);
+            return;
+        }
+    }
+    let mut p = POINT { x: 0, y: 0 };
+    GetCursorPos(&mut p);
+    if let Some(h) = cap::window_at(p.x, p.y) {
+        let r = cap::window_rect(h);
+        ST.with_borrow_mut(|s| {
+            if let Some(s) = s {
+                s.pick = Some(PickData { rect: r, window: Some(h), video: false, kind: Kind::Window, delay });
+            }
+        });
+    } else {
+        let m = monitors::at(p.x, p.y);
+        ST.with_borrow_mut(|s| {
+            if let Some(s) = s {
+                s.pick = Some(PickData { rect: m.rc, window: None, video: false, kind: Kind::Monitor, delay });
+            }
+        });
+    }
     DestroyWindow(hw);
 }
 
@@ -746,16 +782,31 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             0
         }
         WM_LBUTTONDOWN => {
+            let has_bar = ST.with_borrow(|s| s.as_ref().map(|s| s.bar).unwrap_or(false));
             // The bar takes precedence over starting a selection.
             let bar = bar_rect(hw);
-            if hits(bar, x, y) {
+            if has_bar && hits(bar, x, y) {
                 if let Some((_, a)) = buttons(hw, bar).into_iter().find(|(r, _)| hits(*r, x, y)) {
                     act(hw, a);
                 }
                 return 0;
             }
             let kind = ST.with_borrow(|s| s.as_ref().map(|s| s.kind).unwrap_or(Kind::Region));
-            if kind == Kind::Region {
+            if has_bar && kind == Kind::Window {
+                // "Aim" mode: this click captures the window under the pointer (the target was stored on hover).
+                let screenp = (x + ST.with_borrow(|s| s.as_ref().map(|s| s.vx).unwrap_or(0)), y + ST.with_borrow(|s| s.as_ref().map(|s| s.vy).unwrap_or(0)));
+                let target = ST.with_borrow(|s| s.as_ref().and_then(|s| s.target)).or_else(|| cap::window_at(screenp.0, screenp.1));
+                ST.with_borrow_mut(|s| {
+                    if let Some(s) = s {
+                        s.target = target;
+                    }
+                });
+                if target.is_some() {
+                    go(hw);
+                }
+                return 0;
+            }
+            if !has_bar || kind == Kind::Region {
                 ST.with_borrow_mut(|s| {
                     if let Some(s) = s {
                         s.from = Some((x, y));
@@ -773,21 +824,18 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     s.dragging = false;
                 }
             });
-            // Selection stays on screen; the Capture/Record button finishes it.
-            if let Some(sel) = selection() {
-                if sel.right - sel.left < 3 && sel.bottom - sel.top < 3 {
-                    let mut p = POINT { x: 0, y: 0 };
-                    GetCursorPos(&mut p);
-                    if let Some(hit) = cap::window_at(p.x, p.y) {
-                        let (vx, vy) = ST.with_borrow(|s| s.as_ref().map(|s| (s.vx, s.vy)).unwrap_or((0, 0)));
-                        let r = cap::window_rect(hit);
-                        let cr = RECT { left: r.left - vx, top: r.top - vy, right: r.right - vx, bottom: r.bottom - vy };
-                        ST.with_borrow_mut(|s| {
-                            if let Some(s) = s {
-                                s.from = Some((cr.left, cr.top));
-                                s.to = (cr.right, cr.bottom);
-                            }
-                        });
+            let has_bar = ST.with_borrow(|s| s.as_ref().map(|s| s.bar).unwrap_or(false));
+            if !has_bar {
+                finish_direct(hw);
+                return 0;
+            }
+            // In the bar flow, releasing a Region drag captures/records at once; there is no Capture button.
+            let kind = ST.with_borrow(|s| s.as_ref().map(|s| s.kind).unwrap_or(Kind::Region));
+            if kind == Kind::Region {
+                if let Some(sel) = selection() {
+                    if sel.right - sel.left >= 3 && sel.bottom - sel.top >= 3 {
+                        go(hw);
+                        return 0;
                     }
                 }
                 InvalidateRect(hw, null(), 0);
@@ -803,12 +851,18 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             0
         }
         WM_KEYDOWN if wp == VK_RETURN as usize => {
-            let bar = bar_rect(hw);
-            let kind = ST.with_borrow(|s| s.as_ref().map(|s| s.kind).unwrap_or(Kind::Region));
-            if kind != Kind::Region || selection().is_some() {
-                go(hw);
+            let has_bar = ST.with_borrow(|s| s.as_ref().map(|s| s.bar).unwrap_or(false));
+            if !has_bar {
+                finish_direct(hw);
             } else {
-                let _ = bar;
+                let (kind, sel, target) = ST.with_borrow(|s| {
+                    s.as_ref()
+                        .map(|s| (s.kind, s.from.is_some(), s.target.is_some()))
+                        .unwrap_or((Kind::Region, false, false))
+                });
+                if kind != Kind::Region || sel || (kind == Kind::Window && target) {
+                    go(hw);
+                }
             }
             0
         }
