@@ -1,5 +1,6 @@
 //! The UI style shared by the WinRust programs: %ProgramData%\WinRust\style.txt holds its name (the topbar gear menu writes it).
 //! Programs re-read it at most once a second and repaint at once on the broadcast `set_style` sends (`msg()`).
+//! The same broadcast goes out when the language changes, so its receivers call `reload()` for both.
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering::Relaxed},
@@ -71,17 +72,22 @@ fn store(s: Style) {
     READ_AT.store(now_ms(), Relaxed);
 }
 
-/// Reads the file again now (on the "style changed" broadcast).
-pub fn reload() {
+fn read() {
     // WINRUST_STYLE overrides the file for this process only (to look at a style without switching every window)
     let name = std::env::var("WINRUST_STYLE").ok().or_else(|| file().and_then(|f| std::fs::read_to_string(f).ok()));
     store(Style::parse(&name.unwrap_or_default()));
 }
 
+/// Reads the style and the language again now (on the `msg()` broadcast).
+pub fn reload() {
+    read();
+    crate::reload_lang();
+}
+
 /// The current style. The file is read again at most once a second, so a program that missed the broadcast still follows.
 pub fn style() -> Style {
     if CUR.load(Relaxed) == u8::MAX || now_ms().saturating_sub(READ_AT.load(Relaxed)) > 1000 {
-        reload();
+        read();
     }
     ALL[CUR.load(Relaxed) as usize % ALL.len()]
 }
@@ -93,6 +99,11 @@ pub fn set_style(s: Style) {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, s.name());
     }
+    broadcast();
+}
+
+/// Tells every WinRust window that the look (style or language) changed: they call `reload()` and repaint.
+pub fn broadcast() {
     unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
 }
 

@@ -173,11 +173,11 @@ fn detect() -> Result<Session, String> {
         // The session table first: it is a query about the session, not an enumeration, so it answers even where
         // walking the process list does not (a restricted token, an unreachable WMI, an unknown shell executable).
         let sid = wts_user(session).and_then(|a| name_sid(&a)).or_else(|| shell_sid(session));
-        let token = process_sid(GetCurrentProcessId()).ok_or_else(|| t!("не удалось прочитать SID учётной записи установщика", "could not read the installer's own account SID", ja: "インストーラーのアカウント SID を読み取れませんでした", pt: "não foi possível ler o SID da conta do instalador", zh: "无法读取安装程序自身账户的 SID").to_string())?;
+        let token = process_sid(GetCurrentProcessId()).ok_or_else(|| t!("не удалось прочитать SID учётной записи установщика", "could not read the installer's own account SID", ja: "インストーラーのアカウント SID を読み取れませんでした", pt: "não foi possível ler o SID da conta do instalador", zh: "无法读取安装程序自身账户的 SID", es: "no se pudo leer el SID de la cuenta del propio instalador").to_string())?;
         // Neither way worked: change nothing, since the elevated account may be another admin's (init_soft lets uninstall go on).
-        let sid = sid.ok_or_else(|| t!("не удалось определить пользователя сеанса", "could not determine the signed-in user", ja: "サインイン中のユーザーを特定できませんでした", pt: "não foi possível identificar o usuário conectado", zh: "无法确定登录用户").to_string())?;
+        let sid = sid.ok_or_else(|| t!("не удалось определить пользователя сеанса", "could not determine the signed-in user", ja: "サインイン中のユーザーを特定できませんでした", pt: "não foi possível identificar o usuário conectado", zh: "无法确定登录用户", es: "no se pudo determinar el usuario que inició sesión").to_string())?;
         if matches!(sid.as_str(), "S-1-5-18" | "S-1-5-19" | "S-1-5-20") {
-            return Err(t!("оболочка сеанса запущена не от обычного пользователя (SYSTEM или служба)", "the session shell does not run as a normal user (SYSTEM or a service)", ja: "セッションのシェルが通常のユーザーとして実行されていません (SYSTEM またはサービス)", pt: "o shell da sessão não roda como um usuário comum (SYSTEM ou um serviço)", zh: "会话外壳未以普通用户身份运行（SYSTEM 或服务）").into());
+            return Err(t!("оболочка сеанса запущена не от обычного пользователя (SYSTEM или служба)", "the session shell does not run as a normal user (SYSTEM or a service)", ja: "セッションのシェルが通常のユーザーとして実行されていません (SYSTEM またはサービス)", pt: "o shell da sessão não roda como um usuário comum (SYSTEM ou um serviço)", zh: "会话外壳未以普通用户身份运行（SYSTEM 或服务）", es: "el shell de la sesión no se ejecuta como un usuario normal (SYSTEM o un servicio)").into());
         }
         Ok(Session { other: sid != token, sid })
     }
@@ -197,7 +197,7 @@ pub(crate) fn init() -> Result<&'static Session, String> {
 /// account's own HKCU is used and the failure becomes a warning.
 pub(crate) fn init_soft() {
     if let Err(e) = init() {
-        soft(t!("пользователь сеанса не определён, настройки пользователя убираются у текущей учётной записи", "signed-in user unknown, per-user settings are removed from the current account", ja: "サインイン中のユーザーが不明なため、ユーザーごとの設定は現在のアカウントから削除されます", pt: "usuário conectado desconhecido; as configurações por usuário são removidas da conta atual", zh: "登录用户未知，将从当前账户移除用户设置"), Err(e));
+        soft(t!("пользователь сеанса не определён, настройки пользователя убираются у текущей учётной записи", "signed-in user unknown, per-user settings are removed from the current account", ja: "サインイン中のユーザーが不明なため、ユーザーごとの設定は現在のアカウントから削除されます", pt: "usuário conectado desconhecido; as configurações por usuário são removidas da conta atual", zh: "登录用户未知，将从当前账户移除用户设置", es: "usuario de la sesión desconocido; la configuración por usuario se quita de la cuenta actual"), Err(e));
     }
 }
 

@@ -70,16 +70,21 @@ pub(crate) fn bar_install() -> Result<(), String> {
         if run("powershell", &["-NoProfile", "-Command", &task]).is_ok() && run("schtasks", &["/run", "/tn", "topbar"]).is_ok() {
             let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
         } else {
-            WARN.lock().unwrap().push(t!("задача topbar не создана: запуск через Run, без прав администратора", "topbar task was not created: it starts via Run, without administrator rights", ja: "topbar タスクを作成できませんでした: 管理者権限なしで Run 経由で起動します", pt: "a tarefa topbar não foi criada: ela inicia pelo Run, sem direitos de administrador", zh: "topbar 计划任务未创建：它将通过 Run 启动，没有管理员权限").into());
+            WARN.lock().unwrap().push(t!("задача topbar не создана: запуск через Run, без прав администратора", "topbar task was not created: it starts via Run, without administrator rights", ja: "topbar タスクを作成できませんでした: 管理者権限なしで Run 経由で起動します", pt: "a tarefa topbar não foi criada: ela inicia pelo Run, sem direitos de administrador", zh: "topbar 计划任务未创建：它将通过 Run 启动，没有管理员权限", es: "no se creó la tarea topbar: se inicia mediante Run, sin permisos de administrador").into());
             run("reg", &["add", RUN_KEY, "/v", "topbar", "/t", "REG_SZ", "/d", &format!("\"{}\"", dst.display()), "/f"])?;
             let _ = winrust_common::launch::program(&dst.to_string_lossy()); // normal user token, like rs-launcher
         }
-        soft(t!("профиль PowerShell не записан", "PowerShell profile was not written", ja: "PowerShell プロファイルを書き込めませんでした", pt: "o perfil do PowerShell não foi gravado", zh: "PowerShell 配置文件未写入"), profile_install()); // a shell nicety, must not fail the bar install
+        soft(t!("профиль PowerShell не записан", "PowerShell profile was not written", ja: "PowerShell プロファイルを書き込めませんでした", pt: "o perfil do PowerShell não foi gravado", zh: "PowerShell 配置文件未写入", es: "no se escribió el perfil de PowerShell"), profile_install()); // a shell nicety, must not fail the bar install
         Ok(())
     })
 }
 
 pub(crate) fn bar_uninstall() -> Result<(), String> {
+    // rust-explorer as the shell leans on this bar: Explorer takes the session back first, the file manager stays
+    if rx_shell_on() {
+        shell_off()?;
+        WARN.lock().unwrap().push(t!("rust-explorer вернул оболочку Проводнику: без topbar ему нечем её заменить", "rust-explorer handed the shell back to Explorer: without topbar there is nothing to replace it with", ja: "rust-explorer はシェルをエクスプローラーに戻しました: topbar がないと置き換えられません", pt: "o rust-explorer devolveu o shell ao Explorer: sem a topbar não há com o que substituí-lo", zh: "rust-explorer 已把外壳交还给资源管理器：没有 topbar 就无法替换它", es: "rust-explorer devolvió el shell al Explorador: sin la topbar no hay con qué reemplazarlo").into());
+    }
     let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "topbar", "/f"]);
     let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);

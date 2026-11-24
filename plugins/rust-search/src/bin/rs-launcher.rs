@@ -164,7 +164,7 @@ fn labels(path: &str) -> (String, String) {
     if is_app(path) {
         (
             file.trim_end_matches(".lnk").trim_end_matches(".LNK").to_string(),
-            t!("Приложение", "Application", ja: "アプリケーション", pt: "Aplicativo", zh: "应用").into(),
+            t!("Приложение", "Application", ja: "アプリケーション", pt: "Aplicativo", zh: "应用", es: "Aplicación").into(),
         )
     } else {
         (file.to_string(), dir.to_string())
@@ -175,18 +175,18 @@ fn labels(path: &str) -> (String, String) {
 fn run_labels(line: &str, src: Option<run::Src>) -> (String, String) {
     use winrust_common::t;
     let desc = |i: usize| {
-        t!(run::KNOWN[i].1, run::KNOWN[i].2, ja: run::KNOWN[i].3, pt: run::KNOWN[i].4, zh: run::KNOWN[i].5)
+        t!(run::KNOWN[i].1, run::KNOWN[i].2, ja: run::KNOWN[i].3, pt: run::KNOWN[i].4, zh: run::KNOWN[i].5, es: run::KNOWN[i].6)
     };
     let known = run::describe(line).map(desc); // a typed or recent command we know gets its description too
     match src {
-        Some(run::Src::Typed) => (line.to_string(), known.unwrap_or(t!("Выполнить", "Run", ja: "実行", pt: "Executar", zh: "运行")).into()),
+        Some(run::Src::Typed) => (line.to_string(), known.unwrap_or(t!("Выполнить", "Run", ja: "実行", pt: "Executar", zh: "运行", es: "Ejecutar")).into()),
         Some(run::Src::Folder) => {
             let (dir, name) = line.trim_end_matches('\\').rsplit_once('\\').unwrap_or(("", line));
             (format!("{name}{}", if line.ends_with('\\') { "\\" } else { "" }), dir.to_string())
         }
         Some(run::Src::Known(i)) => (line.to_string(), desc(i).into()),
-        Some(run::Src::Program) => (line.to_string(), t!("Программа", "Program", ja: "プログラム", pt: "Programa", zh: "程序").into()),
-        _ => (line.to_string(), known.map_or(t!("Недавнее", "Recent", ja: "最近", pt: "Recentes", zh: "最近").into(), |d| format!("{}  \u{00B7}  {d}", t!("Недавнее", "Recent", ja: "最近", pt: "Recentes", zh: "最近")))),
+        Some(run::Src::Program) => (line.to_string(), t!("Программа", "Program", ja: "プログラム", pt: "Programa", zh: "程序", es: "Programa").into()),
+        _ => (line.to_string(), known.map_or(t!("Недавнее", "Recent", ja: "最近", pt: "Recentes", zh: "最近", es: "Recientes").into(), |d| format!("{}  \u{00B7}  {d}", t!("Недавнее", "Recent", ja: "最近", pt: "Recentes", zh: "最近", es: "Recientes")))),
     }
 }
 
@@ -354,7 +354,7 @@ unsafe fn run_selected(h: HWND, admin: bool) {
     if ShellExecuteExW(&mut ei) != 0 {
         run::remember(&line);
     } else if GetLastError() != ERROR_CANCELLED {
-        note(&winrust_common::tf!("Не удалось найти «{}». Проверьте имя и попробуйте ещё раз.", "Windows cannot find '{}'. Make sure you typed the name correctly, and then try again.", ja: "Windows が '{}' を見つけられません。名前が正しいか確認して、もう一度お試しください。", pt: "O Windows não encontrou '{}'. Verifique se digitou o nome corretamente e tente novamente.", zh: "Windows 找不到“{}”。请检查名称拼写是否正确，然后重试。", file), MB_ICONERROR);
+        note(&winrust_common::tf!("Не удалось найти «{}». Проверьте имя и попробуйте ещё раз.", "Windows cannot find '{}'. Make sure you typed the name correctly, and then try again.", ja: "Windows が '{}' を見つけられません。名前が正しいか確認して、もう一度お試しください。", pt: "O Windows não encontrou '{}'. Verifique se digitou o nome corretamente e tente novamente.", zh: "Windows 找不到“{}”。请检查名称拼写是否正确，然后重试。", es: "Windows no encuentra «{}». Asegúrate de que escribiste bien el nombre y vuelve a intentarlo.", file), MB_ICONERROR);
     }
 }
 
@@ -685,13 +685,13 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
 // item 3 is "Add to Start" / "Remove from Start" (the label is picked when drawing)
 fn menu_labels() -> [&'static str; 7] {
     [
-        winrust_common::t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开"),
-        winrust_common::t!("Запуск от имени администратора", "Run as administrator", ja: "管理者として実行", pt: "Executar como administrador", zh: "以管理员身份运行"),
-        winrust_common::t!("Показать в папке", "Show in folder", ja: "フォルダーで表示", pt: "Mostrar na pasta", zh: "在文件夹中显示"),
-        winrust_common::t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单"),
-        winrust_common::t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名"),
-        winrust_common::t!("В корзину", "Move to Recycle Bin", ja: "ごみ箱に移動", pt: "Mover para a Lixeira", zh: "移动到回收站"),
-        winrust_common::t!("Удалить навсегда и очистить реестр", "Delete forever + clean registry", ja: "完全に削除してレジストリを整理", pt: "Excluir para sempre e limpar o registro", zh: "永久删除并清理注册表"),
+        winrust_common::t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开", es: "Abrir"),
+        winrust_common::t!("Запуск от имени администратора", "Run as administrator", ja: "管理者として実行", pt: "Executar como administrador", zh: "以管理员身份运行", es: "Ejecutar como administrador"),
+        winrust_common::t!("Показать в папке", "Show in folder", ja: "フォルダーで表示", pt: "Mostrar na pasta", zh: "在文件夹中显示", es: "Mostrar en la carpeta"),
+        winrust_common::t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单", es: "Agregar a Inicio"),
+        winrust_common::t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名", es: "Cambiar nombre"),
+        winrust_common::t!("В корзину", "Move to Recycle Bin", ja: "ごみ箱に移動", pt: "Mover para a Lixeira", zh: "移动到回收站", es: "Mover a la Papelera de reciclaje"),
+        winrust_common::t!("Удалить навсегда и очистить реестр", "Delete forever + clean registry", ja: "完全に削除してレジストリを整理", pt: "Excluir para sempre e limpar o registro", zh: "永久删除并清理注册表", es: "Eliminar para siempre + limpiar el registro"),
     ]
 }
 
@@ -816,7 +816,7 @@ unsafe fn run_menu(h: HWND, i: usize) {
 /// Rename happens in the input box itself: it shows the current name, Enter applies, Esc cancels.
 unsafe fn begin_rename(h: HWND, p: &str) {
     if protected(p) {
-        ask_box(h, winrust_common::t!("Это защищённое системное расположение.", "This is a protected system location.", ja: "これは保護されたシステムの場所です。", pt: "Este é um local protegido do sistema.", zh: "这是受保护的系统位置。"), MB_OK | MB_ICONWARNING);
+        ask_box(h, winrust_common::t!("Это защищённое системное расположение.", "This is a protected system location.", ja: "これは保護されたシステムの場所です。", pt: "Este é um local protegido do sistema.", zh: "这是受保护的系统位置。", es: "Esta es una ubicación protegida del sistema."), MB_OK | MB_ICONWARNING);
         return;
     }
     KillTimer(h, T_DEBOUNCE);
@@ -878,7 +878,7 @@ fn note(text: &str, flags: u32) {
 /// Recycle Bin: reversible, no question asked. "Delete forever" opens the purge panel instead.
 unsafe fn remove(h: HWND, p: &str, purge: bool) {
     if protected(p) {
-        ask_box(h, winrust_common::t!("Это защищённое системное расположение.", "This is a protected system location.", ja: "これは保護されたシステムの場所です。", pt: "Este é um local protegido do sistema.", zh: "这是受保护的系统位置。"), MB_OK | MB_ICONWARNING);
+        ask_box(h, winrust_common::t!("Это защищённое системное расположение.", "This is a protected system location.", ja: "これは保護されたシステムの場所です。", pt: "Este é um local protegido do sistema.", zh: "这是受保护的系统位置。", es: "Esta es una ubicación protegida del sistema."), MB_OK | MB_ICONWARNING);
         return;
     }
     if purge {
@@ -964,35 +964,38 @@ fn size_text(b: u64) -> String {
     format!("{v:.1} {u}")
 }
 
-/// "3 файла", "3 files", "3 ファイル", "3 arquivos", "3 个文件": Russian needs three forms, the others one.
-fn count_text(n: usize, ru: (&str, &str, &str), en: &str, ja: &str, pt: &str, zh: &str) -> String {
+/// "3 файла", "3 files", "3 ファイル", "3 arquivos", "3 个文件", "3 archivos": Russian has three forms, Japanese and Chinese
+/// one, the rest a singular and a plural (spelled out: "entry" is not made plural by an "s").
+fn count_text(n: usize, ru: [&str; 3], en: [&str; 2], ja: &str, pt: [&str; 2], zh: &str, es: [&str; 2]) -> String {
+    let many = (n != 1) as usize;
     match winrust_common::lang!() {
         winrust_common::Lang::Ru => format!("{n} {}", match (n % 10, n % 100) {
-            (1, x) if x != 11 => ru.0,
-            (2..=4, x) if !(12..=14).contains(&x) => ru.1,
-            _ => ru.2,
+            (1, x) if x != 11 => ru[0],
+            (2..=4, x) if !(12..=14).contains(&x) => ru[1],
+            _ => ru[2],
         }),
         winrust_common::Lang::Ja => format!("{n} {ja}"),
-        winrust_common::Lang::Pt => format!("{n} {pt}"),
+        winrust_common::Lang::Pt => format!("{n} {}", pt[many]),
         winrust_common::Lang::Zh => format!("{n} {zh}"),
-        winrust_common::Lang::En => format!("{n} {en}{}", if n == 1 { "" } else { "s" }),
+        winrust_common::Lang::En => format!("{n} {}", en[many]),
+        winrust_common::Lang::Es => format!("{n} {}", es[many]),
     }
 }
 
 fn files_text(n: usize) -> String {
-    count_text(n, ("файл", "файла", "файлов"), "file", "ファイル", "arquivo", "个文件")
+    count_text(n, ["файл", "файла", "файлов"], ["file", "files"], "ファイル", ["arquivo", "arquivos"], "个文件", ["archivo", "archivos"])
 }
 
 fn items_text(n: usize) -> String {
-    count_text(n, ("элемент", "элемента", "элементов"), "item", "項目", "item", "个项目")
+    count_text(n, ["элемент", "элемента", "элементов"], ["item", "items"], "項目", ["item", "itens"], "个项目", ["elemento", "elementos"])
 }
 
 fn entries_text(n: usize) -> String {
-    count_text(n, ("запись", "записи", "записей"), "registry entry", "エントリ", "entrada", "个注册表项")
+    count_text(n, ["запись", "записи", "записей"], ["registry entry", "registry entries"], "エントリ", ["entrada", "entradas"], "个注册表项", ["entrada del registro", "entradas del registro"])
 }
 
 fn results_text(n: usize) -> String {
-    count_text(n, ("результат", "результата", "результатов"), "result", "件", "resultado", "个结果")
+    count_text(n, ["результат", "результата", "результатов"], ["result", "results"], "件", ["resultado", "resultados"], "个结果", ["resultado", "resultados"])
 }
 
 /// %LOCALAPPDATA%\rs-search\registry-backups\2026-11-15 10-42-07  name.reg
@@ -1045,30 +1048,30 @@ unsafe fn run_purge(h: HWND) {
         wipe(std::path::Path::new(&path), &mut failed);
         let done = |title: &str, lines: Vec<String>, ok: bool, backup: Option<String>| Purge::Done { path: path.clone(), title: title.into(), lines, ok, backup, hot: 0 };
         if !failed.is_empty() {
-            let mut lines = vec![winrust_common::tf!("{} не удалось удалить (используется или нет доступа):", "{} could not be removed (in use or access denied):", ja: "{} を削除できませんでした（使用中またはアクセス拒否）:", pt: "{} não puderam ser removidos (em uso ou acesso negado):", zh: "{} 无法删除（正在使用或拒绝访问）：", items_text(failed.len()))];
+            let mut lines = vec![winrust_common::tf!("{} не удалось удалить (используется или нет доступа):", "{} could not be removed (in use or access denied):", ja: "{} を削除できませんでした（使用中またはアクセス拒否）:", pt: "{} não puderam ser removidos (em uso ou acesso negado):", zh: "{} 无法删除（正在使用或拒绝访问）：", es: "No se pudieron quitar {} (en uso o acceso denegado):", items_text(failed.len()))];
             lines.extend(failed.iter().take(3).cloned());
             if failed.len() > 3 {
-                lines.push(winrust_common::tf!("… и ещё {}", "... and {} more", ja: "…ほか {} 件", pt: "... e mais {}", zh: "……另有 {} 项", failed.len() - 3));
+                lines.push(winrust_common::tf!("… и ещё {}", "... and {} more", ja: "…ほか {} 件", pt: "... e mais {}", zh: "……另有 {} 项", es: "... y {} más", failed.len() - 3));
             }
-            lines.push(winrust_common::t!("Реестр не тронут. Закройте использующую их программу и попробуйте снова.", "The registry was not touched. Close the program using them and try again.", ja: "レジストリは変更していません。使用中のプログラムを閉じて、もう一度お試しください。", pt: "O registro não foi alterado. Feche o programa que os usa e tente de novo.", zh: "未改动注册表。请关闭正在使用它们的程序后重试。").into());
-            return post(hw, done(winrust_common::t!("Часть файлов осталась", "Some files are still there", ja: "一部のファイルが残っています", pt: "Alguns arquivos ainda estão lá", zh: "仍有部分文件未删除"), lines, false, None));
+            lines.push(winrust_common::t!("Реестр не тронут. Закройте использующую их программу и попробуйте снова.", "The registry was not touched. Close the program using them and try again.", ja: "レジストリは変更していません。使用中のプログラムを閉じて、もう一度お試しください。", pt: "O registro não foi alterado. Feche o programa que os usa e tente de novo.", zh: "未改动注册表。请关闭正在使用它们的程序后重试。", es: "No se tocó el registro. Cierra el programa que los usa y vuelve a intentarlo.").into());
+            return post(hw, done(winrust_common::t!("Часть файлов осталась", "Some files are still there", ja: "一部のファイルが残っています", pt: "Alguns arquivos ainda estão lá", zh: "仍有部分文件未删除", es: "Algunos archivos siguen ahí"), lines, false, None));
         }
-        let mut lines = vec![winrust_common::tf!("{} удалено ({})", "{} removed ({})", ja: "{} 削除しました ({})", pt: "{} removidos ({})", zh: "已删除 {}（{}）", files_text(files as usize), size_text(bytes))];
+        let mut lines = vec![winrust_common::tf!("{} удалено ({})", "{} removed ({})", ja: "{} 削除しました ({})", pt: "{} removidos ({})", zh: "已删除 {}（{}）", es: "Eliminación completa: {} ({})", files_text(files as usize), size_text(bytes))];
         if hits.is_empty() {
-            lines.push(winrust_common::t!("В реестре нет записей, указывающих на него.", "No registry entries pointed to it.", ja: "これを指すレジストリ エントリはありません。", pt: "Nenhuma entrada do registro apontava para ele.", zh: "没有指向它的注册表项。").into());
-            return post(hw, done(winrust_common::t!("Удалено", "Deleted", ja: "削除しました", pt: "Excluído", zh: "已删除"), lines, true, None));
+            lines.push(winrust_common::t!("В реестре нет записей, указывающих на него.", "No registry entries pointed to it.", ja: "これを指すレジストリ エントリはありません。", pt: "Nenhuma entrada do registro apontava para ele.", zh: "没有指向它的注册表项。", es: "Ninguna entrada del registro apuntaba a él.").into());
+            return post(hw, done(winrust_common::t!("Удалено", "Deleted", ja: "削除しました", pt: "Excluído", zh: "已删除", es: "Eliminado"), lines, true, None));
         }
         let bak = backup_path(&path);
         if let Err(e) = regsweep::backup(&hits, &bak) {
-            lines.push(winrust_common::tf!("Реестр не тронут: не удалось записать копию ({}).", "Registry left as is: the backup could not be written ({}).", ja: "レジストリはそのままです: バックアップを書き込めませんでした ({}).", pt: "Registro mantido: não foi possível gravar o backup ({}).", zh: "注册表未改动：备份写入失败（{}）。", e));
-            return post(hw, done(winrust_common::t!("Удалено, реестр сохранён", "Deleted, registry kept", ja: "削除しました（レジストリは保持）", pt: "Excluído, registro mantido", zh: "已删除，注册表保留"), lines, false, None));
+            lines.push(winrust_common::tf!("Реестр не тронут: не удалось записать копию ({}).", "Registry left as is: the backup could not be written ({}).", ja: "レジストリはそのままです: バックアップを書き込めませんでした ({}).", pt: "Registro mantido: não foi possível gravar o backup ({}).", zh: "注册表未改动：备份写入失败（{}）。", es: "El registro se dejó como estaba: no se pudo escribir la copia de seguridad ({}).", e));
+            return post(hw, done(winrust_common::t!("Удалено, реестр сохранён", "Deleted, registry kept", ja: "削除しました（レジストリは保持）", pt: "Excluído, registro mantido", zh: "已删除，注册表保留", es: "Eliminado; registro conservado"), lines, false, None));
         }
         let r = regsweep::delete(&hits);
-        lines.push(winrust_common::tf!("Удалено: {}", "{} removed", ja: "{} 削除", pt: "{} removidas", zh: "已删除 {}", entries_text(r.removed)));
+        lines.push(winrust_common::tf!("Удалено: {}", "{} removed", ja: "{} 削除", pt: "{} removidas", zh: "已删除 {}", es: "Eliminación completa: {}", entries_text(r.removed)));
         if r.denied > 0 {
-            lines.push(winrust_common::tf!("{} требуют прав администратора и оставлены как есть", "{} need administrator rights and were left in place", ja: "{} は管理者権限が必要なため残しました", pt: "{} exigem direitos de administrador e foram mantidas", zh: "{} 需要管理员权限，已保留", entries_text(r.denied)));
+            lines.push(winrust_common::tf!("{} требуют прав администратора и оставлены как есть", "{} need administrator rights and were left in place", ja: "{} は管理者権限が必要なため残しました", pt: "{} exigem direitos de administrador e foram mantidas", zh: "{} 需要管理员权限，已保留", es: "{} necesitan permisos de administrador y se dejaron en su lugar", entries_text(r.denied)));
         }
-        post(hw, done(winrust_common::t!("Удалено", "Deleted", ja: "削除しました", pt: "Excluído", zh: "已删除"), lines, r.denied == 0, Some(bak.display().to_string())));
+        post(hw, done(winrust_common::t!("Удалено", "Deleted", ja: "削除しました", pt: "Excluído", zh: "已删除", es: "Eliminado"), lines, r.denied == 0, Some(bak.display().to_string())));
     });
 }
 
@@ -1164,44 +1167,44 @@ fn purge_view(s: &St) -> Option<PView> {
     Some(match s.purge.as_ref()? {
         Purge::Scanning(path) => PView {
             glyph: ("\u{E721}", c_dim()),
-            title: (winrust_common::t!("Проверяю, что будет удалено…", "Checking what will be removed\u{2026}", ja: "削除される内容を確認しています…", pt: "Verificando o que será removido…", zh: "正在检查要删除的内容…").into(), c_text()),
+            title: (winrust_common::t!("Проверяю, что будет удалено…", "Checking what will be removed\u{2026}", ja: "削除される内容を確認しています…", pt: "Verificando o que será removido…", zh: "正在检查要删除的内容…", es: "Comprobando qué se eliminará\u{2026}").into(), c_text()),
             path: path.clone(),
-            lines: vec![(winrust_common::t!("Считаю файлы и ищу записи в реестре. Пока ничего не удалено.", "Counting files and searching the registry. Nothing is deleted yet.", ja: "ファイルを数え、レジストリを検索しています。まだ何も削除していません。", pt: "Contando arquivos e procurando no registro. Nada foi excluído ainda.", zh: "正在统计文件并搜索注册表，尚未删除任何内容。").into(), c_dim(), false)],
+            lines: vec![(winrust_common::t!("Считаю файлы и ищу записи в реестре. Пока ничего не удалено.", "Counting files and searching the registry. Nothing is deleted yet.", ja: "ファイルを数え、レジストリを検索しています。まだ何も削除していません。", pt: "Contando arquivos e procurando no registro. Nada foi excluído ainda.", zh: "正在统计文件并搜索注册表，尚未删除任何内容。", es: "Contando archivos y buscando en el registro. Todavía no se elimina nada.").into(), c_dim(), false)],
             note: String::new(),
             buttons: vec![],
         },
         Purge::Working(path) => PView {
             glyph: ("\u{E74D}", DANGER),
-            title: (winrust_common::t!("Удаляю…", "Deleting\u{2026}", ja: "削除しています…", pt: "Excluindo…", zh: "正在删除…").into(), c_text()),
+            title: (winrust_common::t!("Удаляю…", "Deleting\u{2026}", ja: "削除しています…", pt: "Excluindo…", zh: "正在删除…", es: "Eliminando\u{2026}").into(), c_text()),
             path: path.clone(),
-            lines: vec![(winrust_common::t!("Esc скроет карточку; результат появится при следующем Alt+Space.", "Esc hides this card; the result waits for the next Alt+Space.", ja: "Esc でこのカードを閉じます。結果は次回の Alt+Space で表示されます。", pt: "Esc oculta este cartão; o resultado aparece no próximo Alt+Space.", zh: "按 Esc 隐藏此卡片，结果会在下次 Alt+Space 时显示。").into(), c_dim(), false)],
+            lines: vec![(winrust_common::t!("Esc скроет карточку; результат появится при следующем Alt+Space.", "Esc hides this card; the result waits for the next Alt+Space.", ja: "Esc でこのカードを閉じます。結果は次回の Alt+Space で表示されます。", pt: "Esc oculta este cartão; o resultado aparece no próximo Alt+Space.", zh: "按 Esc 隐藏此卡片，结果会在下次 Alt+Space 时显示。", es: "Esc oculta esta tarjeta; el resultado espera al próximo Alt+Espacio.").into(), c_dim(), false)],
             note: String::new(),
             buttons: vec![],
         },
         Purge::Confirm { path, files, bytes, hits, hot } => {
             let mut lines = vec![(format!("{}  \u{00B7}  {}", files_text(*files as usize), size_text(*bytes)), c_text(), false)];
             if hits.is_empty() {
-                lines.push((winrust_common::t!("В реестре нет записей, указывающих на него.", "No registry entries point to it.", ja: "これを指すレジストリ エントリはありません。", pt: "Nenhuma entrada do registro aponta para ele.", zh: "没有指向它的注册表项。").into(), c_dim(), false));
+                lines.push((winrust_common::t!("В реестре нет записей, указывающих на него.", "No registry entries point to it.", ja: "これを指すレジストリ エントリはありません。", pt: "Nenhuma entrada do registro aponta para ele.", zh: "没有指向它的注册表项。", es: "Ninguna entrada del registro apunta a él.").into(), c_dim(), false));
             } else {
-                lines.push((winrust_common::tf!("{} указывают на него и будут удалены:", "{} point to it and will be removed:", ja: "{} がこれを指しており、削除されます:", pt: "{} apontam para ele e serão removidas:", zh: "{} 指向它，将被删除：", entries_text(hits.len())), c_dim(), false));
+                lines.push((winrust_common::tf!("{} указывают на него и будут удалены:", "{} point to it and will be removed:", ja: "{} がこれを指しており、削除されます:", pt: "{} apontam para ele e serão removidas:", zh: "{} 指向它，将被删除：", es: "{} apuntan a él y se eliminarán:", entries_text(hits.len())), c_dim(), false));
                 lines.extend(hits.iter().take(LIST_MAX).map(|h| (h.describe(), c_faint(), true)));
                 if hits.len() > LIST_MAX {
-                    lines.push((winrust_common::tf!("+ ещё {}", "+ {} more", ja: "ほか {} 件", pt: "+ {} mais", zh: "另有 {} 项", hits.len() - LIST_MAX), c_faint(), true));
+                    lines.push((winrust_common::tf!("+ ещё {}", "+ {} more", ja: "ほか {} 件", pt: "+ {} mais", zh: "另有 {} 项", es: "+ {} más", hits.len() - LIST_MAX), c_faint(), true));
                 }
             }
             PView {
                 glyph: ("\u{E74D}", DANGER),
-                title: (winrust_common::t!("Удалить навсегда?", "Delete forever?", ja: "完全に削除しますか?", pt: "Excluir para sempre?", zh: "永久删除？").into(), DANGER),
+                title: (winrust_common::t!("Удалить навсегда?", "Delete forever?", ja: "完全に削除しますか?", pt: "Excluir para sempre?", zh: "永久删除？", es: "¿Eliminar para siempre?").into(), DANGER),
                 path: path.clone(),
                 lines,
                 note: if hits.is_empty() {
-                    winrust_common::t!("Файлы минуют корзину, восстановить их будет нельзя.", "Files skip the Recycle Bin and cannot be restored.", ja: "ファイルはごみ箱を経由せず、復元できません。", pt: "Os arquivos não vão para a Lixeira e não podem ser restaurados.", zh: "文件不会进入回收站，且无法恢复。").into()
+                    winrust_common::t!("Файлы минуют корзину, восстановить их будет нельзя.", "Files skip the Recycle Bin and cannot be restored.", ja: "ファイルはごみ箱を経由せず、復元できません。", pt: "Os arquivos não vão para a Lixeira e não podem ser restaurados.", zh: "文件不会进入回收站，且无法恢复。", es: "Los archivos no pasan por la Papelera y no se pueden restaurar.").into()
                 } else {
-                    winrust_common::t!("Файлы минуют корзину. Записи реестра сначала сохраняются в резервную копию .reg.", "Files skip the Recycle Bin. Registry entries are saved to a .reg backup first.", ja: "ファイルはごみ箱を経由しません。レジストリ エントリは先に .reg バックアップへ保存されます。", pt: "Os arquivos não vão para a Lixeira. As entradas do registro são salvas antes em um backup .reg.", zh: "文件不会进入回收站。注册表项会先保存为 .reg 备份。").into()
+                    winrust_common::t!("Файлы минуют корзину. Записи реестра сначала сохраняются в резервную копию .reg.", "Files skip the Recycle Bin. Registry entries are saved to a .reg backup first.", ja: "ファイルはごみ箱を経由しません。レジストリ エントリは先に .reg バックアップへ保存されます。", pt: "Os arquivos não vão para a Lixeira. As entradas do registro são salvas antes em um backup .reg.", zh: "文件不会进入回收站。注册表项会先保存为 .reg 备份。", es: "Los archivos no pasan por la Papelera. Antes, las entradas del registro se guardan en una copia .reg.").into()
                 },
                 buttons: btn(&[
-                    (winrust_common::t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消"), false),
-                    (winrust_common::t!("Удалить навсегда", "Delete forever", ja: "完全に削除", pt: "Excluir para sempre", zh: "永久删除"), true),
+                    (winrust_common::t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消", es: "Cancelar"), false),
+                    (winrust_common::t!("Удалить навсегда", "Delete forever", ja: "完全に削除", pt: "Excluir para sempre", zh: "永久删除", es: "Eliminar para siempre"), true),
                 ], *hot),
             }
         }
@@ -1210,14 +1213,14 @@ fn purge_view(s: &St) -> Option<PView> {
             title: (title.clone(), if *ok { c_text() } else { DANGER }),
             path: path.clone(),
             lines: lines.iter().enumerate().map(|(i, l)| (l.clone(), if i == 0 { c_text() } else { c_dim() }, false)).collect(),
-            note: backup.as_ref().map_or(String::new(), |b| winrust_common::tf!("Копия (двойной щелчок — восстановить): {}", "Backup (double-click to restore): {}", ja: "バックアップ（ダブルクリックで復元）: {}", pt: "Backup (clique duplo para restaurar): {}", zh: "备份（双击可还原）：{}", b)),
+            note: backup.as_ref().map_or(String::new(), |b| winrust_common::tf!("Копия (двойной щелчок — восстановить): {}", "Backup (double-click to restore): {}", ja: "バックアップ（ダブルクリックで復元）: {}", pt: "Backup (clique duplo para restaurar): {}", zh: "备份（双击可还原）：{}", es: "Copia de seguridad (doble clic para restaurar): {}", b)),
             buttons: if backup.is_some() {
                 btn(&[
-                    (winrust_common::t!("Закрыть", "Close", ja: "閉じる", pt: "Fechar", zh: "关闭"), false),
-                    (winrust_common::t!("Показать копию", "Show backup", ja: "バックアップを表示", pt: "Mostrar backup", zh: "显示备份"), false),
+                    (winrust_common::t!("Закрыть", "Close", ja: "閉じる", pt: "Fechar", zh: "关闭", es: "Cerrar"), false),
+                    (winrust_common::t!("Показать копию", "Show backup", ja: "バックアップを表示", pt: "Mostrar backup", zh: "显示备份", es: "Mostrar copia"), false),
                 ], *hot)
             } else {
-                btn(&[(winrust_common::t!("Закрыть", "Close", ja: "閉じる", pt: "Fechar", zh: "关闭"), false)], 0)
+                btn(&[(winrust_common::t!("Закрыть", "Close", ja: "閉じる", pt: "Fechar", zh: "关闭", es: "Cerrar"), false)], 0)
             },
         },
     })
@@ -1464,7 +1467,7 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
     let area = RECT { left: p(58), top: mid - p(18), right: w - p(24), bottom: mid + p(18) };
     let shown = String::from_utf16_lossy(&v.text);
     if v.text.is_empty() {
-        let hint = if v.run { winrust_common::t!("Программа, папка, документ или сайт", "Type a program, folder, document or website", ja: "プログラム、フォルダー、ドキュメント、Web サイトを入力", pt: "Digite um programa, pasta, documento ou site", zh: "键入程序、文件夹、文档或网站") } else { "Search files and apps" };
+        let hint = if v.run { winrust_common::t!("Программа, папка, документ или сайт", "Type a program, folder, document or website", ja: "プログラム、フォルダー、ドキュメント、Web サイトを入力", pt: "Digite um programa, pasta, documento ou site", zh: "键入程序、文件夹、文档或网站", es: "Escribe un programa, carpeta, documento o sitio web") } else { "Search files and apps" };
         text(dc, v.fonts[F_INPUT], c_faint(), area, hint, DT_SINGLELINE | DT_VCENTER);
     } else {
         let mut size: SIZE = zeroed();
@@ -1492,7 +1495,7 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
     }
     if nrows == 0 {
         if !v.text.is_empty() {
-            text(dc, v.fonts[F_NAME], c_dim(), RECT { left: 0, top: rows_top, right: w, bottom: rows_top + row_h as i32 }, winrust_common::t!("Нет результатов", "No results", ja: "結果なし", pt: "Nada encontrado", zh: "无结果"), DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            text(dc, v.fonts[F_NAME], c_dim(), RECT { left: 0, top: rows_top, right: w, bottom: rows_top + row_h as i32 }, winrust_common::t!("Нет результатов", "No results", ja: "結果なし", pt: "Nada encontrado", zh: "无结果", es: "Sin resultados"), DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         }
         return;
     }
@@ -1515,11 +1518,11 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
         c_faint(),
         RECT { left: p(PAD + 16), top: foot_y + p(4), right: w - p(PAD + 14), bottom: foot_y + p(FOOT_H) },
         &if v.run {
-            winrust_common::t!("{21B5} выполнить     Ctrl+Shift+{21B5} от администратора     Tab дополнить     Esc закрыть", "\u{21B5} run     Ctrl+Shift+\u{21B5} as administrator     Tab complete     Esc close", ja: "{21B5} 実行     Ctrl+Shift+{21B5} 管理者として実行     Tab 補完     Esc 閉じる", pt: "{21B5} executar     Ctrl+Shift+{21B5} como administrador     Tab completar     Esc fechar", zh: "↵ 运行     Ctrl+Shift+↵ 以管理员身份运行     Tab 补全     Esc 关闭").to_string()
+            winrust_common::t!("{21B5} выполнить     Ctrl+Shift+{21B5} от администратора     Tab дополнить     Esc закрыть", "\u{21B5} run     Ctrl+Shift+\u{21B5} as administrator     Tab complete     Esc close", ja: "{21B5} 実行     Ctrl+Shift+{21B5} 管理者として実行     Tab 補完     Esc 閉じる", pt: "{21B5} executar     Ctrl+Shift+{21B5} como administrador     Tab completar     Esc fechar", zh: "↵ 运行     Ctrl+Shift+↵ 以管理员身份运行     Tab 补全     Esc 关闭", es: "\u{21B5} ejecutar     Ctrl+Shift+\u{21B5} como administrador     Tab completar     Esc cerrar").to_string()
         } else if v.renaming {
-            winrust_common::t!("Новое имя     ↵ переименовать     Esc отмена", "Type the new name     \u{21B5} rename     Esc cancel", ja: "新しい名前     ↵ 名前の変更     Esc キャンセル", pt: "Novo nome     ↵ renomear     Esc cancelar", zh: "新名称     ↵ 重命名     Esc 取消").to_string()
+            winrust_common::t!("Новое имя     ↵ переименовать     Esc отмена", "Type the new name     \u{21B5} rename     Esc cancel", ja: "新しい名前     ↵ 名前の変更     Esc キャンセル", pt: "Novo nome     ↵ renomear     Esc cancelar", zh: "新名称     ↵ 重命名     Esc 取消", es: "Escribe el nombre nuevo     \u{21B5} cambiar nombre     Esc cancelar").to_string()
         } else {
-            winrust_common::tf!("\u{2191}\u{2193} выбор     \u{21B5} открыть     Ctrl+\u{21B5} папка     ПКМ меню     Esc закрыть{}", "\u{2191}\u{2193} select     \u{21B5} open     Ctrl+\u{21B5} folder     Right-click menu     Esc close{}", ja: "\u{2191}\u{2193} 選択     \u{21B5} 開く     Ctrl+\u{21B5} フォルダー     右クリック メニュー     Esc 閉じる{}", pt: "\u{2191}\u{2193} selecionar     \u{21B5} abrir     Ctrl+\u{21B5} pasta     Menu do botão direito     Esc fechar{}", zh: "\u{2191}\u{2193} 选择     \u{21B5} 打开     Ctrl+\u{21B5} 文件夹     右键菜单     Esc 关闭{}", more)
+            winrust_common::tf!("\u{2191}\u{2193} выбор     \u{21B5} открыть     Ctrl+\u{21B5} папка     ПКМ меню     Esc закрыть{}", "\u{2191}\u{2193} select     \u{21B5} open     Ctrl+\u{21B5} folder     Right-click menu     Esc close{}", ja: "\u{2191}\u{2193} 選択     \u{21B5} 開く     Ctrl+\u{21B5} フォルダー     右クリック メニュー     Esc 閉じる{}", pt: "\u{2191}\u{2193} selecionar     \u{21B5} abrir     Ctrl+\u{21B5} pasta     Menu do botão direito     Esc fechar{}", zh: "\u{2191}\u{2193} 选择     \u{21B5} 打开     Ctrl+\u{21B5} 文件夹     右键菜单     Esc 关闭{}", es: "\u{2191}\u{2193} seleccionar     \u{21B5} abrir     Ctrl+\u{21B5} carpeta     Clic derecho: menú     Esc cerrar{}", more)
         },
         DT_SINGLELINE | DT_VCENTER,
     );
@@ -1535,7 +1538,7 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
         round_rect(g, (l + pad) as f32, (t + pad + hot as i32 * ih) as f32, (mw - 2 * pad) as f32, ih as f32, 7.0 * s, c_menu_hot());
         GdipDeleteGraphics(g);
         for (i, label) in menu_labels().iter().enumerate() {
-            let label = if i == 3 && v.menu_pinned { winrust_common::t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { label };
+            let label = if i == 3 && v.menu_pinned { winrust_common::t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除", es: "Quitar de Inicio") } else { label };
             let y0 = t + pad + i as i32 * ih;
             let c = if i == menu_len() - 1 { DANGER } else { c_text() };
             text(dc, v.fonts[F_PATH], c, RECT { left: l + pad + p(12), top: y0, right: l + mw - pad, bottom: y0 + ih }, label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -1620,7 +1623,7 @@ fn main() {
         apply_style(main);
 
         if RegisterHotKey(main, 1, MOD_ALT | MOD_NOREPEAT, VK_SPACE as u32) == 0 {
-            MessageBoxW(null_mut(), wide(winrust_common::t!("Alt+Space занят (запускатель уже работает?)", "Alt+Space is taken (is the launcher already running?)", ja: "Alt+Space は使用中です（ランチャーが既に実行中では？）", pt: "Alt+Space está em uso (o iniciador já está em execução?)", zh: "Alt+Space 已被占用（启动器是否已在运行？）")).as_ptr(), wide("rs launcher").as_ptr(), MB_ICONERROR);
+            MessageBoxW(null_mut(), wide(winrust_common::t!("Alt+Space занят (запускатель уже работает?)", "Alt+Space is taken (is the launcher already running?)", ja: "Alt+Space は使用中です（ランチャーが既に実行中では？）", pt: "Alt+Space está em uso (o iniciador já está em execução?)", zh: "Alt+Space 已被占用（启动器是否已在运行？）", es: "Alt+Espacio ya está en uso (¿el buscador ya está abierto?)")).as_ptr(), wide("rs launcher").as_ptr(), MB_ICONERROR);
             return;
         }
         // SearchHost is started by svchost as a packaged app, which ignores the IFEO block the installer sets: end it whenever it appears.
