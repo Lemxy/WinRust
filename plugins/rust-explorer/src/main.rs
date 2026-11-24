@@ -1,8 +1,9 @@
 ﻿// rust-explorer [path]  — file manager window (Explorer replacement).
 // Virtual list (LVS_OWNERDATA, only visible rows are asked for text/icon), system icons, tabs,
-// IFileOperation (recycle bin / undo / elevation prompts), real shell context menu with submenus, OLE drag and drop.
+// IFileOperation (recycle bin / undo / elevation prompts), our own context menu with icons (its "More options…" row
+// opens the real shell menu for the verbs it does not carry), OLE drag and drop.
 // Keys: Enter open, Backspace up, F2 rename, Del recycle, Ctrl+C/X/V copy/cut/paste, Ctrl+N new folder,
-// Ctrl+T/W/Tab tabs, Ctrl+M icon grid/details, Ctrl+L/F4 address bar, Ctrl+F or "? terms" in the bar = instant search through the rs service, right click / Menu key = shell context menu.
+// Ctrl+T/W/Tab tabs, Ctrl+M icon grid/details, Ctrl+L/F4 address bar, Ctrl+F or "? terms" in the bar = instant search through the rs service, right click / Menu key = our context menu.
 // Look: topbar's palette, painted title row (tabs + window buttons) / toolbar / address pill and status line (src/ui.rs),
 // dark frame and list.
 // Clipboard is the system one (Ctrl+C/X/V interoperate with Explorer). Also: Alt+Left/Right back/forward, Alt+Up up,
@@ -561,11 +562,41 @@ fn paste(h: HWND, dir: &PathBuf) {
     if cut { sh::clip_clear(); }
 }
 
+/// Ctrl+C / Ctrl+X: the selection goes on the system clipboard as real files (entries of a .zip are copied out into the
+/// temp folder first). Nothing can be cut out of an archive: there it is always a copy.
+fn clip_selected(h: HWND, cut: bool) {
+    let (_, _, paths) = selected();
+    if paths.is_empty() || in_virtual() { return; }
+    match real_paths(&paths) {
+        Ok(p) => { let _ = sh::clip_set(h, &p, cut && !in_zip()); }
+        Err(e) => warn(h, &e),
+    }
+}
+
+/// F2: edits the name of the selected row in place (the list answers with LVN_ENDLABELEDITW).
+fn rename_selected() {
+    let (list, _, paths) = selected();
+    if paths.is_empty() || in_virtual() { return; }
+    let i = put(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    if i >= 0 {
+        unsafe { SetFocus(list) };
+        put(list, LVM_EDITLABELW, i as usize, 0);
+    }
+}
+
+// The file menu's rows. Any nonzero id is ours: the popup is drawn by menu.rs, not by the shell.
+const MENU_OPEN: u32 = 0x9000;
 const MENU_ZIP: u32 = 0x9001;
 const MENU_EXTRACT: u32 = 0x9002;
 const MENU_PIN: u32 = 0x9003;
 const MENU_RENAME: u32 = 0x9004;
 const MENU_OPENWITH: u32 = 0x9005;
+const MENU_COPY: u32 = 0x9006;
+const MENU_CUT: u32 = 0x9007;
+const MENU_PASTE: u32 = 0x9008;
+const MENU_DELETE: u32 = 0x9009;
+const MENU_PROPS: u32 = 0x900A;
+const MENU_MORE: u32 = 0x900B;
 
 /// True while the window shows the inside of a .zip: read-only, its rows are no files on disk.
 fn in_zip() -> bool { zipx::split_zip(&cur_dir()).is_some() }
@@ -681,43 +712,71 @@ fn toggle_quick(p: &Path) {
     if ui::quick_has(p) { ui::quick_unpin(p); } else { ui::quick_pin(p); }
 }
 
-/// The shell menu for the selection, with our "Compress to ZIP" / "Extract here" on top.
+/// The menu for the selected rows: our own popup (rounded, blurred, icons) instead of the shell's. The shell menu is
+/// still one click away under "More options…", for the verbs this one does not cover (Send to, Share, …).
 fn item_menu(h: HWND, dir: &Path, paths: &[PathBuf]) {
-    if is_trash(dir) { return trash_menu(h, true); } // Restore / Empty instead of the shell verbs
+    use crate::menu::{Icon, Item};
+    if is_trash(dir) { return trash_menu(h, true); } // Restore / Empty instead of these verbs
     if in_pc() { return; } // a drive is not a file: no shell verbs (delete, rename, properties) on it
     if zipx::split_zip(dir).is_some() { return zip_menu(h, paths); }
-    let mut extra = vec![(MENU_ZIP, t!("Сжать в ZIP", "Compress to ZIP", ja: "ZIP に圧縮", pt: "Compactar em ZIP", zh: "压缩为 ZIP"))];
-    // our own picker: the shell's "Open with" goes to the Windows surface that cannot render without explorer.exe
+    if paths.is_empty() { return; }
+    let busy = jobs::busy();
+    let mut items = vec![];
+    // Open / Open with: only one row can be opened at a time, so these two need a single selection
     if let [p] = paths {
+        items.push(Item::new(MENU_OPEN, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")).icon(Icon::Glyph("\u{E8E5}")).hint("Enter"));
         if p.is_file() {
-            extra.insert(0, (MENU_OPENWITH, t!("Открыть с помощью…", "Open with…", ja: "プログラムから開く…", pt: "Abrir com…", zh: "打开方式…")));
+            // our own picker: the shell's "Open with" goes to the Windows surface that cannot render without explorer.exe
+            items.push(Item::new(MENU_OPENWITH, t!("Открыть с помощью…", "Open with…", ja: "プログラムから開く…", pt: "Abrir com…", zh: "打开方式…")).icon(Icon::Glyph("\u{E8AB}")));
         }
     }
+    items.push(Item::new(MENU_ZIP, t!("Сжать в ZIP", "Compress to ZIP", ja: "ZIP に圧縮", pt: "Compactar em ZIP", zh: "压缩为 ZIP")).icon(Icon::Glyph("\u{E8B7}")).dim(busy));
     if paths.iter().all(|p| p.is_file() && jobs::is_archive(p)) {
-        extra.insert(0, (MENU_EXTRACT, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处")));
+        items.push(Item::new(MENU_EXTRACT, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处")).icon(Icon::Glyph("\u{E896}")).dim(busy));
     }
-    // the shell menu has no Rename here (it needs the shell's own folder view to answer it): the same edit box as F2
-    if paths.len() == 1 { extra.push((MENU_RENAME, t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名"))); }
-    if let [p] = paths { if p.is_dir() { extra.push((MENU_PIN, if ui::quick_has(p) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问") })); } }
-    let picked = sh::show(h, paths, if jobs::busy() { &[] } else { &extra }).ok().flatten();
-    match picked {
-        Some(MENU_OPENWITH) => unsafe { openwith::open(h, &paths[0]) },
-        Some(MENU_PIN) => toggle_quick(&paths[0]),
-        Some(MENU_RENAME) => unsafe {
-            let (list, ..) = selected();
-            let i = put(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-            if i >= 0 {
-                SetFocus(list);
-                put(list, LVM_EDITLABELW, i as usize, 0);
-            }
-        },
-        Some(MENU_ZIP) => {
+    if let [p] = paths {
+        // the shell menu has no Rename here (it needs the shell's own folder view to answer it): the same edit box as F2
+        items.push(Item::new(MENU_RENAME, t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名")).icon(Icon::Glyph("\u{E8AC}")).hint("F2").dim(busy));
+        if p.is_dir() {
+            let lbl = if ui::quick_has(p) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问") };
+            items.push(Item::new(MENU_PIN, lbl).icon(Icon::Glyph("\u{E718}")));
+        }
+    }
+    items.push(Item::new(MENU_COPY, t!("Копировать", "Copy", ja: "コピー", pt: "Copiar", zh: "复制")).icon(Icon::Glyph("\u{E8C8}")).hint("Ctrl+C"));
+    items.push(Item::new(MENU_CUT, t!("Вырезать", "Cut", ja: "切り取り", pt: "Recortar", zh: "剪切")).icon(Icon::Glyph("\u{E8C6}")).hint("Ctrl+X"));
+    if !in_virtual() && sh::clip_get().is_some() {
+        items.push(Item::new(MENU_PASTE, t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴")).icon(Icon::Glyph("\u{E77F}")).hint("Ctrl+V").dim(busy));
+    }
+    if !in_virtual() {
+        items.push(Item::new(MENU_DELETE, t!("Удалить", "Delete", ja: "削除", pt: "Excluir", zh: "删除")).icon(Icon::Glyph("\u{E74D}")).hint("Del").dim(busy));
+    }
+    items.push(Item::new(MENU_PROPS, t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性")).icon(Icon::Glyph("\u{E713}")).hint("Alt+Enter"));
+    // .sep() puts the divider above this row: the shell menu keeps every verb this one does not carry
+    items.push(Item::new(MENU_MORE, t!("Дополнительные параметры…", "More options…", ja: "その他のオプション…", pt: "Mais opções…", zh: "更多选项…")).icon(Icon::Glyph("\u{E712}")).hint("Shift+F10").sep());
+    let mut pt: POINT = unsafe { std::mem::zeroed() };
+    unsafe { GetCursorPos(&mut pt) };
+    let id = unsafe { crate::menu::show(pt.x, pt.y, items) };
+    let dest = dir.to_path_buf();
+    match id {
+        MENU_OPEN => unsafe { activate(h, paths[0].clone(), paths[0].is_dir()) },
+        MENU_OPENWITH => unsafe { openwith::open(h, &paths[0]) },
+        MENU_PIN => toggle_quick(&paths[0]),
+        MENU_RENAME => rename_selected(),
+        MENU_ZIP => {
             let base = if paths.len() == 1 { paths[0].file_stem().unwrap_or_default().to_string_lossy().into_owned() } else { dir.file_name().map_or("Archive".into(), |n| n.to_string_lossy().into_owned()) };
             let dest = jobs::free_name(dir, &format!("{base}.zip"), false);
             jobs::zip(h as isize, paths.to_vec(), dest);
         }
-        Some(MENU_EXTRACT) => _ = jobs::extract(h as isize, paths.to_vec(), dir.to_path_buf()),
-        _ => reload(h),
+        MENU_EXTRACT => _ = jobs::extract(h as isize, paths.to_vec(), dest.clone()),
+        MENU_COPY => clip_selected(h, false),
+        MENU_CUT => clip_selected(h, true),
+        MENU_PASTE => { paste(h, &dest); reload(h); }
+        MENU_DELETE => { sh::delete(h, paths); reload(h); }
+        MENU_PROPS => properties(&paths[0]),
+        // the native menu, for everything we do not cover ourselves; reload like the old path did, the shell may have
+        // deleted or renamed something
+        MENU_MORE => { unsafe { SetForegroundWindow(h) }; let _ = sh::show(h, paths, &[]); reload(h); }
+        _ => {}
     }
 }
 
@@ -2143,14 +2202,11 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     8 => toggle_view(h),
                     9 => search_focus(),
                     10..=14 => {
-                        let (list, dir, paths) = selected();
+                        let (_, dir, paths) = selected();
                         match wp {
-                            10 | 11 if !paths.is_empty() && !in_virtual() => match real_paths(&paths) { Ok(p) => { let _ = sh::clip_set(h, &p, wp == 10 && !in_zip()); } Err(e) => warn(h, &e) },
+                            10 | 11 if !paths.is_empty() && !in_virtual() => clip_selected(h, wp == 10),
                             12 if !in_virtual() => { paste(h, &dir); reload(h); }
-                            13 if !in_zip() && !in_virtual() => {
-                                let i = put(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-                                if i >= 0 { SetFocus(list); put(list, LVM_EDITLABELW, i as usize, 0); }
-                            }
+                            13 if !in_zip() && !in_virtual() => rename_selected(),
                             14 if !paths.is_empty() && !in_zip() && !in_virtual() => { sh::delete(h, &paths); reload(h); }
                             _ => {}
                         }
@@ -2305,10 +2361,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             0x2E if !paths.is_empty() && !in_zip() && !in_virtual() => { sh::delete(h, &paths); }
                             // Space: a quick look. Pictures open in photoview, videos / text / anything else in its default app
                             0x20 if !desk() => if let Some(p) = paths.first().filter(|p| p.is_file()) { activate(h, p.clone(), false); },
-                            0x71 if !in_zip() && !in_virtual() => {
-                                let i = put(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-                                if i >= 0 { put(list, LVM_EDITLABELW, i as usize, 0); }
-                            }
+                            0x71 if !in_zip() && !in_virtual() => rename_selected(),
                             0x46 if ctrl => { search_focus(); return 0; } // Ctrl+F: address bar in search mode
                             0x73 | 0x4C if vk == 0x73 || ctrl => { // F4 / Ctrl+L: address bar
                                 let edit = ST.with_borrow(|st| st.edit);
@@ -2317,10 +2370,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 return 0;
                             }
                             0x5D if !paths.is_empty() => item_menu(h, &dir, &paths),
-                            0x43 | 0x58 if ctrl && !paths.is_empty() => { // from a zip: real files in the temp folder, and only a copy (nothing can be cut out of an archive)
-                                match real_paths(&paths) { Ok(p) => { let _ = sh::clip_set(h, &p, vk == 0x58 && !in_zip()); } Err(e) => warn(h, &e) }
-                                return 0;
-                            }
+                            0x43 | 0x58 if ctrl && !paths.is_empty() => { clip_selected(h, vk == 0x58); return 0; }
                             0x41 if ctrl => { // Ctrl+A: select all (state mask LVIS_SELECTED, item -1 = every row)
                                 let mut it: LVITEMW = std::mem::zeroed();
                                 it.stateMask = LVIS_SELECTED;

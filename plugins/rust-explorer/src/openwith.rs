@@ -244,12 +244,24 @@ unsafe fn user_choice(key: &str) -> Option<String> {
 
 /// True when the file's type has an association: the double click then keeps going straight through ShellExecute.
 ///
-/// Three sources, because the shell API alone lies without explorer: `AssocQueryString` answers with OpenWith.exe for
-/// a type nobody registered, the merged classes view knows the ProgID, and UserChoice holds the user's own pick.
+/// The registry is asked first, on purpose: `AssocQueryString` answers with `OpenWith.exe` for a type nobody
+/// registered, and it is not to be trusted alone. A ProgID only counts when it resolves to a command - a default
+/// value pointing at nothing is not an association, and ShellExecute on it would end in Windows' own picker.
 pub fn associated(file: &Path) -> bool {
     let Some(ext) = file.extension() else { return false };
     let key = format!(".{}", ext.to_string_lossy().to_lowercase());
-    unsafe { assoc_exe(&key).is_some() || class_progid(&key).is_some() || user_choice(&key).is_some() }
+    unsafe {
+        // the user's own pick always counts (Windows keeps it in FileExts\<ext>\UserChoice)
+        if user_choice(&key).is_some() {
+            return true;
+        }
+        // what we wrote (or any app installer wrote) as the type's ProgID
+        if class_progid(&key).is_some_and(|p| progid_resolves(&p)) {
+            return true;
+        }
+        // the shell's own answer, when it is a real handler rather than OpenWith.exe
+        assoc_exe(&key).is_some()
+    }
 }
 
 /// A candidate in the list.
@@ -300,6 +312,22 @@ unsafe fn command_of(progid: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// True when a ProgID actually leads somewhere: a `shell\open\command`, or an `Applications\<exe>` entry whose exe the
+/// shell can locate (it resolves those through App Paths and the system folder).
+///
+/// This is what tells a real association from a default value left behind by a removed app - the case where
+/// `AssocQueryString` still answers `OpenWith.exe` and the shell lands in the picker this dialog replaces.
+unsafe fn progid_resolves(progid: &str) -> bool {
+    if command_of(progid).is_some() {
+        return true;
+    }
+    let app = r"Applications\";
+    match progid.get(..app.len()) {
+        Some(head) if head.eq_ignore_ascii_case(app) => app_path(&progid[app.len()..]).is_some(),
+        _ => false,
+    }
 }
 
 unsafe fn name_of_progid(progid: &str) -> Option<String> {
@@ -446,10 +474,18 @@ fn candidates(file: &Path) -> Vec<App> {
 unsafe fn remember(file: &Path, exe: &Path, progid: Option<String>) {
     let Some(ext) = file.extension() else { return };
     let key = format!(".{}", ext.to_string_lossy().to_lowercase());
-    let manual = progid.is_none(); // picked by hand: it has no ProgID of its own
-    let Some(progid) = progid.or_else(|| exe.file_name().map(|n| format!(r"Applications\{}", n.to_string_lossy()))) else {
-        return;
+    // A ProgID from the list is kept when it leads somewhere; otherwise (and always for an exe picked with "Browse")
+    // the per-application one is used, which every exe has by definition.
+    let progid = match progid.filter(|p| !p.trim().is_empty()) {
+        Some(p) if progid_resolves(&p) => p,
+        _ => match exe.file_name() {
+            Some(n) => format!(r"Applications\{}", n.to_string_lossy()),
+            None => return,
+        },
     };
+    // the ProgID must resolve before the type is pointed at it: this is the step whose absence made "always use"
+    // look like it did not persist (the default was written, Windows could not start it, the type stayed unassociated)
+    ensure_command(&progid, exe);
     let base = format!(r"Software\Classes\{key}");
     if let Some(k) = create_key(HKEY_CURRENT_USER, &base) {
         set_string(k, "", &progid); // the default value of .<ext> = the ProgID
@@ -459,24 +495,41 @@ unsafe fn remember(file: &Path, exe: &Path, progid: Option<String>) {
         set_none(k, &progid); // and it is listed as one of the type's handlers
         RegCloseKey(k);
     }
-    // Applications\<exe> only resolves through a registered command: without this the default value above points at
-    // nothing, because a browsed exe may live in any folder and no App Paths entry knows it.
-    if !manual {
+}
+
+/// Gives `Applications\<exe>` the command Windows needs to start it, with the exe's full path and the document as
+/// `%1`. A stock Windows has entries there with no `shell\open\command` at all (`mspaint.exe`), and for an exe outside
+/// the folders the shell searches (`System32`, App Paths) the ProgID resolves to nothing - so the type reads as
+/// unassociated again, which is exactly the bug this closes. Real ProgIDs (`txtfile` and the like) are left alone:
+/// they already carry a command.
+unsafe fn ensure_command(progid: &str, exe: &Path) {
+    let app = r"Applications\";
+    let Some(head) = progid.get(..app.len()) else { return };
+    if !head.eq_ignore_ascii_case(app) || progid.len() == app.len() {
         return;
     }
-    let Some(name) = exe.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
+    let name = &progid[app.len()..];
+    // a bare exe name only resolves for things in System32: the command needs the real path
+    let full = if exe.is_absolute() {
+        exe.to_path_buf()
+    } else {
+        match app_path(name) {
+            Some(p) => p,
+            None => return,
+        }
+    };
     let app_key = format!(r"Software\Classes\Applications\{name}");
-    if let Some(k) = create_key(HKEY_CURRENT_USER, &app_key) {
-        let label = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        if !label.is_empty() {
-            set_string(k, "FriendlyAppName", &label); // the name our own list shows next time
-        }
-        if let Some(c) = create_key(HKEY_CURRENT_USER, &format!(r"{app_key}\shell\open\command")) {
-            set_string(c, "", &format!("\"{}\" \"%1\"", exe.display()));
-            RegCloseKey(c);
-        }
-        RegCloseKey(k);
+    let Some(k) = create_key(HKEY_CURRENT_USER, &app_key) else { return };
+    // the name our own list shows next time (and what the shell displays in "Open with")
+    let label = file_description(&full).or_else(|| full.file_stem().map(|s| s.to_string_lossy().into_owned()));
+    if let Some(label) = label.filter(|l| !l.trim().is_empty()) {
+        set_string(k, "FriendlyAppName", &label);
     }
+    if let Some(c) = create_key(HKEY_CURRENT_USER, &format!(r"{app_key}\shell\open\command")) {
+        set_string(c, "", &format!("\"{}\" \"%1\"", full.display()));
+        RegCloseKey(c);
+    }
+    RegCloseKey(k);
 }
 
 /// Starts `exe` with `file` as its argument, in the file's own folder (an app that looks for files next to the
