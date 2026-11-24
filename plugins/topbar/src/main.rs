@@ -11,7 +11,8 @@ use std::{
     process::Command,
     ptr::{null, null_mut},
     thread,
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
+    time::Instant,
     collections::HashMap,
     sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed},
 };
@@ -46,7 +47,7 @@ use windows_sys::Win32::{
         Dwm::DwmGetWindowAttribute,
         Gdi::*,
         GdiPlus::{
-            FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath, GdipFillPath, GdipSetPixelOffsetMode,
+            FillModeAlternate, GdipAddPathArc, GdipAddPathRectangle, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath, GdipFillPath, GdipSetPixelOffsetMode,
             GdipSetSmoothingMode, GdiplusStartup, GdiplusStartupInput, GpBrush, GpGraphics, GpPath, GpSolidFill, PixelOffsetModeHalf, SmoothingModeAntiAlias,
             GdipCreatePen1, GdipDeletePen, GdipDrawArc, GdipDrawLine, GdipFillEllipse, GdipSetPenEndCap, GdipSetPenStartCap, GpPen, LineCapRound, UnitPixel,
         },
@@ -1471,8 +1472,12 @@ fn ease(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Milliseconds since boot, to the millisecond. GetTickCount64 alone moves in 15.6 ms steps, so a frame saw 0, 15 or 31 ms
+/// go by and fades and glides stuttered; it only gives the starting point here, the performance counter the rest.
 unsafe fn now_ms() -> u64 {
-    GetTickCount64()
+    static START: OnceLock<(u64, Instant)> = OnceLock::new();
+    let (boot, t0) = START.get_or_init(|| (GetTickCount64(), Instant::now()));
+    boot + t0.elapsed().as_millis() as u64
 }
 
 /// Eased 0..1 hover value of one element: glides toward `on` (1) / off (0) instead of jumping. Sets BUSY while it moves,
@@ -1498,7 +1503,7 @@ unsafe fn glow(dc: HDC, key: i32, on: bool, r: RECT, from: u32, to: u32, rad: i3
     let t = hv(key, on);
     let p = press_t(key);
     if t > 0.01 || p > 0.0 {
-        fill(dc, r, mix(mix(from, to, t), pal().accent, 0.5 * p), rad);
+        pill(dc, r, from, &[(to, t), (pal().accent, 0.5 * p)], rad);
     }
 }
 
@@ -1697,20 +1702,70 @@ unsafe fn fill(dc: HDC, r: RECT, c: u32, rad: i32) {
         DeleteObject(b);
         return;
     }
+    smooth(g);
+    let path = round_path(r, rad);
+    fill_path(g, path, argb(c, 255));
+    GdipDeletePath(path);
+    GdipDeleteGraphics(g);
+}
+
+/// Anti-aliased GDI+ drawing; pixel i spans [i, i+1), so straight edges stay crisp.
+unsafe fn smooth(g: *mut GpGraphics) {
     GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
-    GdipSetPixelOffsetMode(g, PixelOffsetModeHalf); // pixel i spans [i, i+1): straight edges stay crisp
-    let (x, y, d) = (r.left as f32, r.top as f32, (rad as f32).min(w).min(h));
+    GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+}
+
+/// `r` as a GDI+ path, its corners rounded by `rad` (the corner diameter; 0 square). The caller deletes it.
+unsafe fn round_path(r: RECT, rad: i32) -> *mut GpPath {
+    let (x, y, w, h) = (r.left as f32, r.top as f32, (r.right - r.left) as f32, (r.bottom - r.top) as f32);
+    let d = (rad as f32).min(w).min(h);
     let mut path: *mut GpPath = null_mut();
     GdipCreatePath(FillModeAlternate, &mut path);
-    GdipAddPathArc(path, x, y, d, d, 180.0, 90.0);
-    GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0);
-    GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
-    GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
+    if d <= 0.0 {
+        GdipAddPathRectangle(path, x, y, w, h);
+    } else {
+        GdipAddPathArc(path, x, y, d, d, 180.0, 90.0);
+        GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0);
+        GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
+        GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
+    }
     GdipClosePathFigure(path);
+    path
+}
+
+unsafe fn fill_path(g: *mut GpGraphics, path: *mut GpPath, argb: u32) {
     let mut br: *mut GpSolidFill = null_mut();
-    GdipCreateSolidFill(0xFF00_0000 | (c & 255) << 16 | (c & 0xFF00) | (c >> 16 & 255), &mut br); // COLORREF -> ARGB
+    GdipCreateSolidFill(argb, &mut br);
     GdipFillPath(g, br as *mut GpBrush, path);
     GdipDeleteBrush(br as *mut GpBrush);
+}
+
+/// COLORREF (0x00BBGGRR) and an alpha -> GDI+ ARGB.
+fn argb(c: u32, a: u8) -> u32 {
+    (a as u32) << 24 | (c & 255) << 16 | (c & 0xFF00) | (c >> 16 & 255)
+}
+
+/// A highlight: `layers` of colour, each laid over the one before at its strength (0..1), on whatever `r` shows; `from` is
+/// the bar colour there. A see-through bar (glass.rs) gets each layer blended in and recorded, so the highlight fades in
+/// over the clear background instead of popping up solid; anywhere else it is the one colour they mix to, as always.
+unsafe fn pill(dc: HDC, r: RECT, from: u32, layers: &[(u32, f32)], rad: i32) {
+    let Some(rec) = glass::recorder(dc) else {
+        fill(dc, r, layers.iter().fold(from, |c, &(to, t)| mix(c, to, t)), rad);
+        return;
+    };
+    let mut g: *mut GpGraphics = null_mut();
+    if r.right <= r.left || r.bottom <= r.top || GdipCreateFromHDC(dc, &mut g) != 0 || g.is_null() {
+        return;
+    }
+    smooth(g);
+    let path = round_path(r, if style().square() { 0 } else { rad });
+    for &(c, t) in layers {
+        let a = (t.clamp(0.0, 1.0) * 255.0).round() as u8;
+        if a > 0 {
+            fill_path(g, path, argb(c, a));
+            fill_path(rec, path, argb(c, a));
+        }
+    }
     GdipDeletePath(path);
     GdipDeleteGraphics(g);
 }
@@ -1844,10 +1899,10 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
-                fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(8));
+                pill(dc, r, pal().bg, &[(pal().hover, th), (active_bg, ta), (pal().accent, 0.5 * tp)], sc(8));
             }
             if att {
-                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
+                pill(dc, r, pal().bg, &[(pal().accent, 0.4)], sc(8));
             }
             if i == 0 {
                 let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
@@ -1902,7 +1957,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let grp = cell(l.sys.0 + sc(44), l.sys.1 - l.sys.0 - sc(44));
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
-        fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
+        pill(dc, grp, pal().bg, &[(pal().hover, tg), (pal().accent, 0.5 * pg)], sc(8));
     }
     text(dc, &lang_name(), cell(l.sys.0, sc(42)), pal().text, DT_CENTER);
     net_icon(dc, cx, l.sys.0 + sc(58), sc(17), f_glyph);
@@ -2023,6 +2078,7 @@ unsafe fn paint(hwnd: HWND) {
     let px_count = (cr.right * h).max(0) as usize;
     if let Some((_, px)) = glass {
         glass::remember_backdrop(px, px_count, BG.get().2);
+        glass::record(dc, cr.right, h);
     }
     SetBkMode(dc, TRANSPARENT as i32);
     let [f_txt, f_small, f_glyph, f_bold] = bar_fonts();
@@ -2068,10 +2124,10 @@ unsafe fn paint(hwnd: HWND) {
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
-                fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(6));
+                pill(dc, r, pal().bg, &[(pal().hover, th), (active_bg, ta), (pal().accent, 0.5 * tp)], sc(6));
             }
             if att {
-                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(6));
+                pill(dc, r, pal().bg, &[(pal().accent, 0.4)], sc(6));
             }
             let mid = (r.top + r.bottom) / 2;
             if i == 0 {
@@ -2141,7 +2197,7 @@ unsafe fn paint(hwnd: HWND) {
     let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
-        fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
+        pill(dc, grp, pal().bg, &[(pal().hover, tg), (pal().accent, 0.5 * pg)], sc(8));
     }
     let mut x = tb.left + sc(10);
     text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
@@ -2185,7 +2241,7 @@ unsafe fn paint(hwnd: HWND) {
     DeleteObject(bmp);
     DeleteDC(dc);
     if BUSY.get() {
-        SetTimer(hwnd, 4, 16, None); // next animation frame
+        SetTimer(hwnd, 4, 15, None); // next animation frame (16 would wait two 15.6 ms ticks: 32 frames a second)
     } else {
         KillTimer(hwnd, 4);
     }

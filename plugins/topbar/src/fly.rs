@@ -1790,7 +1790,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
     DeleteObject(bmp);
     DeleteDC(dc);
     if BUSY.get() {
-        SetTimer(hw, 2, 16, None); // next animation frame
+        SetTimer(hw, 2, 15, None); // next animation frame (16 would wait two 15.6 ms ticks)
     } else {
         KillTimer(hw, 2);
     }
