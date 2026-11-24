@@ -82,7 +82,9 @@ impl App {
         let th = g.th;
         g.fill(lay.band, th.bg); // opaque: the frost stays in the empty space, not behind the text
         g.text(lay.title, page_title(ui.page), Font::Title, th.text);
-        if ui.page_has_search() {
+        // The field is hidden when the toolbar leaves no room for it (see compute_layout),
+        // so the empty border and the glyph must not be drawn either.
+        if ui.page_has_search() && lay.search.w() >= g.px(120.0) {
             g.round(lay.search, g.px(5.0), Some(th.panel), Some(th.border));
             g.hline(lay.search.l + g.px(5.0), lay.search.r - g.px(5.0), lay.search.b - 1, th.accent.lerp(th.panel, 0.4));
             g.glyph(R::new(lay.search.r - g.px(32.0), lay.search.t, lay.search.r - g.px(4.0), lay.search.b), '\u{E721}', th.dim, true);

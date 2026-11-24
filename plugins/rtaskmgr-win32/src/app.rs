@@ -197,20 +197,34 @@ impl App {
         let nav_items: Vec<R> = (0..NAV.len()).map(|i| R::new(0, px(56.0 + i as f64 * 44.0), nav_w, px(56.0 + i as f64 * 44.0 + 44.0))).collect();
         let band = R::new(nav_w, 0, w, px(BAND_H));
         let title = R::new(band.l + px(20.0), 0, band.l + px(320.0), band.b);
-        // кнопки справа налево
-        let mut buttons = vec![];
-        let mut right = band.r - px(12.0);
-        for (btn, label, glyph) in page_buttons(ui.page).into_iter().rev() {
-            let bw = if label.is_empty() { px(36.0) } else { g.text_w(label, Font::Ui) + px(48.0) };
-            let r = R::new(right - bw, px(10.0), right, px(10.0 + 32.0));
-            buttons.push((r, btn, label, glyph));
-            right -= bw + px(4.0);
-        }
-        buttons.reverse();
-        let btn_left = buttons.first().map_or(band.r, |b| b.0.l);
-        let sw = px(440.0).min((btn_left - title.l - px(220.0)).max(px(160.0)));
-        let sx = (band.l + btn_left) / 2 - sw / 2 + px(60.0);
-        let search = R::new(sx.max(title.l + px(190.0)), px(10.0), (sx.max(title.l + px(190.0))) + sw, px(10.0 + 32.0));
+        // Toolbar. The buttons are laid out from the right edge; the search field is
+        // placed just before them, so the two can never overlap. At narrow widths the
+        // button labels are dropped (glyph-only buttons) to keep 140 px for the field.
+        let title_right = title.l + g.text_w(page_title(ui.page), Font::Title) + px(16.0);
+        let gap = px(8.0);
+        let mut compact = false;
+        let (buttons, btn_left) = loop {
+            let mut buttons: Vec<(R, Btn, &'static str, char)> = Vec::new();
+            let mut right = band.r - px(12.0);
+            for (btn, label, glyph) in page_buttons(ui.page).into_iter().rev() {
+                let label = if compact { "" } else { label };
+                let bw = if label.is_empty() { px(36.0) } else { g.text_w(label, Font::Ui) + px(48.0) };
+                let r = R::new(right - bw, px(10.0), right, px(10.0 + 32.0));
+                buttons.push((r, btn, label, glyph));
+                right -= bw + px(4.0);
+            }
+            buttons.reverse();
+            let btn_left = buttons.first().map_or(band.r, |b| b.0.l);
+            if compact || btn_left - gap - title_right >= px(140.0) {
+                break (buttons, btn_left);
+            }
+            compact = true;
+        };
+        // The field ends one gap before the buttons and starts after the title text:
+        // its x follows the current client width, never the design width of 760.
+        let search_right = (btn_left - gap).max(title_right);
+        let search_w = px(440.0).min((search_right - title_right).max(0));
+        let search = R::new(search_right - search_w, px(10.0), search_right, px(10.0 + 32.0));
         let body = R::new(nav_w, band.b, w, h);
         let mut lay = Lay {
             client: R::new(0, 0, w, h),
@@ -336,18 +350,23 @@ impl App {
         self.place_search();
     }
 
-    /// Ставит поле поиска в шапку (оно настоящее, а рамка вокруг нарисована).
+    /// Puts the real edit inside the painted search field (the border and glyph are drawn).
     pub fn place_search(&self) {
         let ui = self.ui.borrow();
         let Some(lay) = &ui.lay else { return };
-        let show = ui.page_has_search();
         let s = self.scale;
         let r = lay.search;
+        let show = ui.page_has_search() && r.w() >= (120.0 * s) as i32;
         if self.search_rect.get() != r || self.search.visible() != show {
             self.search_rect.set(r);
-            let lg = |v: i32| (v as f64 / s).round() as i32;
-            self.search.set_position(lg(r.l) + 10, lg(r.t) + 7);
-            self.search.set_size((lg(r.w()) - 44).max(40) as u32, 20);
+            // `Lay` is in physical pixels while native-windows-gui takes logical (DPI)
+            // units, so divide by the system DPI factor, not by the 0.8 design scale
+            // (dividing by both put the edit 60 px to the right, over the buttons).
+            let dpi = nwg::scale_factor();
+            let lg = |v: i32| (v as f64 / dpi).round() as i32;
+            // 10 px after the left border; 36 px are kept for the drawn search glyph.
+            self.search.set_position(lg(r.l + (10.0 * s).round() as i32), lg(r.t) + 3);
+            self.search.set_size((lg(r.w() - (46.0 * s).round() as i32)).max(40) as u32, 20);
             self.search.set_visible(show);
         }
     }
