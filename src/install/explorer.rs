@@ -20,6 +20,7 @@ pub(crate) fn rx_dir() -> PathBuf {
 // Uninstall puts everything back and starts Explorer again. rs-shell itself hands the session back to Explorer if topbar dies.
 pub(crate) const RX_STATE: &str = r"HKLM\SOFTWARE\plugin-launcher\rust-explorer";
 pub(crate) const WINLOGON_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon";
+const RX_SETUP_PENDING: Dword<'static> = (RX_STATE, "SetupPending");
 const AUTO_RESTART_SHELL: dword_snapshot::OptionalDwordBackup<'static> = dword_snapshot::OptionalDwordBackup {
     target: (WINLOGON_KEY, "AutoRestartShell"),
     saved: (RX_STATE, "AutoRestartShell"),
@@ -175,12 +176,17 @@ pub(crate) fn rx_install() -> Result<(), String> {
     }
     // An older installation may already have applied the tweaks without saving the originals.
     let has_snapshot = AUTO_RESTART_SHELL.load(trim_read)?.is_some();
-    let first_setup = !rx_dir().join("rust-explorer.exe").is_file() && !has_snapshot;
+    let setup_pending = trim_read(RX_SETUP_PENDING)? == Some(1);
+    let first_setup = setup_pending || (!rx_dir().join("rust-explorer.exe").is_file() && !has_snapshot);
     with_payload(&["rust-explorer.exe", "rs-shell.exe"], |d| {
         for n in ["rs-shell.exe", "rust-explorer.exe"] {
             let _ = run("taskkill", &["/f", "/im", n]); // an update: a running exe cannot be overwritten
         }
         fs::create_dir_all(rx_dir()).map_err(|e| e.to_string())?;
+        if first_setup && !setup_pending {
+            run("reg", &["add", RX_STATE, "/f"])?;
+            trim_write(RX_SETUP_PENDING, 1)?;
+        }
         let (fm, sh) = (rx_dir().join("rust-explorer.exe"), rx_dir().join("rs-shell.exe"));
         put(&d.join("rust-explorer.exe"), &fm)?;
         put(&d.join("rs-shell.exe"), &sh)?;
@@ -194,8 +200,7 @@ pub(crate) fn rx_install() -> Result<(), String> {
             }
         }
         // Save the baseline after staging the files, immediately before the first shell change.
-        if first_setup {
-            run("reg", &["add", RX_STATE, "/f"])?;
+        if first_setup && !has_snapshot {
             AUTO_RESTART_SHELL.capture(trim_read, trim_write)?;
         }
         for k in RX_FOLDERS {
@@ -221,6 +226,7 @@ pub(crate) fn rx_install() -> Result<(), String> {
         }
         if first_setup {
             apply_service_trim();
+            remove_dword(RX_SETUP_PENDING)?;
         }
         // the bar's Start panel and the search list Start Menu shortcuts only: without one rust-explorer has no entry (and no icon) there
         soft(t!("ярлык «Rust Explorer» в меню Пуск не создан", "Start menu shortcut 'Rust Explorer' was not created", ja: "スタート メニューのショートカット「Rust Explorer」を作成できませんでした", pt: "O atalho 'Rust Explorer' do menu Iniciar não foi criado", zh: "开始菜单快捷方式「Rust Explorer」未创建"), shortcut(&start_lnk("Rust Explorer"), &fm, ""));
@@ -239,6 +245,16 @@ pub(crate) fn rx_install() -> Result<(), String> {
 
 pub(crate) fn rx_uninstall() -> Result<(), String> {
     let has_snapshot = AUTO_RESTART_SHELL.load(trim_read)?.is_some();
+    if !has_snapshot && trim_read(RX_SETUP_PENDING)? == Some(1) {
+        // The installer writes the shell associations only after it captures the baseline.
+        let dir = rx_dir();
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        }
+        return remove_dword(RX_SETUP_PENDING);
+    }
     if !has_snapshot && !rx_dir().join("rust-explorer.exe").is_file() {
         return Ok(());
     }
