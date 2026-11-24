@@ -42,6 +42,7 @@ pub(crate) enum Encoder {
     Ffmpeg,
 }
 
+#[derive(Clone)]
 pub(crate) struct Opts {
     pub mode: Mode,
     pub delay: u32,
@@ -76,7 +77,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let code = if o.record { record::run(&o) } else { capture(&o) };
+    let code = if o.record { start_record(&o) } else { capture(&o) };
     std::process::exit(code);
 }
 
@@ -183,10 +184,38 @@ fn parse(a: &[String]) -> Result<Opts, String> {
     Ok(o)
 }
 
-fn capture(o: &Opts) -> i32 {
-    if o.delay > 0 {
-        sleep(Duration::from_secs(o.delay as u64));
+/// Interactive `--record`: the same selection bar as PrintScreen, preselected on Vídeo + Región. Explicit
+/// `--monitor/--window/--full` and `--no-ui` keep the direct, bar-less path.
+fn start_record(o: &Opts) -> i32 {
+    if o.no_ui || o.mode != Mode::Region {
+        return record::run(o);
     }
+    let Some(pick) = overlay::choose(overlay::Options {
+        video: true,
+        kind: overlay::Kind::Region,
+        delay: o.delay,
+        cursor: o.cursor,
+        want_image: false,
+    }) else {
+        return 0;
+    };
+    after_pick(pick, o)
+}
+
+fn capture(o: &Opts) -> i32 {
+    if o.mode == Mode::Region {
+        let Some(pick) = overlay::choose(overlay::Options {
+            video: false,
+            kind: overlay::Kind::Region,
+            delay: o.delay,
+            cursor: o.cursor,
+            want_image: true,
+        }) else {
+            return 0;
+        };
+        return after_pick(pick, o);
+    }
+    sleep_delay(o.delay);
     let img = unsafe {
         match o.mode {
             Mode::Full => cap::capture_rect(cap::full_rect(), o.cursor),
@@ -195,9 +224,63 @@ fn capture(o: &Opts) -> i32 {
                 let h = cap::foreground();
                 if h.is_null() { None } else { cap::capture_window(h, o.cursor) }
             }
-            Mode::Region => overlay::select(o.cursor, true).and_then(|p| p.image),
+            Mode::Region => None,
         }
     };
+    finish_image(img, o)
+}
+
+/// The selection bar can switch between Photo and Video and between Region/Full/Monitor/Window.
+fn after_pick(pick: overlay::Pick, o: &Opts) -> i32 {
+    sleep_delay(pick.delay);
+    if pick.video {
+        let source = match pick.kind {
+            overlay::Kind::Region => pick.window.map(record::Source::Window).unwrap_or(record::Source::Rect(pick.rect)),
+            overlay::Kind::Full => record::Source::Rect(unsafe { cap::full_rect() }),
+            overlay::Kind::Monitor => record::Source::Rect(pick.rect),
+            overlay::Kind::Window => {
+                let h = pick.window.unwrap_or_else(|| unsafe { cap::foreground() });
+                if h.is_null() {
+                    return 2;
+                }
+                record::Source::Window(h)
+            }
+        };
+        let mut r = o.clone();
+        r.record = true;
+        r.delay = 0;
+        return record::run_source(&r, source);
+    }
+    let img = unsafe {
+        match pick.kind {
+            overlay::Kind::Region => {
+                if pick.delay == 0 && pick.image.is_some() {
+                    pick.image
+                } else {
+                    cap::capture_rect(pick.rect, o.cursor)
+                }
+            }
+            overlay::Kind::Full => cap::capture_rect(cap::full_rect(), o.cursor),
+            overlay::Kind::Monitor => cap::capture_rect(pick.rect, o.cursor),
+            overlay::Kind::Window => match pick.window {
+                Some(h) => cap::capture_window(h, o.cursor),
+                None => {
+                    let h = cap::foreground();
+                    if h.is_null() { None } else { cap::capture_window(h, o.cursor) }
+                }
+            },
+        }
+    };
+    finish_image(img, o)
+}
+
+fn sleep_delay(seconds: u32) {
+    if seconds > 0 {
+        sleep(Duration::from_secs(seconds as u64));
+    }
+}
+
+fn finish_image(img: Option<img::Image>, o: &Opts) -> i32 {
     let Some(img) = img else {
         msg(
             t!("Не удалось сделать снимок экрана", "Could not take the screenshot", ja: "スクリーンショットを撮れませんでした", pt: "Não foi possível capturar a tela", zh: "无法截取屏幕"),

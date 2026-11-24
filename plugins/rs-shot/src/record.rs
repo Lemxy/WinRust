@@ -11,6 +11,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering::Relaxed},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -50,6 +51,11 @@ struct Ui {
     frame: HWND,
     hover: bool,
     stopped: bool,
+    stop_rec: Arc<AtomicBool>,
+    back: HBITMAP,
+    bdc: HDC,
+    bw: i32,
+    bh: i32,
 }
 
 thread_local! {
@@ -73,30 +79,50 @@ unsafe extern "system" fn esc_hook(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
 }
 
 pub fn run(o: &Opts) -> i32 {
-    unsafe { start(o) }
+    unsafe { start(o, None) }
 }
 
-unsafe fn start(o: &Opts) -> i32 {
+/// Recording with a source already chosen by the selection bar (`Region`/`Full`/`Monitor`/`Window`).
+pub fn run_source(o: &Opts, source: Source) -> i32 {
+    unsafe { start(o, Some(source)) }
+}
+
+unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
     if o.delay > 0 {
         std::thread::sleep(Duration::from_secs(o.delay as u64));
     }
     clean_stale_frames();
-    let source = match o.mode {
-        crate::Mode::Region => match overlay::select(o.cursor, false) {
-            Some(p) if p.window.is_some() => Source::Window(p.window.unwrap()),
-            Some(p) => Source::Rect(p.rect),
-            None => return 0,
-        },
-        crate::Mode::Monitor => Source::Rect(cap::monitor_rect(o.monitor)),
-        crate::Mode::Full => Source::Rect(cap::full_rect()),
-        crate::Mode::Window => {
-            let h = cap::foreground();
-            if h.is_null() {
-                crate::msg(t!("Нет окна для записи", "There is no foreground window to record", ja: "録画するウィンドウがありません", pt: "Não há janela em primeiro plano para gravar", zh: "没有可录制的前台窗口"), t!("rs-shot", "rs-shot"));
-                return 2;
+    let source = match preset {
+        Some(s) => s,
+        None => match o.mode {
+            crate::Mode::Region if o.no_ui => Source::Rect(cap::monitor_rect(None)), // no overlay to select with: cursor monitor
+            crate::Mode::Region => {
+                let Some(p) = overlay::choose(overlay::Options {
+                    video: true,
+                    kind: overlay::Kind::Region,
+                    delay: o.delay,
+                    cursor: o.cursor,
+                    want_image: false,
+                }) else {
+                    return 0;
+                };
+                if let Some(h) = p.window {
+                    Source::Window(h)
+                } else {
+                    Source::Rect(p.rect)
+                }
             }
-            Source::Window(h)
-        }
+            crate::Mode::Monitor => Source::Rect(cap::monitor_rect(o.monitor)),
+            crate::Mode::Full => Source::Rect(cap::full_rect()),
+            crate::Mode::Window => {
+                let h = cap::foreground();
+                if h.is_null() {
+                    crate::msg(t!("Нет окна для записи", "There is no foreground window to record", ja: "録画するウィンドウがありません", pt: "Não há janela em primeiro plano para gravar", zh: "没有可录制的前台窗口"), t!("rs-shot", "rs-shot"));
+                    return 2;
+                }
+                Source::Window(h)
+            }
+        },
     };
     let rect = match source {
         Source::Rect(r) => r,
@@ -177,35 +203,74 @@ unsafe fn start(o: &Opts) -> i32 {
             return 4;
         }
     }
+    if o.no_ui && o.duration == 0 {
+        report_error(
+            &t!(
+                "Запись без интерфейса требует --duration N (секунд): завершить её больше нечем.",
+                "Headless recording needs --duration N (seconds): there is no Stop button to end it.",
+                ja: "UI なしの録画には --duration N (秒) が必要です。停止ボタンがありません。",
+                pt: "A gravação sem interface precisa de --duration N (segundos): não há botão Parar.",
+                zh: "无界面录制需要 --duration N（秒）：没有停止按钮。"
+            ),
+            false,
+        );
+        return 4;
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let out2 = out.clone();
     let dir2 = dir.clone();
-    let rec = if use_wgc {
+    let (tx, rx) = mpsc::channel::<RecRes>();
+    if use_wgc {
         let target = target.unwrap();
         let cursor = o.cursor;
-        std::thread::spawn(move || -> RecRes {
-            match wgc::record(&target, fps, cursor, &out2, stop2) {
-                Ok((frames, elapsed_ms)) => RecRes { frames, elapsed_ms, err: String::new(), direct: true },
+        std::thread::spawn(move || {
+            let res = match wgc::record(&target, fps, cursor, &out2, stop2) {
+                Ok((frames, elapsed_ms)) => RecRes { frames, elapsed_ms, err: String::new() },
                 Err(e) => {
                     let _ = std::fs::write(std::env::temp_dir().join("rs-shot-wgc.log"), format!("WGC record failed: {e}\n"));
-                    RecRes { frames: 0, elapsed_ms: 0, err: e, direct: true }
+                    RecRes { frames: 0, elapsed_ms: 0, err: e }
                 }
-            }
-        })
+            };
+            let _ = tx.send(res);
+        });
     } else {
-        std::thread::spawn(move || -> RecRes {
+        std::thread::spawn(move || {
             let (frames, elapsed_ms, err) = record_loop(source, stop2, dir2, fps);
-            RecRes { frames: frames as u64, elapsed_ms, err, direct: false }
-        })
-    };
+            let _ = tx.send(RecRes { frames: frames as u64, elapsed_ms, err });
+        });
+    }
 
-    if let Err(e) = make_ui(rect, fps, o.duration) {
+    // Headless: no recording bar, no border, no completion dialog. Sleep for --duration, stop, finalize, exit.
+    if o.no_ui {
+        let deadline = Instant::now() + Duration::from_secs(o.duration as u64);
+        let mut early: Option<RecRes> = None;
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(r) => {
+                    early = Some(r);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(40)),
+            }
+        }
         stop.store(true, Relaxed);
-        let _ = rec.join();
+        let res = early
+            .or_else(|| rx.recv_timeout(Duration::from_secs(15)).ok())
+            .unwrap_or_else(|| {
+                report_error("the recorder did not finish; giving up", false);
+                std::process::exit(4);
+            });
+        return finish(res, use_wgc, ffmpeg, &dir, &out, false);
+    }
+
+    if let Err(e) = make_ui(rect, fps, o.duration, stop.clone()) {
+        stop.store(true, Relaxed);
+        let _ = rx.recv_timeout(Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&out);
-        crate::msg(&e, t!("rs-shot", "rs-shot"));
+        report_error(&e, true);
         return 4;
     }
     REC.with_borrow_mut(|r| {
@@ -227,64 +292,132 @@ unsafe fn start(o: &Opts) -> i32 {
     }
     HOOK.store(0, Relaxed);
     stop.store(true, Relaxed);
-    let res = rec.join().unwrap_or(RecRes { frames: 0, elapsed_ms: 0, err: "recorder thread panicked".into(), direct: false });
+    let res = rx.recv_timeout(Duration::from_secs(20)).unwrap_or_else(|_| {
+        report_error("the recorder did not finish; giving up", true);
+        std::process::exit(4);
+    });
     destroy_ui();
+    finish(res, use_wgc, ffmpeg, &dir, &out, true)
+}
 
-    if res.direct {
+/// Stops the recorder, finalizes the file and closes the process path. No modal dialog: a success toast (when the UI
+/// ran) is fire-and-forget, so `--duration`, Stop and Esc all end in a real exit instead of a lingering message loop.
+fn finish(res: RecRes, use_wgc: bool, ffmpeg: Option<PathBuf>, dir: &Path, out: &Path, notify_ui: bool) -> i32 {
+    if use_wgc {
         if res.frames > 0 && res.err.is_empty() && out.is_file() {
             let secs = (res.elapsed_ms as f64 / 1000.0).max(0.05);
             let real_fps = (res.frames as f64 / secs).clamp(1.0, 120.0);
-            crate::msg(
-                &tf!("Готово (WGC + Media Foundation, H.264/MP4, {} кадров, {:.1} fps):\n{}", "Done (WGC + Media Foundation, H.264/MP4, {} frames, {:.1} fps):\n{}", ja: "完了 (WGC + Media Foundation、H.264/MP4、{} フレーム、{:.1} fps):\n{}", pt: "Pronto (WGC + Media Foundation, H.264/MP4, {} quadros, {:.1} fps):\n{}", zh: "完成（WGC + Media Foundation，H.264/MP4，{} 帧，{:.1} fps）：\n{}", res.frames, real_fps, out.display()),
-                t!("rs-shot", "rs-shot"),
+            event(
+                &tf!("Записано (WGC + Media Foundation, H.264/MP4, {} кадров, {:.1} fps): {}", "Recorded (WGC + Media Foundation, H.264/MP4, {} frames, {:.1} fps): {}", ja: "録画しました (WGC + Media Foundation、H.264/MP4、{} フレーム、{:.1} fps): {}", pt: "Gravado (WGC + Media Foundation, H.264/MP4, {} quadros, {:.1} fps): {}", zh: "已录制（WGC + Media Foundation，H.264/MP4，{} 帧，{:.1} fps）：{}", res.frames, real_fps, out.display()),
+                notify_ui,
             );
+            std::thread::sleep(Duration::from_millis(80)); // short flush before process::exit
             return 0;
         }
-        let _ = std::fs::remove_file(&out);
-        crate::msg(
-            &tf!("WGC/Media Foundation не смог записать видео; частичный файл удалён.\n{}", "WGC/Media Foundation could not record the video; the partial file was removed.\n{}", ja: "WGC/Media Foundation は録画できませんでした。途中のファイルは削除しました。\n{}", pt: "WGC/Media Foundation não conseguiu gravar o vídeo; o arquivo parcial foi removido.\n{}", zh: "WGC/Media Foundation 无法录制视频；已删除不完整文件。\n{}", if res.err.is_empty() { "no frames encoded".to_string() } else { res.err }),
-            t!("rs-shot", "rs-shot"),
+        let _ = std::fs::remove_file(out);
+        let msg = tf!(
+            "WGC/Media Foundation не смог записать видео; частичный файл удалён. {}",
+            "WGC/Media Foundation could not record the video; the partial file was removed. {}",
+            ja: "WGC/Media Foundation は録画できませんでした。途中のファイルは削除しました。{}",
+            pt: "WGC/Media Foundation não conseguiu gravar o vídeo; o arquivo parcial foi removido. {}",
+            zh: "WGC/Media Foundation 无法录制视频；已删除不完整文件。{}",
+            if res.err.is_empty() { "no frames encoded".to_string() } else { res.err }
         );
+        report_error(&msg, notify_ui);
         return 4;
     }
 
-    // ---- ffmpeg bridge ----
     if res.frames == 0 {
-        let _ = std::fs::remove_dir_all(&dir);
-        crate::msg(
-            &tf!("Кадры не записались: {}", "No frames were captured: {}", ja: "フレームを取得できませんでした: {}", pt: "Nenhum quadro foi capturado: {}", zh: "未能捕获帧：{}", if res.err.is_empty() { t!("неизвестная ошибка", "unknown error") } else { &res.err }),
-            t!("rs-shot", "rs-shot"),
+        let _ = std::fs::remove_dir_all(dir);
+        let msg = tf!(
+            "Кадры не записались: {}",
+            "No frames were captured: {}",
+            ja: "フレームを取得できませんでした: {}",
+            pt: "Nenhum quadro foi capturado: {}",
+            zh: "未能捕获帧：{}",
+            if res.err.is_empty() { t!("неизвестная ошибка", "unknown error") } else { &res.err }
         );
+        report_error(&msg, notify_ui);
         return 4;
     }
     let secs = (res.elapsed_ms as f64 / 1000.0).max(0.05);
     let real_fps = (res.frames as f64 / secs).clamp(1.0, 120.0);
-    let ffmpeg = ffmpeg.unwrap();
-    match to_mp4(&ffmpeg, &dir, real_fps, &out) {
+    let Some(ffmpeg) = ffmpeg else {
+        let _ = std::fs::remove_dir_all(dir);
+        report_error("ffmpeg disappeared before encoding", notify_ui);
+        return 4;
+    };
+    match to_mp4(&ffmpeg, dir, real_fps, out) {
         Ok(()) => {
-            let _ = std::fs::remove_dir_all(&dir); // no orphan frames on success
-            crate::msg(
-                &tf!("Готово (ffmpeg, H.264/MP4, {} кадров, {:.1} fps):\n{}", "Done (ffmpeg, H.264/MP4, {} frames, {:.1} fps):\n{}", ja: "完了 (ffmpeg、H.264/MP4、{} フレーム、{:.1} fps):\n{}", pt: "Pronto (ffmpeg, H.264/MP4, {} quadros, {:.1} fps):\n{}", zh: "完成（ffmpeg，H.264/MP4，{} 帧，{:.1} fps）：\n{}", res.frames, real_fps, out.display()),
-                t!("rs-shot", "rs-shot"),
+            let _ = std::fs::remove_dir_all(dir);
+            event(
+                &tf!("Записано (ffmpeg, H.264/MP4, {} кадров, {:.1} fps): {}", "Recorded (ffmpeg, H.264/MP4, {} frames, {:.1} fps): {}", ja: "録画しました (ffmpeg、H.264/MP4、{} フレーム、{:.1} fps): {}", pt: "Gravado (ffmpeg, H.264/MP4, {} quadros, {:.1} fps): {}", zh: "已录制（ffmpeg，H.264/MP4，{} 帧，{:.1} fps）：{}", res.frames, real_fps, out.display()),
+                notify_ui,
             );
+            std::thread::sleep(Duration::from_millis(80));
             0
         }
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&dir); // and no orphan frames on failure either
-            crate::msg(
-                &tf!("ffmpeg не смог собрать MP4; временные кадры удалены.\n{}", "ffmpeg could not build the MP4; the temporary frames were removed.\n{}", ja: "ffmpeg は MP4 を作成できませんでした。一時フレームは削除しました。\n{}", pt: "O ffmpeg não conseguiu criar o MP4; os quadros temporários foram removidos.\n{}", zh: "ffmpeg 无法生成 MP4；临时帧已删除。\n{}", e),
-                t!("rs-shot", "rs-shot"),
+            let _ = std::fs::remove_dir_all(dir);
+            let msg = tf!(
+                "ffmpeg не смог собрать MP4; временные кадры удалены. {}",
+                "ffmpeg could not build the MP4; the temporary frames were removed. {}",
+                ja: "ffmpeg は MP4 を作成できませんでした。一時フレームは削除しました。{}",
+                pt: "O ffmpeg não conseguiu criar o MP4; os quadros temporários foram removidos. {}",
+                zh: "ffmpeg 无法生成 MP4；临时帧已删除。{}",
+                e
             );
+            report_error(&msg, notify_ui);
             4
         }
     }
+}
+
+/// Appends a result line to %TEMP%\rs-shot.log and, when the interactive UI ran, raises a non-blocking WinRust toast.
+fn event(msg: &str, notify_ui: bool) {
+    use std::io::Write;
+    let line = format!("{} {}\n", save::stamp(), msg);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("rs-shot.log")) {
+        let _ = f.write_all(line.as_bytes());
+    }
+    if notify_ui {
+        notify(msg);
+    }
+}
+
+fn report_error(msg: &str, notify_ui: bool) {
+    event(msg, notify_ui);
+}
+
+/// `rs-notify.exe` from the WinRust bar (fire and forget, never waited on). Missing bar: the log line above is the message.
+fn notify(msg: &str) {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(e) = std::env::current_exe() {
+        if let Some(d) = e.parent() {
+            candidates.push(d.join("rs-notify.exe"));
+        }
+        candidates.push(e.clone());
+    }
+    if let Some(pf) = std::env::var_os("ProgramFiles") {
+        candidates.push(PathBuf::from(&pf).join(r"topbar\rs-notify.exe"));
+        candidates.push(PathBuf::from(&pf).join(r"rs-shot\rs-notify.exe"));
+    }
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(PathBuf::from(la).join(r"plugin-launcher\bin\rs-notify.exe"));
+    }
+    let Some(exe) = candidates.into_iter().find(|p| p.is_file() && p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("rs-notify.exe"))) else { return };
+    let body: String = msg.chars().take(900).collect();
+    let icon = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    let _ = std::process::Command::new(exe)
+        .args(["--app", "rs-shot", "--title", "rs-shot", "--body", &body, "--icon", &icon])
+        .creation_flags(0x0800_0000)
+        .spawn();
 }
 
 struct RecRes {
     frames: u64,
     elapsed_ms: u128,
     err: String,
-    direct: bool,
 }
 
 /// One monitor or one window is a single WGC item. The full virtual desktop (or a region crossing monitors) is not;
@@ -343,7 +476,7 @@ unsafe fn record_loop(source: Source, stop: Arc<AtomicBool>, dir: PathBuf, fps: 
     (n, t0.elapsed().as_millis(), err)
 }
 
-unsafe fn make_ui(rect: RECT, fps: u32, duration: u32) -> Result<(), String> {
+unsafe fn make_ui(rect: RECT, fps: u32, duration: u32, stop_rec: Arc<AtomicBool>) -> Result<(), String> {
     let hi = GetModuleHandleW(null());
     let cls = ui::wide("rs-shot-recbar");
     let mut wc: WNDCLASSW = zeroed();
@@ -413,19 +546,27 @@ unsafe fn make_ui(rect: RECT, fps: u32, duration: u32) -> Result<(), String> {
         return Err(t!("Не удалось открыть панель записи", "Could not open the recording bar", ja: "録画バーを開けませんでした", pt: "Não foi possível abrir a barra de gravação", zh: "无法打开录制栏").to_string());
     }
     SetWindowDisplayAffinity(bar, WDA_EXCLUDEFROMCAPTURE);
-    REC.set(Some(Ui { source: rect, start: Ui::now(), duration, fps, stop: bar, frame, hover: false, stopped: false }));
+    REC.set(Some(Ui { source: rect, start: Ui::now(), duration, fps, stop: bar, frame, hover: false, stopped: false, stop_rec, back: null_mut(), bdc: null_mut(), bw: 0, bh: 0 }));
     SetTimer(bar, 1, 200, None);
     ShowWindow(bar, SW_SHOW);
     Ok(())
 }
 
 unsafe fn destroy_ui() {
-    let (bar, frame) = REC.with_borrow(|r| r.as_ref().map(|r| (r.stop, r.frame)).unwrap_or((null_mut(), null_mut())));
+    let (bar, frame, back, bdc) = REC.with_borrow(|r| {
+        r.as_ref().map(|r| (r.stop, r.frame, r.back, r.bdc)).unwrap_or((null_mut(), null_mut(), null_mut(), null_mut()))
+    });
     if !bar.is_null() {
         DestroyWindow(bar);
     }
     if !frame.is_null() {
         DestroyWindow(frame);
+    }
+    if !back.is_null() {
+        DeleteObject(back as HGDIOBJ);
+    }
+    if !bdc.is_null() {
+        DeleteDC(bdc);
     }
     REC.set(None);
 }
@@ -443,7 +584,11 @@ unsafe fn stop_now() {
     if finished {
         return;
     }
-    // destroy outside the borrow above
+    // Stop the capture thread even if the message loop is slow to leave.
+    let stop_flag = REC.with_borrow(|r| r.as_ref().map(|r| r.stop_rec.clone()));
+    if let Some(f) = stop_flag {
+        f.store(true, Relaxed);
+    }
     let (bar, frame) = REC.with_borrow(|r| r.as_ref().map(|r| (r.stop, r.frame)).unwrap_or((null_mut(), null_mut())));
     if !bar.is_null() {
         DestroyWindow(bar);

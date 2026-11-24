@@ -81,6 +81,10 @@ struct Ed {
     cw: i32,
     ch: i32,
     dirty: bool,
+    back: HBITMAP,
+    bdc: HDC,
+    bw: i32,
+    bh: i32,
 }
 
 thread_local! {
@@ -142,6 +146,10 @@ fn btn_rect(hwnd: HWND, i: usize) -> RECT {
 
 fn in_rect(r: RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+fn rects_intersect(a: RECT, b: RECT) -> bool {
+    a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
 }
 
 /// Starts the editor for an image. Returns the process exit code.
@@ -215,6 +223,10 @@ unsafe fn open(img: Image, file: Option<PathBuf>) -> i32 {
         cw: 0,
         ch: 0,
         dirty: true,
+        back: null_mut(),
+        bdc: null_mut(),
+        bw: 0,
+        bh: 0,
     }));
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
@@ -237,8 +249,16 @@ unsafe fn cleanup() {
             if !e.cdc.is_null() {
                 DeleteDC(e.cdc);
             }
+            if !e.back.is_null() {
+                DeleteObject(e.back as HGDIOBJ);
+            }
+            if !e.bdc.is_null() {
+                DeleteDC(e.bdc);
+            }
             e.canvas = null_mut();
             e.cdc = null_mut();
+            e.back = null_mut();
+            e.bdc = null_mut();
         }
     });
     ED.set(None);
@@ -385,10 +405,44 @@ fn to_image(e: &Ed, hwnd: HWND, x: i32, y: i32) -> (i32, i32) {
 
 unsafe fn paint(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = zeroed();
-    let hdc = BeginPaint(hwnd, &mut ps);
+    let screen = BeginPaint(hwnd, &mut ps);
     let mut c: RECT = zeroed();
     GetClientRect(hwnd, &mut c);
     let p = pal();
+    // Persistent client-sized back buffer: hover, drag and typing never draw straight to the window DC.
+    let (back_dc, made) = ED.with_borrow_mut(|slot| {
+        if let Some(e) = slot {
+            if e.bdc.is_null() || e.bw != c.right || e.bh != c.bottom {
+                if !e.back.is_null() {
+                    DeleteObject(e.back as HGDIOBJ);
+                }
+                if !e.bdc.is_null() {
+                    DeleteDC(e.bdc);
+                }
+                let g = GetDC(null_mut());
+                let bmp = CreateCompatibleBitmap(g, c.right.max(1), c.bottom.max(1));
+                let dc = CreateCompatibleDC(g);
+                if !bmp.is_null() && !dc.is_null() {
+                    SelectObject(dc, bmp as HGDIOBJ);
+                }
+                ReleaseDC(null_mut(), g);
+                e.back = bmp;
+                e.bdc = dc;
+                e.bw = c.right;
+                e.bh = c.bottom;
+                (dc, true)
+            } else {
+                (e.bdc, false)
+            }
+        } else {
+            (null_mut(), false)
+        }
+    });
+    let mut p = ps.rcPaint;
+    if made {
+        p = c;
+    }
+    let hdc = if back_dc.is_null() { screen } else { back_dc };
     let toolbar = RECT { left: 0, top: 0, right: c.right, bottom: toolbar_h(hwnd) };
     let status = RECT { left: 0, top: c.bottom - status_h(hwnd), right: c.right, bottom: c.bottom };
     ui::fill(hdc, c, BG);
@@ -397,62 +451,60 @@ unsafe fn paint(hwnd: HWND) {
     ui::fill(hdc, status, p.bg);
     ui::fill(hdc, RECT { left: 0, top: status.top, right: c.right, bottom: status.top + 1 }, p.line);
 
-    let (toolbar_ok, _) = ED.with_borrow_mut(|slot| {
-        if let Some(e) = slot {
-            ensure_canvas(e);
-            let (cw, ch) = (e.cw, e.ch);
-            let (s, ox, oy) = view(e, hwnd);
-            let area = RECT { left: 0, top: toolbar_h(hwnd), right: c.right, bottom: (c.bottom - status_h(hwnd)).max(toolbar_h(hwnd) + 1) };
-            let clip = CreateRectRgn(area.left, area.top, area.right, area.bottom);
-            SelectClipRgn(hdc, clip);
-            if !e.canvas.is_null() && cw > 0 && ch > 0 {
-                SetStretchBltMode(hdc, HALFTONE);
-                SetBrushOrgEx(hdc, 0, 0, null_mut());
-                StretchBlt(hdc, ox, oy, (cw as f32 * s) as i32, (ch as f32 * s) as i32, e.cdc, 0, 0, cw, ch, SRCCOPY);
-            }
-            // crop drag: dashed box in screen space
-            if let Some(d) = &e.drag {
-                if e.tool == Tool::Crop {
-                    let a = (d.start.0 - e.crop.left, d.start.1 - e.crop.top);
-                    let b = (d.end.0 - e.crop.left, d.end.1 - e.crop.top);
-                    let rr = RECT {
-                        left: ox + (a.0.min(b.0) as f32 * s) as i32,
-                        top: oy + (a.1.min(b.1) as f32 * s) as i32,
-                        right: ox + (a.0.max(b.0) as f32 * s) as i32,
-                        bottom: oy + (a.1.max(b.1) as f32 * s) as i32,
-                    };
-                    ui::dashed(hdc, rr, p.accent);
+    let canvas_area = RECT { left: 0, top: toolbar_h(hwnd), right: c.right, bottom: (c.bottom - status_h(hwnd)).max(toolbar_h(hwnd) + 1) };
+    if made || rects_intersect(canvas_area, p) {
+        ED.with_borrow_mut(|slot| {
+            if let Some(e) = slot {
+                ensure_canvas(e);
+                let (cw, ch) = (e.cw, e.ch);
+                let (s, ox, oy) = view(e, hwnd);
+                let area = canvas_area;
+                let clip = CreateRectRgn(area.left, area.top, area.right, area.bottom);
+                SelectClipRgn(hdc, clip);
+                if !e.canvas.is_null() && cw > 0 && ch > 0 {
+                    SetStretchBltMode(hdc, HALFTONE);
+                    SetBrushOrgEx(hdc, 0, 0, null_mut());
+                    StretchBlt(hdc, ox, oy, (cw as f32 * s) as i32, (ch as f32 * s) as i32, e.cdc, 0, 0, cw, ch, SRCCOPY);
                 }
-            }
-            if let Some(i) = e.selected {
-                if let Some(sh) = e.shapes.get(i) {
-                    let r = sh.bounds();
-                    let rr = RECT {
-                        left: ox + ((r.left - e.crop.left) as f32 * s) as i32 - 3,
-                        top: oy + ((r.top - e.crop.top) as f32 * s) as i32 - 3,
-                        right: ox + ((r.right - e.crop.left) as f32 * s) as i32 + 3,
-                        bottom: oy + ((r.bottom - e.crop.top) as f32 * s) as i32 + 3,
-                    };
-                    ui::dashed(hdc, rr, p.accent);
+                // crop drag: dashed box in screen space
+                if let Some(d) = &e.drag {
+                    if e.tool == Tool::Crop {
+                        let a = (d.start.0 - e.crop.left, d.start.1 - e.crop.top);
+                        let b = (d.end.0 - e.crop.left, d.end.1 - e.crop.top);
+                        let rr = RECT {
+                            left: ox + (a.0.min(b.0) as f32 * s) as i32,
+                            top: oy + (a.1.min(b.1) as f32 * s) as i32,
+                            right: ox + (a.0.max(b.0) as f32 * s) as i32,
+                            bottom: oy + (a.1.max(b.1) as f32 * s) as i32,
+                        };
+                        ui::dashed(hdc, rr, p.accent);
+                    }
                 }
+                if let Some(i) = e.selected {
+                    if let Some(sh) = e.shapes.get(i) {
+                        let r = sh.bounds();
+                        let rr = RECT {
+                            left: ox + ((r.left - e.crop.left) as f32 * s) as i32 - 3,
+                            top: oy + ((r.top - e.crop.top) as f32 * s) as i32 - 3,
+                            right: ox + ((r.right - e.crop.left) as f32 * s) as i32 + 3,
+                            bottom: oy + ((r.bottom - e.crop.top) as f32 * s) as i32 + 3,
+                        };
+                        ui::dashed(hdc, rr, p.accent);
+                    }
+                }
+                // frame around the canvas
+                let ir = RECT {
+                    left: ox - 1,
+                    top: oy - 1,
+                    right: ox + (cw as f32 * s) as i32 + 1,
+                    bottom: oy + (ch as f32 * s) as i32 + 1,
+                };
+                ui::outline(hdc, ir, p.line, 1);
+                SelectClipRgn(hdc, null_mut());
+                DeleteObject(clip as HGDIOBJ);
             }
-            // frame around the canvas
-            let ir = RECT {
-                left: ox - 1,
-                top: oy - 1,
-                right: ox + (cw as f32 * s) as i32 + 1,
-                bottom: oy + (ch as f32 * s) as i32 + 1,
-            };
-            ui::outline(hdc, ir, p.line, 1);
-            SelectClipRgn(hdc, null_mut());
-            DeleteObject(clip as HGDIOBJ);
-            (true, ())
-        } else {
-            (false, ())
-        }
-    });
-    let _ = toolbar_ok;
-
+        });
+    }
     // toolbar buttons
     let list = buttons();
     let (hover, tool, undo_len, redo_len, has_sel) = ED.with_borrow(|s| {
@@ -512,6 +564,9 @@ unsafe fn paint(hwnd: HWND) {
     let right = RECT { left: c.right / 2, top: status.top, right: c.right - ui::sc(hwnd, 12), bottom: status.bottom };
     ui::text(hdc, msg.as_deref().unwrap_or(&hint), right, small, if msg.is_some() { p.accent } else { p.dim }, DT_RIGHT as u32);
     DeleteObject(small as HGDIOBJ);
+    if !back_dc.is_null() {
+        BitBlt(screen, p.left, p.top, p.right - p.left, p.bottom - p.top, back_dc, p.left, p.top, SRCCOPY);
+    }
     EndPaint(hwnd, &ps);
 }
 
@@ -631,6 +686,7 @@ unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
         WM_MOUSEMOVE => {
             let list_len = buttons().len();
             let hover = (0..list_len).find(|i| in_rect(btn_rect(hwnd, *i), x, y));
+            let old_hover = ED.with_borrow(|s| s.as_ref().and_then(|e| e.hover));
             ED.with_borrow_mut(|slot| {
                 let Some(e) = slot else { return };
                 e.hover = hover;
@@ -664,8 +720,29 @@ unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
                     }
                 }
             });
-            let _ = &hover;
-            InvalidateRect(hwnd, null(), 0);
+            let busy = ED.with_borrow(|s| s.as_ref().map(|e| e.drag.is_some() || e.moving.is_some()).unwrap_or(false));
+            if busy {
+                let mut cr: RECT = zeroed();
+                GetClientRect(hwnd, &mut cr);
+                InvalidateRect(
+                    hwnd,
+                    &RECT { left: 0, top: toolbar_h(hwnd), right: cr.right, bottom: (cr.bottom - status_h(hwnd)).max(toolbar_h(hwnd) + 1) },
+                    0,
+                );
+            } else if hover != old_hover {
+                if let Some(i) = old_hover {
+                    let r = btn_rect(hwnd, i);
+                    InvalidateRect(hwnd, &r, 0);
+                }
+                if let Some(i) = hover {
+                    let r = btn_rect(hwnd, i);
+                    InvalidateRect(hwnd, &r, 0);
+                }
+                let mut cr: RECT = zeroed();
+                GetClientRect(hwnd, &mut cr);
+                // the tooltip/hint in the status bar changes with the hovered button
+                InvalidateRect(hwnd, &RECT { left: cr.right / 2, top: (cr.bottom - status_h(hwnd)), right: cr.right, bottom: cr.bottom }, 0);
+            }
             0
         }
         WM_LBUTTONDOWN => {

@@ -3456,6 +3456,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_CLOSE => {
             // closing any of the copies means closing the bar: the leader does the teardown
             let lead = leader_bar();
+            // the user closed the bar: come back at once (rs-shell would also do it, but with a visible gap). The
+            // uninstall (`--restore`) writes a one-shot marker so it does not resurrect the bar it is removing.
+            let stop = std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_default()).join(r"WinRust\no-restart");
+            if stop.exists() {
+                let _ = std::fs::remove_file(&stop);
+            } else {
+                let exe = std::env::current_exe().unwrap_or_default();
+                let line = format!("ping -n 2 127.0.0.1 >nul & start \"\" \"{}\"", exe.display());
+                let _ = std::process::Command::new("cmd").args(["/c", &line]).creation_flags(0x0800_0000).spawn();
+            }
             if !lead.is_null() {
                 DestroyWindow(lead);
             } else {
@@ -3491,6 +3501,7 @@ fn main() {
     winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     unsafe {
         if std::env::args().any(|a| a == "--restore") {
+        let _ = std::fs::write(std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_default()).join(r"WinRust\no-restart"), b"1"); // no auto-restart while uninstalling
             show_taskbar(saved_taskbar_state().unwrap_or(ABS_ALWAYSONTOP as usize));
             forget_taskbar_state();
             set_work_area(RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }); // a killed bar's reserved strip
