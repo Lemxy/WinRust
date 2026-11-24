@@ -347,6 +347,13 @@ pub fn any_open() -> bool {
     FLY.get().is_some()
 }
 
+/// The bar the last open panel belongs to. It survives `close()`, so a page opened from the panel can still center itself
+/// on the monitor of the bar that asked for it (the menu is gone by then, but its monitor is not).
+pub(crate) fn menu_monitor() -> Option<RECT> {
+    let r = FLY_MON.get();
+    (r.right > r.left && r.bottom > r.top).then_some(r)
+}
+
 /// Short status line shown at the bottom of the open panel (Start: "Added to Start: ...").
 pub fn note(s: &str) {
     NOTE.set(s.to_string());
@@ -1065,7 +1072,14 @@ pub fn close_now() {
 
 pub(crate) unsafe fn kill_ghost() {
     let (g, _, _) = GHOST.replace((null_mut(), 0, (0, 0)));
-    if !g.is_null() {
+    if g.is_null() {
+        return;
+    }
+    // Only ever destroy a flyout: an HWND value is reused once its window is gone, and a stale ghost that happens to name
+    // the taskbar (or anything else of ours) must not take it down.
+    let mut c = [0u16; 32];
+    let n = windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW(g, c.as_mut_ptr(), 32).max(0) as usize;
+    if String::from_utf16_lossy(&c[..n]) == "topbar_fly" {
         DestroyWindow(g);
     }
 }

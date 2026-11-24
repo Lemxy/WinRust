@@ -3254,7 +3254,18 @@ unsafe fn register_shell_hooks(hwnd: HWND) {
 
 /// Reconciles the bar windows with `bar-monitor` and the current monitor list: `all` (-1) keeps one per monitor, any
 /// other value one on that monitor. Keeps the existing windows (and their leaders/hooks) where it can.
+/// The bar windows as `2 [0x1234, 0x5678]`: the open/close traces show whether a bar went away behind our back.
+pub(crate) fn bars_list() -> String {
+    BARS.with_borrow(|b| {
+        let v: Vec<String> = b.iter().map(|x| format!("{:#x}", x.hwnd as usize)).collect();
+        format!("{} [{}]", v.len(), v.join(", "))
+    })
+}
+
+/// Reconciles the bar windows with `bar-monitor` and the current monitor list: `all` (-1) keeps one per monitor, any
+/// other value one on that monitor. Keeps the existing windows (and their leaders/hooks) where it can.
 pub(crate) unsafe fn bars_sync() {
+    let before = bars_list();
     CFG_MON.set((-2, RECT { left: 0, top: 0, right: 0, bottom: 0 })); // the fallback monitor may have moved
     let mons = winrust_common::monitors::all();
     let cfg = winrust_common::look::bar_monitor();
@@ -3275,7 +3286,10 @@ pub(crate) unsafe fn bars_sync() {
     // monitors that have no bar yet
     for &(m, leader) in &want {
         if !BARS.with_borrow(|b| b.iter().any(|x| x.mon.handle == m.handle)) {
-            create_bar(m, leader);
+            let h = create_bar(m, leader);
+            if h.is_null() {
+                crate::tlog(&format!("bar: create_bar FAILED on the monitor at {} (last error {})", m.rc.left, windows_sys::Win32::Foundation::GetLastError()));
+            }
         }
     }
     // same monitor, new size/position or a different leader
@@ -3294,6 +3308,10 @@ pub(crate) unsafe fn bars_sync() {
     }
     place_all();
     invalidate_bars();
+    let after = bars_list();
+    if after != before {
+        crate::tlog(&format!("bar: bars_sync {before} -> {after} ({} wanted)", want.len()));
+    }
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -3326,6 +3344,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         return 0;
     }
     match msg {
+        // creation: answered here instead of by the default procedure. A window procedure that answers WM_NCCREATE with
+        // FALSE makes CreateWindowExW return NULL *without* setting the last error, and the class default is not reliable
+        // in every process state (it is what stopped the settings window from being created). The bars are rebuilt by
+        // `bars_sync`, so a silently failed creation would leave the shell without a bar.
+        WM_NCCREATE => return 1,
+        WM_CREATE => return 0,
         WM_PAINT => paint(hwnd),
         WM_ERASEBKGND => return 1,
         WM_TIMER if wp == 2 => {
@@ -3431,6 +3455,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             InvalidateRect(hwnd, null(), 0);
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+            // the bar the user is working with: its monitor anchors the menus opened from it and the settings window
+            CURRENT.set(hwnd);
             let x = (lp & 0xffff) as i16 as i32;
             let h = hit(hwnd, x, (lp >> 16) as i16 as i32);
             let x = if vert() { (lp >> 16) as i16 as i32 } else { x }; // position along the bar
@@ -3466,6 +3492,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
         }
         WM_CLOSE => {
+            crate::tlog(&format!("bar: WM_CLOSE hwnd={:#x}: the whole bar is going away", hwnd as usize));
             // closing any of the copies means closing the bar: the leader does the teardown
             let lead = leader_bar();
             // the user closed the bar: come back at once (rs-shell would also do it, but with a visible gap). The
@@ -3490,6 +3517,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let lead = is_leader(hwnd);
             appbar_remove(hwnd);
             BARS.with_borrow_mut(|b| b.retain(|x| x.hwnd != hwnd));
+            crate::tlog(&format!("bar: WM_DESTROY hwnd={:#x} leader={lead}, left: {}", hwnd as usize, bars_list()));
             if lead {
                 // the leader holds the tray host, the hooks and the work area: take the whole bar down
                 let rest: Vec<HWND> = BARS.with_borrow(|b| b.iter().map(|x| x.hwnd).collect());

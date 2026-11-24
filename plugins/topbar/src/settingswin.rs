@@ -15,7 +15,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{GetLastError, SetLastError, HWND, RECT},
+    Foundation::{GetLastError, SetLastError, HWND, POINT, RECT},
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::{Input::KeyboardAndMouse::VK_ESCAPE, WindowsAndMessaging::*},
@@ -1195,9 +1195,25 @@ unsafe fn existing() -> Option<HWND> {
     (!h.is_null()).then_some(h)
 }
 
-/// Where the window goes: centered on the monitor of the bar that asked for it, never bigger than that monitor allows.
+/// Where the window goes: centered on the monitor of the bar whose menu opened it, then on the bar in front, then on the
+/// monitor under the pointer. Never bigger than that monitor allows.
 fn place() -> (i32, i32, i32, i32) {
-    let m = winrust_common::monitors::of(unsafe { crate::cur_bar() }).rc;
+    let m = unsafe {
+        // the menu remembers the bar it belonged to even after `close()`, so this is exact
+        if let Some(r) = crate::fly::menu_monitor() {
+            winrust_common::monitors::at((r.left + r.right) / 2, (r.top + r.bottom) / 2)
+        } else {
+            let bar = crate::cur_bar();
+            if !bar.is_null() && IsWindow(bar) != 0 {
+                winrust_common::monitors::of(bar)
+            } else {
+                let mut pt: POINT = zeroed();
+                GetCursorPos(&mut pt);
+                winrust_common::monitors::at(pt.x, pt.y)
+            }
+        }
+    };
+    let m = m.rc;
     let (mw, mh) = (m.right - m.left, m.bottom - m.top);
     let w = sc(W).min(mw - sc(32)).max(sc(720));
     let h = sc(H).min(mh - sc(48)).max(sc(560));
@@ -1217,7 +1233,10 @@ unsafe fn show(h: HWND, cat: u8, r: (i32, i32, i32, i32)) {
     // above every other topmost window (the bar is one) and visible even when it was only hidden
     SetWindowPos(h, HWND_TOPMOST, x, y, w, hh, SWP_SHOWWINDOW);
     ShowWindow(h, SW_SHOW);
-    SetForegroundWindow(h);
+    // and really in front, with the keyboard: Windows refuses the foreground to a process that did not get the last input,
+    // and a window that only looks active eats the first click (Esc did nothing) — `fg::force` is the same dance the
+    // flyouts use
+    crate::force_fg(h);
     InvalidateRect(h, ptr::null(), 0);
 }
 
@@ -1237,7 +1256,10 @@ pub(crate) unsafe fn open_at(cat: u8) -> bool {
             return false;
         }
     }
-    // the fading ghost of the menu that opened this window would sit on top and eat the clicks (and end up in the blur)
+    // the fading ghost of the menu that opened this window would sit on top and eat the clicks (and end up in the blur).
+    // Only a flyout is ever destroyed here (`kill_ghost` checks the class), so the taskbar cannot be caught by a stale
+    // handle.
+    let bars_before = crate::bars_list();
     crate::fly::kill_ghost();
     let (x, y, w, ht) = place();
     SetWindowRgn(h, CreateRoundRectRgn(0, 0, w + 1, ht + 1, sc(24), sc(24)), 1);
@@ -1248,6 +1270,8 @@ pub(crate) unsafe fn open_at(cat: u8) -> bool {
     }
     ensure_fonts();
     show(h, cat, (x, y, w, ht));
-    crate::tlog(&format!("settings: opened on category {cat} at {x},{y} {w}x{ht}, visible {}", IsWindowVisible(h)));
+    let bars_after = crate::bars_list();
+    crate::tlog(&format!("settings: opened on category {cat} at {x},{y} {w}x{ht}, visible {}, bars {bars_before} -> {bars_after}", IsWindowVisible(h)));
+    debug_assert_eq!(bars_before, bars_after, "opening the settings window must not touch the bars");
     true
 }

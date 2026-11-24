@@ -106,6 +106,33 @@ Además, para que un bucle se vea en vez de sufrirse: `count_paint()` cuenta los
 repintado tarda más de 50 ms. No hay ningún `SetTimer` en todo el módulo, y `WM_MOUSEMOVE` no hace test de posición ni
 repinta si el puntero no se ha movido.
 
+### El «congelamiento» del 19:25 (barra que «desaparece»)
+
+Comprobado contra el proceso vivo (pid 8168, hub abierto desde las 19:25:28):
+
+```
+ps> EnumWindows -> topbar 0,734 1360x34 vis=True / topbar 1360,866 1440x34 vis=True
+                -> topbar_settings 1600,110 960x680 vis=True
+ps> FindWindowW('topbar', $null)      -> 0        <-- el «no existe»
+ps> FindWindowW('topbar', 'topbar')   -> 984744   <-- sí existe
+ps> SendMessageTimeout(bar) -> 0 ms; RedrawWindow(bar) -> 12 ms
+ps> GDI 155, USER 65, CPU 0.02 s / 2 s
+```
+
+Las barras **no se destruían**: desde PowerShell `FindWindow(class, NULL)` recibe `""` en vez de `NULL` para el título,
+y la barra tiene título `"topbar"`, así que no casa (`FindWindow(class, "topbar")` la encuentra al instante); el
+`SendMessageTimeout` fallaba porque el HWND era 0. El proceso estaba sano y ocioso.
+
+Lo que sí estaba mal, y se ha corregido:
+
+| Problema | Arreglo |
+|---|---|
+| El hub salía en el monitor equivocado (`cur_bar()` es la barra del **último evento de primer plano**, no la que abrió el menú) | `CURRENT.set(hwnd)` al pulsar en una barra + `place()` usa `fly::menu_monitor()` (el rect de la barra del menú), luego un `cur_bar()` válido y, como último recurso, **el monitor del cursor** |
+| `SetForegroundWindow` podía fallar y el hub quedaba solo «encima» pero sin foco: el primer clic solo activaba la ventana y `Esc` no hacía nada (parece colgado) | `crate::force_fg()` (el mismo truco de los flyouts: `AttachThreadInput` + Alt) |
+| `kill_ghost()` destruía el HWND guardado sin comprobar qué era (un handle reciclado podía ser la barra) | solo destruye si la clase es `topbar_fly` |
+| Si un `bars_sync` destruyera barras y su creación fallara en silencio, el shell se quedaba sin barra | el procedimiento de la barra contesta `WM_NCCREATE => 1` y `WM_CREATE => 0`; un `create_bar` fallido se registra |
+| No había forma de ver si una barra se iba | `bar: WM_DESTROY hwnd=… leader=…, left: …`, `bar: WM_CLOSE …` y `bar: bars_sync A -> B`, además de `settings: … bars A -> B` en cada apertura |
+
 ## 6. Duplicados e incoherencias
 
 1. Lista de idiomas: el origen es `common/src/lang.rs` (`Lang::ALL`); el hub y el instalador lo usan, `rust-settings`
