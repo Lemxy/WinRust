@@ -460,15 +460,16 @@ static OPACITY_AT: AtomicU64 = AtomicU64::new(0);
 /// How opaque the topbar is, percent (30..=100). Re-read once a second.
 pub fn bar_opacity() -> u8 {
     if now_ms().saturating_sub(OPACITY_AT.load(Relaxed)) > 1000 {
-        let v = opacity_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| s.trim().parse::<u8>().ok()).map_or(100, |v| v.clamp(30, 100));
+        let v = opacity_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| s.trim().parse::<u8>().ok()).map_or(100, |v| v.min(100));
         OPACITY.store(v, Relaxed);
         OPACITY_AT.store(now_ms(), Relaxed);
     }
     OPACITY.load(Relaxed)
 }
 
+/// 0 = no background at all, only the buttons and the clock (they never fade: see topbar's glass.rs).
 pub fn set_bar_opacity(v: u8) {
-    let v = v.clamp(30, 100);
+    let v = v.min(100);
     OPACITY.store(v, Relaxed);
     OPACITY_AT.store(now_ms(), Relaxed);
     if let Some(f) = opacity_file() {
