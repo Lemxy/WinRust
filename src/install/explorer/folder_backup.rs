@@ -1,7 +1,7 @@
 //! Check that a registry export belongs to one folder verb before replaying it.
 const HEADER: &str = "Windows Registry Editor Version 5.00";
 
-fn retarget(data: &[u8], user: &str, verb: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn retarget(data: &[u8], user: &str, verb: &str) -> Result<Vec<u8>, String> {
     let bytes = data.strip_prefix(&[0xff, 0xfe]).ok_or("expected a UTF-16 registry export")?;
     let (pairs, extra) = bytes.as_chunks::<2>();
     if !extra.is_empty() {
@@ -138,6 +138,7 @@ mod tests {
 
     #[test]
     fn a_corrupt_or_unwritable_backup_leaves_the_current_key_in_place() {
+        assert!(retarget(&[], SID, VERB).is_err());
         let result = restore_export::<()>(&[0xff, 0xfe, 1], SID, VERB,
             |_| panic!("staged invalid backup"), || panic!("cleared key"), |_| panic!("imported backup"));
         assert!(result.is_err());

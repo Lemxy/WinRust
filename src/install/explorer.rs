@@ -289,10 +289,15 @@ pub(crate) fn rx_install() -> Result<(), String> {
         let sid = &init()?.sid;
         for (i, k) in RX_FOLDERS.iter().enumerate() {
             let bak = rx_folders_bak(i);
-            if !bak.try_exists().map_err(|e| format!("{}: {e}", bak.display()))?
-                && folder_verb_exists(sid, k)? && !our_folder_binding(sid, k)?
-            {
-                export_folder_binding(&i18n::reg::for_user(k, sid), &bak)?;
+            let exists = bak.try_exists().map_err(|e| format!("{}: {e}", bak.display()))?;
+            if exists || (folder_verb_exists(sid, k)? && !our_folder_binding(sid, k)?) {
+                if !exists {
+                    export_folder_binding(&i18n::reg::for_user(k, sid), &bak)?;
+                }
+                // Check the same format and scope that uninstall requires before replacing a binding.
+                let bytes = fs::read(&bak).map_err(|e| format!("{}: {e}", bak.display()))?;
+                let verb = k.strip_prefix("HKCU\\").expect("per-user folder binding");
+                folder_backup::retarget(&bytes, sid, verb).map_err(|e| format!("{}: {e}", bak.display()))?;
             }
         }
         for k in RX_FOLDERS {
