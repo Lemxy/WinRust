@@ -11,6 +11,7 @@ use std::{
 };
 
 pub mod caption;
+pub mod clean;
 pub mod desktop;
 pub mod fg;
 pub mod journal;
