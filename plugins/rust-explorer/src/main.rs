@@ -1486,8 +1486,28 @@ mod sh {
     }
 
     /// Takes Windows' own zip entry out of the menu: our "Compress to ZIP" is the one. (Menus of other zip tools, 7-Zip etc., stay.)
-    unsafe fn hide_system_zip(cm: &IContextMenu, menu: HMENU) {
-        use windows::Win32::UI::WindowsAndMessaging::{DeleteMenu, GetMenuItemCount, GetMenuStringW, GetSubMenu, MF_BYPOSITION};
+    /// The shell's own "Open with" runs OpenWith.exe, which cannot render without Explorer. Our menu already inserts its own
+/// row at the top, so the shell one is removed; its verb is asked with GetCommandString (GCS_VERBW) rather than guessing
+/// the localized text.
+unsafe fn hide_system_openwith(cm: &IContextMenu, menu: HMENU) {
+    let n = GetMenuItemCount(Some(menu));
+    let mut i = n - 1;
+    while i >= 0 {
+        let id = GetMenuItemID(menu, i);
+        if id != u32::MAX {
+            let mut buf = [0u16; 64];
+            if cm.GetCommandString(id as usize, GCS_VERBW, None, PSTR(buf.as_mut_ptr() as *mut u8), buf.len() as u32).is_ok() {
+                let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                if String::from_utf16_lossy(&buf[..end]).eq_ignore_ascii_case("openwith") {
+                    let _ = RemoveMenu(menu, i as u32, MF_BYPOSITION);
+                }
+            }
+        }
+        i -= 1;
+    }
+}
+
+unsafe fn hide_system_zip(cm: &IContextMenu, menu: HMENU) {        use windows::Win32::UI::WindowsAndMessaging::{DeleteMenu, GetMenuItemCount, GetMenuStringW, GetSubMenu, MF_BYPOSITION};
         let Some(name) = system_zip_name() else { return };
         // WM_INITMENUPOPUP: the Send to submenu fills itself only when it is opened
         if let Ok(c2) = cm.cast::<IContextMenu2>() { let _ = unsafe { c2.HandleMenuMsg(0x0117, WPARAM(menu.0 as usize), LPARAM(0)) }; }
@@ -1549,6 +1569,7 @@ mod sh {
             let menu = CreatePopupMenu()?;
             cm.QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL).ok()?;
             hide_system_zip(&cm, menu);
+            hide_system_openwith(&cm, menu);
             if !extra.is_empty() {
                 let _ = InsertMenuW(menu, 0, MF_BYPOSITION | MF_SEPARATOR, 0, PCWSTR::null());
                 for (id, text) in extra.iter().rev() {
