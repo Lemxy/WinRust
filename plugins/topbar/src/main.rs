@@ -1393,7 +1393,8 @@ struct Layout {
 fn layout(w: i32) -> Layout {
     let gap = sc(4);
     let clock = (w - sc(96), w - sc(6));
-    let sys = (clock.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), clock.0 - sc(4));
+    // language 42 + wifi 32 + volume 32, and the battery's part only when there is a battery (an empty slot looked odd)
+    let sys = (clock.0 - sc(4) - sc(if BAT.get().0 >= 0 { 216 } else { 110 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
     let n = BTNS.with_borrow(|b| b.len()) as i32 + lead(); // + the search and Task View slots
