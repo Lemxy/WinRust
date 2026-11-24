@@ -1,20 +1,45 @@
-<p align="center"><img src="assets/logo.svg" alt="WinRust" width="160"></p>
+<p align="center"><img src="assets/logo.svg" alt="WinRust" width="140"></p>
 
-# WinRust
+<h1 align="center">WinRust</h1>
 
-**用 Rust 编写的 Windows 外壳：比系统自带的更快、更轻。** 一批原生小程序（不用 .NET，不用 Electron）替换掉 Windows 的部件：任务栏、资源管理器、文件搜索、任务管理器，另外还有磁盘清理、磁盘占用图和图片查看器。一个安装程序全部装好，一个按钮全部卸掉。
+<p align="center"><b>你的 Windows，去掉臃肿。</b><br>任务栏、资源管理器、文件搜索和任务管理器用 Rust 重写：原生、小巧、快。</p>
 
-[English](README.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [Português (Brasil)](README.pt-BR.md) | **简体中文**
+<p align="center">
+  <a href="https://github.com/Lemxy/WinRust/releases/latest"><b>⬇ 下载 WinRust.exe</b></a> ·
+  <a href="#安装">安装</a> ·
+  <a href="#装了些什么">里面有什么</a> ·
+  <a href="#社区">社区</a>
+</p>
 
-<p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
+<p align="center"><a href="README.md">English</a> | <a href="README.ru.md">Русский</a> | <a href="README.ja.md">日本語</a> | <a href="README.pt-BR.md">Português (Brasil)</a> | <b>简体中文</b></p>
+
+![WinRust 任务栏及其设置菜单，红宝石主题](docs/screenshots/taskbar.webp)
 
 > **请先读这里。** WinRust 会关闭 Windows 搜索、隐藏任务栏，还可以把资源管理器当作外壳关掉。exe 没有代码签名，SmartScreen 会报警。安装前会创建还原点，但仍建议先在一台备用机器或虚拟机里试。
+
+## 为什么用 WinRust
+
+- **快。** 打开一个文件夹窗口 60 ms，而不是 420 ms；搜遍整个 C: 盘只要 45 ms（[测量](#基准测试)）。
+- **轻。** 整个外壳只占 46 MB 内存，explorer.exe 要 366 MB。
+- **原生。** 都是小巧的 Win32 程序：不用 .NET，不用 Electron。
+- **可逆。** 每个值在改动前都会保存，卸载时放回去。一个按钮全部移除。
+- **随你。** 八种样式（红宝石、终端、悬浮停靠、Windows 98 等）、任意颜色、栏可以放在任意一边，支持 English、Русский、日本語、Português、简体中文。
+
+## 看一眼
+
+| 运行（Win+R） | 文件管理器 |
+|---|---|
+| ![带历史记录的运行框](docs/screenshots/run.webp) | ![rust-explorer，红宝石主题](docs/screenshots/explorer.webp) |
+
+**任务管理器**（俄文界面）
+
+![任务管理器](docs/screenshots/task-manager.webp)
 
 ## 安装
 
 1. 从[最新版本](https://github.com/Lemxy/WinRust/releases/latest)下载 `WinRust.exe`（Windows 10/11，x64）。
 2. 以管理员身份运行它。
-3. 勾选需要的组件，然后按安装按钮。全新安装时 `rust-explorer` 默认不勾选，勾上它才会替换 Windows 资源管理器外壳（也可以在 topbar 那一行的齿轮里打开 **Shell: rust-explorer** 开关）。组件会按正确顺序安装；某个失败或被跳过不会中断其它组件，窗口里会列出哪里出了问题。
+3. 选 **快速（推荐）** 并按 **安装**：搜索、任务管理器、栏、设置、磁盘分析和图片查看器，什么都不会被移除，资源管理器也不动。或者选 **自定义（进阶）** 自己勾选组件，包括 `rust-explorer`（替换 Windows 资源管理器外壳；也可以打开 topbar 那一行齿轮里的 **替换资源管理器** 开关）和附加组件。它们会按正确顺序安装；某个失败或被跳过不会中断其它组件，最后一页会列出每个组件及其结果。
 
 Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 搜索服务的去臃肿 LTSC 镜像），这一步会被跳过并给出警告，而不是让安装失败。
 
@@ -22,13 +47,13 @@ Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 
 
 **自动更新：** 首次安装后，计划任务 `WinRust-update`（以 SYSTEM 运行，不弹 UAC）会在开机时和每天一次检查最新版本。它只下载有变化的程序，用项目密钥签名的清单逐个校验文件（被篡改或未签名的版本会被拒绝），并且只替换已经安装过的文件。正在运行的程序会在下次启动（登录或重启）时换到新版本。日志：`%ProgramData%\plugin-launcher\install.log`（`autoupdate:` 开头的行）。想关掉它，就在「任务计划程序」里禁用 `WinRust-update` 任务；**全部移除**会删除这个任务。
 
-**手动更新：** 从 releases 页面下载新的 `WinRust.exe`，以管理员身份运行，选要更新或安装的组件。更新时已安装的 `rust-explorer` 默认保持勾选。你的设置和保存下来的 Windows 原值都会保留。
+**手动更新：** 从 releases 页面下载新的 `WinRust.exe`，以管理员身份运行，然后按快速卡片上的 **更新**（它会重装已安装的组件、补上缺少的组件），或者用自定义。已安装的 `rust-explorer` 会保持勾选。你的设置和保存下来的 Windows 原值都会保留。
 
-安装程序打开时是英文。右上角是语言下拉框（English、Русский、日本語、Português (Brasil)、简体中文），任务栏的齿轮里也有同一份列表（**任务栏设置 → 语言**），rust-settings 的「个性化」页里同样可以切换（**界面语言**）。选择保存在 `%ProgramData%\WinRust\lang.txt`（`en`、`ru`、`ja`、`pt`、`zh`）：切换的这一个程序立刻重画，其它程序在下次启动时生效，所以切换后请重启它们（或注销后重新登录）。
+安装程序打开时是英文。角落里是语言下拉框（English、Русский、日本語、Português (Brasil)、简体中文），任务栏的齿轮里也有同一份列表（**任务栏设置 → 语言**），rust-settings 的「个性化」页里同样可以切换（**界面语言**）。选择保存在 `%ProgramData%\WinRust\lang.txt`（`en`、`ru`、`ja`、`pt`、`zh`）：切换的这一个程序立刻重画，其它程序在下次启动时生效，所以切换后请重启它们（或注销后重新登录）。
 
 ## 卸载
 
-- 安装程序窗口里的**全部移除**会撤销一切：Windows 搜索、任务栏、资源管理器和相关服务都会回来。
+- 安装程序第一页的**全部移除**会撤销一切：Windows 搜索、任务栏、资源管理器和相关服务都会回来。
 - 一次卸一个插件：`plugin-launcher uninstall <plugin>`（见[命令行](#命令行)）。
 - **如果屏幕上的任务栏或桌面没了：** 按 Ctrl+Alt+Del → 任务管理器 → 运行新任务 → `explorer.exe`，然后运行安装程序并按「全部移除」。
 
@@ -40,8 +65,8 @@ Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 
 |---|---|---|
 | **rust-search** | 覆盖全部 NTFS 驱动器的文件搜索，Alt+Space。配合 topbar 时 Win+R 打开它的「运行」模式：历史记录、文件夹补全（Tab）、Ctrl+Shift+Enter 以管理员身份运行 | 关闭 Windows 搜索服务、拦截 SearchHost.exe、隐藏任务栏搜索框 |
 | **rtaskmgr-win32** | 任务管理器（Ctrl+Shift+Esc 打开它） | `taskmgr.exe` 被重定向到它（系统文件本身不动）。同时装 **rs-du** 磁盘清理。**加速**页里有一批自愿开启、可逆的开关：游戏 / 工作配置文件（停止后台服务、关闭启动器或同步类应用，之后再把它们启动回来）、清理内存备用缓存（立即，或 topbar 运行时自动）、拦截 Windows 开始菜单、小组件和「手机连接」的进程、用每周一次的 `winget upgrade` 代替第三方更新器、给构建缓存和游戏库加 Defender 排除项、更快的 NTFS（不记录最后访问时间、不用 8.3 短名）、广告拦截 hosts 文件。**启动项**页还会列出登录/启动任务和第三方自启动服务，并给出它们各自拖慢了最近几次启动多少（用 Windows 自己的启动日志）。**什么在变慢**页显示驱动耗时（DPC/中断）、无响应的窗口、慢磁盘和启动耗时。卸载会把这一切改回去 |
-| **topbar** | Windows 11 风格的底部栏：窗口、时钟、音量、各种菜单 | 隐藏系统任务栏。同时装 **reshell**（快捷键：Win+Ctrl+1/2/3 和 Win+\` 切换桌面（Win+1..9 打开栏上的应用按钮）、Win+D 显示桌面、Win+I 打开设置、Win+E 打开文件管理器；栏挂了它会把任务栏找回来）、**rs-du**，以及 PowerShell 配置文件里的一段（`zoxide`、`grep`=rg、`ll`=eza、`cat`=bat；没装就什么都不做）。齿轮菜单里有几页短设置：主题、颜色与透明度（栏和 WinRust 窗口的任何颜色、栏的不透明度）、模板（保存自己的一套外观并在其间切换）、位置、大小、行为（底部 / 左侧 / 右侧、大小、自动隐藏、像 Windows 10 那样把按钮放在左端）以及「将所有设置恢复默认」 |
-| **rust-explorer** | 带标签页的文件管理器，还有桌面 | 文件夹和驱动器在它里面打开；**资源管理器不再是外壳**（topbar 出问题时它会自己回来）。全新安装时，会在能备份原值的前提下调整 PcaSvc、InventorySvc、lfsvc、cbdhsvc 和 DoSvc 的启动设置，以及 svchost 分组阈值。它自带的复制引擎（SSD 上同时复制多个文件、大文件用无缓冲方式、进度显示在状态行）和右键菜单的**压缩为 ZIP**（用满所有核心）/ **解压到这里**（ZIP 和 7z），都是我们自己的 ZIP 引擎；`.zip` 像文件夹一样打开（浏览、往外复制、直接打开里面的文件）。其它程序里的「在文件夹中显示」会选中该文件（对于常见文件夹：下载、文档、桌面、图片、音乐、视频以及已固定的文件夹，即使没有打开窗口也可以）；鼠标的「后退 / 前进」键可用；右键单击桌面可以隐藏桌面图标。需要 topbar |
+| **topbar** | Windows 11 风格的底部栏：窗口、时钟、音量、各种菜单 | 隐藏系统任务栏。同时装 **reshell**（快捷键：Win+Ctrl+1/2/3 和 Win+\` 切换桌面（Win+1..9 打开栏上的应用按钮）、Win+D 显示桌面、Win+I 打开设置、Win+E 打开文件管理器；栏挂了它会把任务栏找回来）、**rs-du**，以及 PowerShell 配置文件里的一段（`zoxide`、`grep`=rg、`ll`=eza、`cat`=bat；没装就什么都不做）。齿轮菜单里有几页短设置：主题、颜色与透明度（栏和 WinRust 窗口的任何颜色、栏的不透明度）、模板（保存自己的一套外观并在其间切换）、栏本身（底部 / 左侧 / 右侧、大小、自动隐藏、像 Windows 10 那样把按钮放在左端）以及「将所有设置恢复默认」 |
+| **rust-explorer** | 带标签页的文件管理器，还有桌面 | 文件夹和驱动器在它里面打开；**资源管理器不再是外壳**（topbar 出问题时它会自己回来）。全新安装时，会在能备份原值的前提下调整 InventorySvc、lfsvc 和 DoSvc 的启动设置，以及 svchost 分组阈值。它自带的复制引擎（SSD 上同时复制多个文件、大文件用无缓冲方式、进度显示在状态行）和右键菜单的**压缩为 ZIP**（用满所有核心）/ **解压到这里**（ZIP 和 7z），都是我们自己的 ZIP 引擎；`.zip` 像文件夹一样打开（浏览、往外复制、直接打开里面的文件）。其它程序里的「在文件夹中显示」会选中该文件（对于常见文件夹：下载、文档、桌面、图片、音乐、视频以及已固定的文件夹，即使没有打开窗口也可以）；鼠标的「后退 / 前进」键可用；右键单击桌面可以隐藏桌面图标。需要 topbar |
 | **wiztree** | 磁盘占用图（开始菜单里的「WinRust Disk」） | 除了一个文件和一个快捷方式，什么都不改 |
 | **photoview** | 一个很快的图片查看器 | 把它加到「打开方式」里（不会成为默认程序） |
 | **rust-settings** | 用 Rust 写的设置：显示（分辨率、刷新率）、声音（音量）、电源计划和驱动器空间、按应用调音量和选设备、夜间模式、拖动排列显示器、网络适配器、每个适配器上的 Wi-Fi（密码或 802.1X）、VPN 和代理、蓝牙、应用、Windows 更新、磁盘清理、主题、关于 | 除了一个文件和一个快捷方式，什么都不改。Win+I 和栏上的菜单会打开这个窗口而不是 Windows 设置（只有少数罕见页面仍然打开系统自带的） |
@@ -63,6 +88,8 @@ Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 
 | **平铺** | 顶部一条细栏，琥珀色点缀，圆角同「正常」；「平铺窗口」把打开的窗口并排放好 |
 | **白色道路** | 浅象牙色配金色：栏、面板和 rust-settings 背后是淡淡的多边形三角形，有些用金色勾边 |
 | **红宝石** | 深石榴红配明亮的红宝石色点缀：平滑的上下渐变，带一层柔和光泽，出现在栏和面板背后 |
+| **Windows 98**（BETA） | 经典灰配深蓝点缀，直角，Tahoma 字体。只有颜色、圆角和字体：还没有 3D 立体边框 |
+| **Windows 7**（BETA） | 类似 Aero 的玻璃蓝，白色文字 |
 
 齿轮菜单还能设置栏的位置（底部、左侧或右侧：侧栏只显示图标，面板在旁边弹出）和自动隐藏。
 
@@ -88,21 +115,24 @@ Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 
 
 一句话：**在大小/速度测试里快或小 64–99%，在闲置 CPU 和复制单个大文件上与资源管理器持平。** 需要注意：rs 搜索的是一份现成的 MFT 索引（为此占用 53 MB 内存），而 `dir` 和 PowerShell 要从头遍历磁盘；测试时 explorer.exe 还开着窗口在运行，所以内存上的优势被略微夸大了；没有与 Windows 搜索和系统自带的任务管理器对比。复制和 ZIP 测试（`cargo test -p rust-explorer --release bench -- --ignored`）是对刚写入的数据各跑一次，两边都从内存缓存里读；我们的 ZIP 略大（0.9 MB vs 0.7 MB），因为每个文件都在自己的核心上单独压缩。
 
-## 截图
+### 后台负载
 
-**任务栏**
+一直在运行的那几个程序，在 v0.5.7 改成事件驱动之前和之后，同一台机器上的数据：闲置桌面上 60 秒内消耗的 CPU 时间（进程的 `TotalProcessorTime`）、私有内存和打开的句柄数。「之前」是改版前刚装的那个版本。
 
-![桌面上的任务栏](docs/screenshots/taskbar.webp)
-![任务栏菜单](docs/screenshots/taskbar-menu.png)
-![栏菜单，新外观](docs/screenshots/topbar-menu-new.png)
+| 程序 | 闲置 CPU 之前 | 闲置 CPU 之后 | 私有内存 之前 | 之后 | 句柄 之前 | 之后 |
+|---|---|---|---|---|---|---|
+| topbar | 6.3 ms/s（单核的 0.63%） | 0.5 ms/s（0.05%） | 9.2 MB | 7.7 MB | 459 | 426 |
+| rs-launcher（Alt+Space，隐藏） | 6.3 ms/s（0.63%） | 0 | 12.7 MB | 1.4 MB | 800 | 110 |
+| rs-shell | 2.1 ms/s（0.21%） | 0 | 1.2 MB | 1.3 MB | 95 | 102 |
+| rs（搜索索引服务） | 0 | 0.26 ms/s | 59.6 MB | 56.7 MB | 70 | 70 |
 
-**任务管理器**（俄文界面）
+改了什么：栏现在跟随窗口事件，而不是每秒把窗口列表数两遍；背景只画一次，而不是每帧都画；rs-launcher 不再每 2 秒刷新整个进程列表；rs-shell 不再启动 reg.exe、也不再抓进程快照。上面表格里「闲置 CPU」那一行是另一次测量，在这项工作之前做的。
 
-![任务管理器](docs/screenshots/task-manager.webp)
+## 社区
 
-**文件管理器**
-
-![文件管理器](docs/screenshots/explorer.png)
+- **发现 bug 或想要新功能？** [开一个 issue](https://github.com/Lemxy/WinRust/issues/new)。写清你的 Windows 版本和装了哪些插件；如果和安装程序有关，贴上 `%ProgramData%\plugin-launcher\install.log` 的末尾。英文或俄文都可以。
+- **欢迎 PR。** 一个 PR 只做一件事（一个修复或一个功能），并且要能构建、测试通过（`cargo test --workspace`）。混了很多改动的大 PR 很难评审，会被关掉。
+- **翻译**都在代码里：`common/` 下的 `t!` / `tf!` 宏。加一种语言意味着在那里加上它，并且给每个文案都补上。
 
 ---
 
