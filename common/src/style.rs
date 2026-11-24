@@ -1,5 +1,6 @@
 //! The UI style shared by the WinRust programs: %ProgramData%\WinRust\style.txt holds its name (the topbar gear menu writes it).
 //! Programs re-read it at most once a second and repaint at once on the broadcast `set_style` sends (`msg()`).
+//! The same broadcast goes out when the language changes, so its receivers call `reload()` for both.
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering::Relaxed},
@@ -71,17 +72,22 @@ fn store(s: Style) {
     READ_AT.store(now_ms(), Relaxed);
 }
 
-/// Reads the file again now (on the "style changed" broadcast).
-pub fn reload() {
+fn read() {
     // WINRUST_STYLE overrides the file for this process only (to look at a style without switching every window)
     let name = std::env::var("WINRUST_STYLE").ok().or_else(|| file().and_then(|f| std::fs::read_to_string(f).ok()));
     store(Style::parse(&name.unwrap_or_default()));
 }
 
+/// Reads the style and the language again now (on the `msg()` broadcast).
+pub fn reload() {
+    read();
+    crate::reload_lang();
+}
+
 /// The current style. The file is read again at most once a second, so a program that missed the broadcast still follows.
 pub fn style() -> Style {
     if CUR.load(Relaxed) == u8::MAX || now_ms().saturating_sub(READ_AT.load(Relaxed)) > 1000 {
-        reload();
+        read();
     }
     ALL[CUR.load(Relaxed) as usize % ALL.len()]
 }
@@ -93,6 +99,11 @@ pub fn set_style(s: Style) {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, s.name());
     }
+    broadcast();
+}
+
+/// Tells every WinRust window that the look (style or language) changed: they call `reload()` and repaint.
+pub fn broadcast() {
     unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
 }
 
@@ -128,10 +139,11 @@ fn left_file() -> Option<PathBuf> {
 static LEFT: AtomicU8 = AtomicU8::new(0);
 static LEFT_AT: AtomicU64 = AtomicU64::new(0);
 
-/// Start and the pinned apps sit at the bar's left end, like Windows 10 (off unless the file says 1). Re-read once a second.
+/// Start and the pinned apps sit at the bar's left end, like Windows 10. The file says 1 or 0; without it the bar looks
+/// like the Windows it runs on: left on 10, centered on 11. Re-read once a second.
 pub fn align_left() -> bool {
     if now_ms().saturating_sub(LEFT_AT.load(Relaxed)) > 1000 {
-        LEFT.store(left_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|s| s.trim() == "1") as u8, Relaxed);
+        LEFT.store(left_file().and_then(|f| std::fs::read_to_string(f).ok()).map_or(!crate::win11(), |s| s.trim() == "1") as u8, Relaxed);
         LEFT_AT.store(now_ms(), Relaxed);
     }
     LEFT.load(Relaxed) == 1
@@ -144,6 +156,61 @@ pub fn set_align_left(on: bool) {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, if on { "1" } else { "0" });
     }
+}
+
+/// A 0/1 switch in %ProgramData%\WinRust\<file>, read again at most once a second. No file = the caller's default.
+struct Flag {
+    file: &'static str,
+    val: AtomicU8, // 0 off, 1 on, MAX not read yet
+    at: AtomicU64,
+}
+
+impl Flag {
+    const fn new(file: &'static str) -> Flag {
+        Flag { file, val: AtomicU8::new(u8::MAX), at: AtomicU64::new(0) }
+    }
+    fn path(&self) -> Option<PathBuf> {
+        std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join(self.file))
+    }
+    fn get(&self, default: impl FnOnce() -> bool) -> bool {
+        if self.val.load(Relaxed) == u8::MAX || now_ms().saturating_sub(self.at.load(Relaxed)) > 1000 {
+            let on = self.path().and_then(|f| std::fs::read_to_string(f).ok()).map_or_else(default, |s| s.trim() == "1");
+            self.val.store(on as u8, Relaxed);
+            self.at.store(now_ms(), Relaxed);
+        }
+        self.val.load(Relaxed) == 1
+    }
+    fn set(&self, on: bool) {
+        self.val.store(on as u8, Relaxed);
+        self.at.store(now_ms(), Relaxed);
+        if let Some(f) = self.path() {
+            let _ = std::fs::create_dir_all(f.parent().unwrap());
+            let _ = std::fs::write(f, if on { "1" } else { "0" });
+        }
+    }
+}
+
+static TRAY_ALL: Flag = Flag::new("tray-all.txt");
+
+/// Every tray icon sits on the bar, none behind the arrow. Without a choice of ours: Windows 10's "Always show all icons"
+/// (Windows 11 dropped that switch; its per-icon choices seed the bar instead, see topbar's tray.rs).
+pub fn tray_all() -> bool {
+    TRAY_ALL.get(|| !crate::win11() && crate::reg::get_dword(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer", "EnableAutoTray") == Some(0))
+}
+
+pub fn set_tray_all(on: bool) {
+    TRAY_ALL.set(on);
+}
+
+static BLUR: Flag = Flag::new("bar-blur.txt");
+
+/// Windows' own blur behind the bar (the one its taskbar uses). Shows through a see-through bar. Off unless switched on.
+pub fn bar_blur() -> bool {
+    BLUR.get(|| false)
+}
+
+pub fn set_bar_blur(on: bool) {
+    BLUR.set(on);
 }
 
 /// Which screen edge the topbar sits on.
