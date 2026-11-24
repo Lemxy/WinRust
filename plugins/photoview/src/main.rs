@@ -1,9 +1,9 @@
 #![windows_subsystem = "windows"]
 // photoview [picture]   Fast picture viewer (WIC decoder, GDI window). The other pictures of the folder are one key away.
 // Left/Right, Space, Backspace, PgUp/PgDn: previous / next    Home/End: first / last    wheel: zoom    drag: pan
-// double click, F: fit <-> 100%    1: 100%    Del: to the Recycle Bin    Esc: close
+// double click, F: fit <-> 100%    1: 100%    R / Shift+R: turn right / left    Del: to the Recycle Bin    Esc: close
 // shortcuts: files sorted by plain case-insensitive name (no "2 before 10" ordering), only the shown picture is decoded
-// (no preloading of neighbours), downscaling is GDI halftone; upgrade if browsing 40 MP photos feels slow.
+// (no preloading of neighbours). Shown smaller than it is, the picture is scaled by WIC's high-quality filter, once per size.
 mod decode;
 use std::{
     cell::RefCell,
@@ -40,6 +40,7 @@ struct App {
     drag: Option<(i32, i32)>,
     font: isize,
     dpi: i32,
+    small: Option<(i32, i32, Vec<u8>)>, // the picture scaled down to the size it is shown at, kept until that changes
 }
 thread_local! { static APP: RefCell<App> = RefCell::new(App::default()) }
 
@@ -66,6 +67,7 @@ fn open(hwnd: HWND, path: &Path) {
 fn load(hwnd: HWND) {
     let Some(path) = APP.with_borrow_mut(|a| {
         (a.zoom, a.off) = (None, (0.0, 0.0));
+        a.small = None;
         a.note = "...".into();
         a.files.get(a.idx).cloned()
     }) else {
@@ -137,15 +139,28 @@ unsafe fn paint(hwnd: HWND) {
         FillRect(mem, &rc, b);
         DeleteObject(b as _);
         let top = top(hwnd);
-        APP.with_borrow(|a| {
-            if let (Some(i), Some((z, x, y))) = (&a.img, view(a, cw as f64, (ch - top) as f64)) {
+        let mut zoom_pct = None;
+        APP.with_borrow_mut(|a| {
+            if let Some((z, x, y)) = view(a, cw as f64, (ch - top) as f64) {
                 let y = y + top as f64;
+                zoom_pct = Some((z * 100.0).round() as i32);
                 IntersectClipRect(mem, 0, top, cw, ch); // a zoomed picture slides under the caption, not over it
+                let (iw, ih) = a.img.as_ref().map_or((1, 1), |i| (i.w, i.h));
+                let (dw, dh) = ((iw as f64 * z).round() as i32, (ih as f64 * z).round() as i32);
+                // smaller than it is: the high-quality copy for this size (made once), drawn 1:1
+                if z < 1.0 && dw > 0 && dh > 0 && a.small.as_ref().is_none_or(|s| (s.0, s.1) != (dw, dh)) {
+                    a.small = a.img.as_ref().and_then(|i| decode::scaled(i, dw, dh)).map(|p| (dw, dh, p));
+                }
+                let Some(i) = a.img.as_ref() else { return };
+                let (sw, sh, px) = match &a.small {
+                    Some((w, h, p)) if z < 1.0 && (*w, *h) == (dw, dh) => (*w, *h, p.as_slice()),
+                    _ => (i.w, i.h, i.bgra.as_slice()),
+                };
                 let mut bi: BITMAPINFO = std::mem::zeroed();
-                bi.bmiHeader = BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: i.w, biHeight: -i.h, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() };
+                bi.bmiHeader = BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: sw, biHeight: -sh, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() };
                 SetStretchBltMode(mem, if z < 1.0 { HALFTONE } else { COLORONCOLOR } as _);
                 SetBrushOrgEx(mem, 0, 0, null_mut());
-                StretchDIBits(mem, x as i32, y as i32, (i.w as f64 * z).round() as i32, (i.h as f64 * z).round() as i32, 0, 0, i.w, i.h, i.bgra.as_ptr() as _, &bi, DIB_RGB_COLORS, SRCCOPY);
+                StretchDIBits(mem, x as i32, y as i32, dw, dh, 0, 0, sw, sh, px.as_ptr() as _, &bi, DIB_RGB_COLORS, SRCCOPY);
             } else {
                 SelectObject(mem, a.font as _);
                 SetBkMode(mem, TRANSPARENT as _);
@@ -169,7 +184,16 @@ unsafe fn paint(hwnd: HWND) {
         let of = SelectObject(mem, f as _);
         SetBkMode(mem, TRANSPARENT as _);
         SetTextColor(mem, 0xC8_C8_C8);
-        let mut tr = RECT { left: (12.0 * s) as i32, top: 0, right: cw - winrust_common::caption::buttons_width(hwnd, CAP) - 8, bottom: top };
+        let right = cw - winrust_common::caption::buttons_width(hwnd, CAP) - 8;
+        // the zoom, dimmer, at the strip's right end
+        let mut zr = RECT { left: right - (60.0 * s) as i32, top: 0, right, bottom: top };
+        if let Some(p) = zoom_pct {
+            SetTextColor(mem, 0x8A_8A_8A);
+            let t = wide(&format!("{p} %"));
+            DrawTextW(mem, t.as_ptr(), -1, &mut zr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SetTextColor(mem, 0xC8_C8_C8);
+        }
+        let mut tr = RECT { left: (12.0 * s) as i32, top: 0, right: zr.left - 8, bottom: top };
         DrawTextW(mem, name.as_ptr(), n, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         SelectObject(mem, of);
         DeleteObject(f as _);
@@ -303,6 +327,18 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     VK_HOME => go(hwnd, |_, _| 0),
                     VK_END => go(hwnd, |_, n| n.saturating_sub(1)),
                     VK_DELETE => delete_current(hwnd),
+                    0x52 => {
+                        // R: a quarter turn right (Shift: left); the view fits again
+                        let cw = GetKeyState(VK_SHIFT as i32) >= 0;
+                        APP.with_borrow_mut(|a| {
+                            if let Some(i) = a.img.as_ref() {
+                                a.img = Some(decode::turned(i, cw));
+                                (a.zoom, a.off, a.small) = (None, (0.0, 0.0), None);
+                            }
+                        });
+                        InvalidateRect(hwnd, null(), 0);
+                        title(hwnd);
+                    }
                     k if k == b'1' as u16 || k == b'F' as u16 || k == b'0' as u16 => {
                         APP.with_borrow_mut(|a| (a.zoom, a.off) = (if k == b'1' as u16 { Some(1.0) } else { None }, (0.0, 0.0)));
                         InvalidateRect(hwnd, null(), 0);

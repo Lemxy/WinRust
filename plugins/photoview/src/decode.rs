@@ -69,6 +69,37 @@ pub fn decode(path: &str, bg: [u8; 3]) -> Result<Img> {
     }
 }
 
+/// `img` scaled to `w` x `h` with WIC's high-quality cubic filter (Fant on a Windows without it): a big photo shown
+/// small stays sharp and smooth, where GDI's halftone left it soft and jagged.
+pub fn scaled(img: &Img, w: i32, h: i32) -> Option<Vec<u8>> {
+    unsafe {
+        let f: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let bmp = f.CreateBitmapFromMemory(img.w as u32, img.h as u32, &GUID_WICPixelFormat32bppBGRA, img.w as u32 * 4, &img.bgra).ok()?;
+        let sc = f.CreateBitmapScaler().ok()?;
+        if sc.Initialize(&bmp, w as u32, h as u32, WICBitmapInterpolationModeHighQualityCubic).is_err() {
+            sc.Initialize(&bmp, w as u32, h as u32, WICBitmapInterpolationModeFant).ok()?;
+        }
+        let mut out = vec![0u8; w as usize * h as usize * 4];
+        sc.CopyPixels(std::ptr::null(), w as u32 * 4, &mut out).ok()?;
+        Some(out)
+    }
+}
+
+/// `img` turned a quarter clockwise (`cw`) or counter-clockwise: for a photo the camera saved the wrong way up.
+pub fn turned(img: &Img, cw: bool) -> Img {
+    let (w, h) = (img.w as usize, img.h as usize);
+    let mut out = vec![0u8; img.bgra.len()];
+    for y in 0..h {
+        for x in 0..w {
+            // the new picture is h wide and w tall
+            let (nx, ny) = if cw { (h - 1 - y, x) } else { (y, w - 1 - x) };
+            let (s, d) = ((y * w + x) * 4, (ny * h + nx) * 4);
+            out[d..d + 4].copy_from_slice(&img.bgra[s..s + 4]);
+        }
+    }
+    Img { w: img.h, h: img.w, bgra: out }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +146,19 @@ mod tests {
         assert_eq!((img.w, img.h), (2, 1));
         assert_eq!(img.bgra[..4], [0, 0, 255, 255]); // BGRA of opaque red
         assert_eq!(img.bgra[4..8], [10, 20, 30, 255]); // the background, as given (BGR)
+    }
+
+    #[test]
+    fn a_quarter_turn_moves_the_corners() {
+        let px = |v: u8| [v, v, v, 255];
+        let img = Img { w: 2, h: 1, bgra: [px(1), px(2)].concat() }; // one row: 1 2
+        let cw = turned(&img, true);
+        assert_eq!((cw.w, cw.h), (1, 2));
+        assert_eq!(cw.bgra, [px(1), px(2)].concat()); // turned right, the row stands up: 1 on top
+        let ccw = turned(&img, false);
+        assert_eq!(ccw.bgra, [px(2), px(1)].concat()); // turned left: 2 on top
+        let back = turned(&cw, false);
+        assert_eq!((back.w, back.h), (2, 1));
+        assert_eq!(back.bgra, img.bgra);
     }
 }
