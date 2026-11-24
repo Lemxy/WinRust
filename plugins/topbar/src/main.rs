@@ -371,7 +371,8 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         tip = ti.tip.clone();
                     }
                     if !ti.icon.is_null() {
-                        let sz = (sc(20) as f32 * (0.4 + 0.6 * tf_progress(n as i32))) as i32; // pops in
+                        // pops in, then sits at the size the icon was made for (tray::sharp): stretched to 20 it blurred
+                        let sz = (sc(16) as f32 * (0.4 + 0.6 * tf_progress(n as i32))) as i32;
                         DrawIconEx(dc, x + sc(19) - sz / 2, y + sc(18) - sz / 2, ti.icon, sz, sz, 0, null_mut(), DI_NORMAL);
                     }
                 }

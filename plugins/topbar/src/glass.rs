@@ -10,7 +10,7 @@ use super::*;
 use std::{cell::RefCell, ffi::c_void, sync::atomic::AtomicU8};
 use windows_sys::Win32::Graphics::GdiPlus::{GdipCreateBitmapFromScan0, GdipDisposeImage, GdipGetImageGraphicsContext, GpBitmap, GpImage};
 
-const ARGB32: i32 = 0x0026_200A; // PixelFormat32bppARGB: straight (not premultiplied) alpha
+pub(crate) const ARGB32: i32 = 0x0026_200A; // PixelFormat32bppARGB: straight (not premultiplied) alpha
 
 /// The bar is see-through: its background, not its contents, gets the opacity (and the blur, when that is on).
 pub(crate) fn see_through() -> bool {

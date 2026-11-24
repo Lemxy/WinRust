@@ -16,6 +16,74 @@ pub(crate) unsafe fn tray() -> [HWND; 2] {
     [find_other("Shell_TrayWnd"), find_other("Shell_SecondaryTrayWnd")]
 }
 
+/// `icon` at exactly `px` pixels, the size it is drawn at: DrawIconEx stretches by dropping or doubling pixels, so a 16 px
+/// icon drawn at 20 blurs and a 32 px one drawn at 16 frays. One already that size comes back as it is; any other is
+/// resampled once (then the original is freed) and only if that fails is it kept to be stretched.
+pub(crate) unsafe fn sharp(icon: HICON, px: i32) -> HICON {
+    let mut ii: ICONINFO = zeroed();
+    if icon.is_null() || GetIconInfo(icon, &mut ii) == 0 {
+        return icon;
+    }
+    let mut b: BITMAP = zeroed();
+    let have = !ii.hbmColor.is_null() && GetObjectW(ii.hbmColor, size_of::<BITMAP>() as i32, (&mut b as *mut BITMAP).cast()) != 0;
+    let out = if have && b.bmWidth > 0 && b.bmHeight > 0 && (b.bmWidth, b.bmHeight) != (px, px) { resample(&ii, b.bmWidth, b.bmHeight, px) } else { null_mut() };
+    DeleteObject(ii.hbmColor);
+    DeleteObject(ii.hbmMask);
+    if out.is_null() {
+        return icon; // the right size already, a black-and-white icon, or GDI+ said no
+    }
+    DestroyIcon(icon);
+    out
+}
+
+/// The colour bitmap of an icon (`w` x `h`), resampled to `px` x `px` by GDI+ (bicubic, alpha-aware), as a new icon.
+unsafe fn resample(ii: &ICONINFO, w: i32, h: i32, px: i32) -> HICON {
+    use windows_sys::Win32::Graphics::GdiPlus::{GdipCreateBitmapFromScan0, GdipDisposeImage, GdipDrawImageRectI, GdipGetImageGraphicsContext, GdipSetInterpolationMode, GpImage, InterpolationModeHighQualityBicubic};
+    let sdc = GetDC(null_mut());
+    let read = |bmp: HBITMAP| {
+        let mut bi: BITMAPINFO = zeroed();
+        bi.bmiHeader = BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, ..zeroed() };
+        let mut v = vec![0u32; (w * h) as usize];
+        GetDIBits(sdc, bmp, 0, h as u32, v.as_mut_ptr().cast(), &mut bi, DIB_RGB_COLORS);
+        v
+    };
+    let mut src = read(ii.hbmColor);
+    if src.iter().all(|p| p >> 24 == 0) {
+        // an old-style icon without alpha: the mask says what is see-through (white) and what is not
+        let mask = read(ii.hbmMask);
+        for (p, m) in src.iter_mut().zip(mask) {
+            *p = if m & 0x00FF_FFFF != 0 { 0 } else { *p | 0xFF00_0000 };
+        }
+    }
+    let Some((color, bits)) = glass::dib(sdc, px, px) else {
+        ReleaseDC(null_mut(), sdc);
+        return null_mut();
+    };
+    ReleaseDC(null_mut(), sdc);
+    // GDI+ draws straight into the icon's own pixels
+    let (mut from, mut to, mut g) = (null_mut(), null_mut(), null_mut());
+    let ok = GdipCreateBitmapFromScan0(w, h, w * 4, glass::ARGB32, src.as_mut_ptr().cast(), &mut from) == 0
+        && GdipCreateBitmapFromScan0(px, px, px * 4, glass::ARGB32, bits.cast(), &mut to) == 0
+        && GdipGetImageGraphicsContext(to as *mut GpImage, &mut g) == 0;
+    if ok {
+        GdipSetInterpolationMode(g, InterpolationModeHighQualityBicubic);
+        GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+        GdipDrawImageRectI(g, from as *mut GpImage, 0, 0, px, px);
+    }
+    if !g.is_null() {
+        GdipDeleteGraphics(g); // flushes into the icon's pixels
+    }
+    [from, to].into_iter().filter(|b| !b.is_null()).for_each(|b| {
+        GdipDisposeImage(b as *mut GpImage);
+    });
+    let mask = CreateBitmap(px, px, 1, 1, null()); // all zero: the colour bitmap's alpha decides
+    let mut ni = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
+    let ic = if ok { CreateIconIndirect(&mut ni) } else { null_mut() };
+    DeleteObject(mask);
+    DeleteObject(color);
+    ic
+}
+
 /// Tells every app to re-register its tray icon with whichever Shell_TrayWnd is found first.
 pub(crate) unsafe fn announce() {
     PostMessageW(HWND_BROADCAST, RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()), 0, 0);
@@ -86,7 +154,7 @@ pub(crate) unsafe fn tray_msg(d: &[u8]) {
                     x.cb = u(24);
                 }
                 if flags & 2 != 0 {
-                    let ic = CopyIcon(u(28) as i32 as isize as HICON);
+                    let ic = sharp(CopyIcon(u(28) as i32 as isize as HICON), sc(16));
                     if !ic.is_null() {
                         if !x.icon.is_null() {
                             DestroyIcon(x.icon);
@@ -213,3 +281,63 @@ pub(crate) fn toggle_shown(key: &str) {
 }
 
 // ---------- tray overflow flyout (the chevron): every icon, click / right click work as in the real tray ----------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `n` px icon: an opaque red square with a clear 1/4 border.
+    unsafe fn red_square(n: i32) -> HICON {
+        let dc = GetDC(null_mut());
+        let (color, px) = glass::dib(dc, n, n).unwrap();
+        ReleaseDC(null_mut(), dc);
+        let p = std::slice::from_raw_parts_mut(px, (n * n) as usize);
+        for y in 0..n {
+            for x in 0..n {
+                let inside = (n / 4..n - n / 4).contains(&x) && (n / 4..n - n / 4).contains(&y);
+                p[(y * n + x) as usize] = if inside { 0xFFFF_0000 } else { 0 };
+            }
+        }
+        let mask = CreateBitmap(n, n, 1, 1, null());
+        let mut ii = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
+        let ic = CreateIconIndirect(&mut ii);
+        DeleteObject(mask);
+        DeleteObject(color);
+        ic
+    }
+
+    unsafe fn pixels(ic: HICON) -> (i32, Vec<u32>) {
+        let mut ii: ICONINFO = zeroed();
+        GetIconInfo(ic, &mut ii);
+        let mut b: BITMAP = zeroed();
+        GetObjectW(ii.hbmColor, size_of::<BITMAP>() as i32, (&mut b as *mut BITMAP).cast());
+        let n = b.bmWidth;
+        let mut bi: BITMAPINFO = zeroed();
+        bi.bmiHeader = BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: n, biHeight: -n, biPlanes: 1, biBitCount: 32, ..zeroed() };
+        let mut v = vec![0u32; (n * n) as usize];
+        let dc = GetDC(null_mut());
+        GetDIBits(dc, ii.hbmColor, 0, n as u32, v.as_mut_ptr().cast(), &mut bi, DIB_RGB_COLORS);
+        ReleaseDC(null_mut(), dc);
+        DeleteObject(ii.hbmColor);
+        DeleteObject(ii.hbmMask);
+        (n, v)
+    }
+
+    #[test]
+    fn tray_icons_come_out_at_the_size_they_are_drawn() {
+        unsafe {
+            let (mut tok, mut inp): (usize, GdiplusStartupInput) = (0, zeroed());
+            inp.GdiplusVersion = 1;
+            GdiplusStartup(&mut tok, &inp, null_mut());
+            let small = red_square(16);
+            assert_eq!(sharp(small, 16), small); // already right: left alone
+            let big = sharp(red_square(32), 16);
+            let (n, p) = pixels(big);
+            assert_eq!(n, 16);
+            assert_eq!(p[8 * 16 + 8], 0xFFFF_0000); // the middle stays solid red
+            assert_eq!(p[0] >> 24, 0); // the corner stays clear
+            DestroyIcon(small);
+            DestroyIcon(big);
+        }
+    }
+}
