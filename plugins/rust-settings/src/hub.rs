@@ -1,4 +1,4 @@
-//! The settings window: one real popup with a rail of categories on the left (an icon and a name each) and the options of
+//! The WinRust settings window: one real window with a rail of categories on the left (an icon and a name each) and the options of
 //! the chosen one on the right, in cards (`head` + rows). There are no second windows and no flyout pages: every option
 //! the bar owns lives here, the desktop markers `rust-explorer` reads are written here, and the apps' own settings are
 //! reached from the Apps category.
@@ -7,21 +7,24 @@
 //! `%APPDATA%\WinRust\*`), so a change applies while the user is still clicking. `layout()` is used by both the painter and
 //! the hit test, so a click always lands where the row is drawn. Long categories scroll with the wheel; the window is
 //! double buffered.
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use std::{
     cell::{Cell, RefCell},
     mem::zeroed,
     path::PathBuf,
     ptr,
+    sync::OnceLock,
 };
 
 use windows_sys::Win32::{
-    Foundation::{GetLastError, SetLastError, HWND, POINT, RECT},
+    Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
-    UI::{Input::KeyboardAndMouse::VK_ESCAPE, WindowsAndMessaging::*},
+    UI::{HiDpi::{GetDpiForSystem, GetDpiForWindow}, Input::KeyboardAndMouse::VK_ESCAPE, Shell::ShellExecuteW, WindowsAndMessaging::*},
 };
 
-use winrust_common::{look as lk, style as st};
+use winrust_common::{frost, look as lk, style as st};
 
 /// Window size (a big popup, like Windows' own Settings): a rail, a page title and a couple of cards.
 const W: i32 = 960;
@@ -31,7 +34,9 @@ const PAD: i32 = 30;
 const ROW_H: i32 = 40;
 const HEAD_H: i32 = 34;
 const TOP: i32 = 104; // first card, under the page header
-const CLASS: &str = "topbar_settings";
+const MIN_W: i32 = 720;
+const MIN_H: i32 = 560;
+const CLASS: &str = "WinRustSettings";
 const TITLE: &str = "WinRust Settings";
 
 /// Categories of the rail, in order: this is the index `open_at()` takes.
@@ -44,8 +49,13 @@ pub(crate) const APPS: u8 = 5;
 pub(crate) const ADV: u8 = 6;
 const CATS: usize = 7;
 
+thread_local! {
+    static DPI: Cell<i32> = const { Cell::new(96) };
+}
+
+/// A logical size in pixels at this window's DPI.
 fn sc(v: i32) -> i32 {
-    crate::startctx::sc(v)
+    (v as f32 * DPI.with(|d| d.get()) as f32 / 96.0).round() as i32
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -89,6 +99,7 @@ enum Op {
     PinsFolder,
     Lang(u8),
     OpenApp(u8),
+    SystemPage(u8),
     ResetAsk,
     ResetAll,
     ResetCancel,
@@ -265,7 +276,7 @@ fn rows(cat: u8) -> Vec<Row> {
         LOOK => {
             v.push(head(t!("Тема", "Theme", ja: "テーマ", pt: "Tema", zh: "主题")));
             for (i, s) in st::ALL.iter().enumerate() {
-                v.push(with_dot(crate::settings::style_name(*s), "", st::PALS[i].accent, st::style() == *s, Op::Theme(i as u8), Op::None));
+                v.push(with_dot(style_name(*s), "", st::PALS[i].accent, st::style() == *s, Op::Theme(i as u8), Op::None));
             }
             v.push(head(t!("Цвета", "Colors", ja: "色", pt: "Cores", zh: "颜色")));
             let cur = st::custom_colors().unwrap_or([u32::MAX; 7]);
@@ -287,7 +298,7 @@ fn rows(cat: u8) -> Vec<Row> {
                 let (name, style, dot) = THEMES.with_borrow(|t| {
                     let th = &t[i];
                     let dot = if th.colors[4] != u32::MAX { th.colors[4] } else { st::PALS[st::ALL.iter().position(|&s| s == th.style).unwrap_or(0)].accent };
-                    (th.name.clone(), crate::settings::style_name(th.style), dot)
+                    (th.name.clone(), style_name(th.style), dot)
                 });
                 let same = THEMES.with_borrow(|t| {
                     let th = &t[i];
@@ -394,7 +405,8 @@ fn rows(cat: u8) -> Vec<Row> {
             v.push(head(t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")));
             for i in 0..APPS_LIST.len() {
                 if have[i] {
-                    v.push(action(names[i], APPS_LIST[i].1, Op::OpenApp(i as u8)));
+                    let op = if i == 4 { Op::SystemPage(0) } else { Op::OpenApp(i as u8) };
+                    v.push(action(names[i], APPS_LIST[i].1, op));
                 } else {
                     v.push(Row { hint: t!("Не установлено", "Not installed", ja: "インストールされていません", pt: "Não instalado", zh: "未安装").into(), ..info(names[i]) });
                 }
@@ -485,10 +497,10 @@ fn count_paint(started: u64) {
         let rate = n as u64 * 1000 / span;
         let worst = PAINT_SLOW.with(|c| c.replace(0));
         if rate > 30 {
-            crate::tlog(&format!("settings: {n} repaints in {span} ms ({rate}/s): a repaint loop"));
+            eprintln!("rust-settings: {n} repaints in {span} ms ({rate}/s)");
         }
         if worst > 50 {
-            crate::tlog(&format!("settings: a paint took {worst} ms"));
+            eprintln!("rust-settings: a paint took {worst} ms");
         }
         PAINTS.with(|c| c.set(0));
         PAINT_AT.with(|c| c.set(now));
@@ -557,7 +569,7 @@ unsafe fn paint(h: HWND) {
         if b.is_empty() {
             return false;
         }
-        crate::blur::paint_capture(dc, &b, inner, p.bg, (255 * lk::menu_alpha().max(60) as u32 / 100) as u8);
+        frost::paint_capture(dc, &b, inner, p.bg, (255 * lk::menu_alpha().max(60) as u32 / 100) as u8);
         true
     });
     if !drew {
@@ -823,14 +835,10 @@ fn wallpaper_reload() {
     }
 }
 
-unsafe fn open_target(target: &str) {
-    // through the bar's own launcher: `ms-settings:` gets the Explorer hand-off, folders and `shell:` go to ShellExecute
-    crate::open(&crate::wide(target));
-}
 
 fn open_app(i: u8) {
     if i as usize == 3 {
-        crate::shot::rs_shot_start(&[]); // the capture bar, rs-shot's own way in
+        launch_app("rs-shot", "rs-shot.exe", &[]);
         return;
     }
     let Some(&(app, exe)) = APPS_LIST.get(i as usize) else { return };
@@ -863,7 +871,7 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             if let Some(s) = st::ALL.get(i as usize) {
                 st::set_style(*s);
             }
-            crate::relook(true);
+            changed();
         }
         Op::Color(i) => {
             use windows_sys::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
@@ -879,22 +887,22 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             cc.Flags = CC_RGBINIT | CC_FULLOPEN;
             if ChooseColorW(&mut cc) != 0 {
                 st::set_custom_color((i as usize).min(6), Some(cc.rgbResult));
-                crate::relook(false);
+                changed();
             }
         }
         Op::Opacity(v) => {
             st::set_bar_opacity(v);
-            crate::relook(false); // every bar: place() applies the opacity to each of them
+            changed(); // every bar: place() applies the opacity to each of them
         }
         Op::ResetColors => {
             st::reset_custom();
-            crate::relook(false);
+            changed();
         }
         Op::ApplyTheme(i) => {
             let th = THEMES.with_borrow(|t| t.get(i as usize).cloned());
             if let Some(th) = th {
                 th.apply();
-                crate::relook(true);
+                changed();
             }
         }
         Op::DeleteTheme(i) => {
@@ -918,7 +926,7 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         Op::MenuRadius(r) => lk::menu_radius_set(r),
         Op::WinBlur => {
             lk::win_blur_set(!lk::win_blur());
-            crate::invalidate_bars();
+            changed();
         }
         Op::DeskIcons => set_icons_hidden(!icons_hidden()),
         Op::SmallIcons => marker_set("small-icons", !small_icons()),
@@ -928,43 +936,43 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         Op::DeskFolder => open_target(&format!(r"{}\Desktop", std::env::var("USERPROFILE").unwrap_or_default())),
         Op::BarSide(i) => {
             st::set_side([st::Side::Bottom, st::Side::Left, st::Side::Right][(i as usize).min(2)]);
-            crate::relook(true);
+            changed();
         }
         Op::BarSize(i) => {
             st::set_bar_size(i.min(2));
-            crate::relook(true);
+            changed();
         }
         Op::BarMonitor(i) => {
             lk::bar_monitor_set(i as i32);
-            crate::bars_sync(); // close the bars that are not wanted, create the missing ones, place them all
-            crate::relook(true);
+            changed(); // close the bars that are not wanted, create the missing ones, place them all
+            changed();
             MONS.with(|m| m.set(winrust_common::monitors::all().len().max(1) as i32));
         }
         Op::BarBlur => {
             lk::bar_blur_set(!lk::bar_blur());
-            crate::relook(false); // every bar: place() applies the opacity that goes with the blur
+            changed(); // every bar: place() applies the opacity that goes with the blur
         }
         Op::BarRadius(r) => lk::bar_radius_set(r),
         Op::Autohide => {
             st::set_autohide(!st::autohide());
-            crate::relook(true);
+            changed();
         }
         Op::AlignLeft => {
             st::set_align_left(!st::align_left());
-            crate::relook(true);
+            changed();
         }
         Op::AltTab => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
         Op::SearchBtn => {
             lk::bar_search_set(!lk::bar_search());
-            crate::invalidate_bars();
+            changed();
         }
         Op::TaskView => {
             lk::bar_taskview_set(!lk::bar_taskview());
-            crate::invalidate_bars();
+            changed();
         }
         Op::Notify => {
             lk::notify_set(!lk::notify());
-            crate::notify::refresh();
+            changed();
         }
         Op::NotifyTimeout => {
             let next = match lk::notify_timeout() {
@@ -979,36 +987,100 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         Op::StartStyle(i) => lk::start_style_set(i as i32),
         Op::StartScale(i) => lk::start_scale_set(i as i32),
         Op::StartRanked => lk::start_ranked_set(!lk::start_ranked()),
-        Op::ClearHistory => crate::clear_usage(),
+        Op::ClearHistory => clear_history(),
         Op::PinsFolder => open_target("shell:Programs"),
         Op::Lang(i) => {
             if let Some(l) = winrust_common::Lang::ALL.get(i as usize) {
                 if !winrust_common::lang::set(*l) {
-                    crate::tlog("settings: lang.txt could not be written (run the installer as administrator to apply it everywhere)");
+                    eprintln!("rust-settings: lang.txt could not be written (run the installer as administrator to apply it everywhere)");
                 }
-                crate::invalidate_bars();
+                changed();
             }
         }
         Op::OpenApp(i) => open_app(i),
+        Op::SystemPage(p) => enter_system(p as usize),
         Op::ResetAsk => CONFIRM.with(|c| c.set(true)),
         Op::ResetCancel => CONFIRM.with(|c| c.set(false)),
         Op::ResetAll => {
             st::reset_all();
             lk::reset_all();
-            crate::bars_sync();
-            crate::relook(true);
-            crate::notify::refresh();
-            crate::clear_usage();
+            changed();
+            changed();
+            changed();
+            clear_history();
             CONFIRM.with(|c| c.set(false));
         }
         Op::Close => return false,
         Op::None => {}
     }
-    crate::invalidate_bars();
+    changed();
     true
 }
 
 unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize {
+    // a second launch asked for another page
+    if msg == page_msg() {
+        MODE.with(|m| m.set(HUB));
+        CAT.with(|c| c.set((wp as u8).min(CATS as u8 - 1)));
+        SCROLL.with(|s| s.set(0));
+        InvalidateRect(h, ptr::null(), 0);
+        return 0;
+    }
+    // the look changed in another WinRust window: repaint in it
+    if msg == changed_msg() {
+        InvalidateRect(h, ptr::null(), 0);
+        return 0;
+    }
+    if msg == WM_GETMINMAXINFO {
+        let mmi = lp as *mut MINMAXINFO;
+        if !mmi.is_null() {
+            (*mmi).ptMinTrackSize = POINT { x: sc(MIN_W), y: sc(MIN_H) };
+        }
+        return 0;
+    }
+    if msg == WM_NCHITTEST {
+        // the header drags the window (the âœ• and the rail keep their clicks); no frame anywhere else
+        let mut pt = POINT { x: (lp & 0xffff) as i16 as i32, y: ((lp >> 16) & 0xffff) as i16 as i32 };
+        if MODE.with(|m| m.get()) == HUB {
+            ScreenToClient(h, &mut pt);
+            let mut cr: RECT = zeroed();
+            GetClientRect(h, &mut cr);
+            let xr = close_rect(cr.right);
+            if pt.y < sc(66) && !(pt.x >= xr.left && pt.x < xr.right && pt.y >= xr.top && pt.y < xr.bottom) {
+                return HTCAPTION as isize;
+            }
+        }
+        return DefWindowProcW(h, msg, wp, lp);
+    }
+    // the system pages (display, sound, network...) keep their own procedure and painter: they run in this window
+    if MODE.with(|m| m.get()) == SYSTEM {
+        if msg == WM_KEYDOWN && wp as u16 == VK_ESCAPE {
+            back_to_hub();
+            return 0;
+        }
+        if msg == WM_PAINT {
+            crate::paint(h);
+            return 0;
+        }
+        if msg == WM_ERASEBKGND {
+            return 1;
+        }
+        if msg == WM_CLOSE {
+            DestroyWindow(h);
+            return 0;
+        }
+        if msg == WM_DESTROY {
+            crate::proc(h, msg, wp, lp); // their fonts, timers and PostQuitMessage
+            for f in FONT.with(|x| x.replace([0; 5])) {
+                if f != 0 {
+                    DeleteObject(f as HFONT);
+                }
+            }
+            WND.with(|w| w.set(ptr::null_mut()));
+            return 0;
+        }
+        return crate::proc(h, msg, wp, lp);
+    }
     let (x, y) = ((lp & 0xffff) as i16 as i32, ((lp >> 16) & 0xffff) as i16 as i32);
     match msg {
         // Creation: answer these ourselves. A procedure that answers WM_NCCREATE with FALSE makes CreateWindowExW return
@@ -1044,7 +1116,7 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             windows_sys::Win32::UI::Input::KeyboardAndMouse::TrackMouseEvent(&mut tme);
             0
         }
-        WM_MOUSELEAVE => {
+        crate::WM_MOUSELEAVE => { // the crate's own constant: windows-sys has no WM_MOUSELEAVE, and a bare name here would be an irrefutable match binding that swallows every later message
             let (c, r, x) = (HOT_CAT.with(|v| v.replace(-1)), HOT.with(|v| v.replace(-1)), HOTX.with(|v| v.replace(false)));
             if c != -1 || r != -1 || x {
                 InvalidateRect(h, ptr::null(), 0);
@@ -1091,12 +1163,12 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
         }
         WM_KEYDOWN => {
             if wp as u16 == VK_ESCAPE {
-                ShowWindow(h, SW_HIDE); // kept alive: the next open is one ShowWindow, not a rebuild
+                DestroyWindow(h);
             }
             0
         }
         WM_CLOSE => {
-            ShowWindow(h, SW_HIDE);
+            DestroyWindow(h);
             0
         }
         WM_DESTROY => {
@@ -1107,68 +1179,163 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             }
             BITS.with(|b| b.borrow_mut().clear());
             WND.with(|w| w.set(ptr::null_mut()));
+            PostQuitMessage(0);
             0
         }
         _ => DefWindowProcW(h, msg, wp, lp),
     }
 }
 
-/// Registers the class and makes the window, trying the recipes that are known to work in this process. Returns a null
-/// handle (and says why in the log) when even a system class cannot be made, which would mean the whole process cannot
-/// create windows any more.
-///
-/// No recipe uses `WS_EX_LAYERED`: the hub paints itself with `WM_PAINT` and a blurred capture, and a layered window
-/// painted that way can stop updating (or keep repainting) on some drivers. The classes that work in this process
-/// (menus, toasts) are layered because they fade with `SetLayeredWindowAttributes`; this window does not fade.
-unsafe fn create(hi: windows_sys::Win32::Foundation::HINSTANCE) -> HWND {
-    let class = wide(CLASS);
-    let title = wide(TITLE);
-    let (w, h) = (sc(W).max(400), sc(H).max(400));
-    for (label, inst) in [("own class", hi), ("own class, no instance", ptr::null_mut())] {
-        SetLastError(0);
-        let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, class.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), inst, ptr::null());
-        if !hw.is_null() {
-            crate::tlog(&format!("settings: window created ({label}) at {hw:?}"));
-            return hw;
-        }
-        crate::tlog(&format!("settings: CreateWindowExW ({label}) failed: last error {}, hinstance {inst:?}, size {w}x{h}", GetLastError()));
+// ---------- the window and the program ----------
+
+/// The categories the command line and the single-instance message take (`rust-settings --page barra`).
+fn page_index(name: &str) -> u8 {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "escritorio" | "desktop" => DESK,
+        "barra" | "bar" | "taskbar" => BAR,
+        "inicio" | "start" => START,
+        "idioma" | "language" | "lang" => LANG,
+        "apps" | "aplicaciones" => APPS,
+        "avanzado" | "advanced" => ADV,
+        _ => LOOK,
     }
-    // last resort: a class Windows itself registers in every process, with our procedure as a subclass. Creating one of
-    // those cannot fail because of our class, and the window looks and behaves the same.
-    let stat = wide("STATIC");
-    SetLastError(0);
-    let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, stat.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), hi, ptr::null());
-    if hw.is_null() {
-        crate::tlog(&format!("settings: even a STATIC window failed: last error {}", GetLastError()));
-        return hw;
-    }
-    SetWindowLongPtrW(hw, GWLP_WNDPROC, proc as isize);
-    crate::tlog(&format!("settings: window created as a subclassed STATIC at {hw:?}"));
-    hw
 }
 
-/// Registers the class and creates the window (hidden). Called once at startup with the bar's `hInstance`, like every
-/// other popup of the bar; `open_at` recreates it when this failed, so the hub never depends on the startup call.
-pub(crate) unsafe fn init(hi: windows_sys::Win32::Foundation::HINSTANCE) {
-    let current = WND.with(|w| w.get());
-    if !current.is_null() && IsWindow(current) != 0 {
-        refresh_cache();
+/// `--system` (or a bare `sistema`) and an `ms-settings:` address open the system pages instead of the hub.
+fn system_page_from_args() -> Option<usize> {
+    std::env::args().skip(1).find_map(|a| {
+        if a.starts_with("ms-settings:") {
+            Some(crate::page_for(&a))
+        } else if a == "--system" || a == "sistema" || a == "system" {
+            Some(0)
+        } else {
+            None
+        }
+    })
+}
+
+fn page_from_args() -> u8 {
+    let mut a = std::env::args().skip(1);
+    while let Some(x) = a.next() {
+        if x == "--page" || x == "-p" {
+            if let Some(v) = a.next() {
+                return page_index(&v);
+            }
+        } else if let Some(v) = x.strip_prefix("--page=") {
+            return page_index(v);
+        } else if !x.starts_with('-') {
+            return page_index(&x); // a bare page name, like the old `rust-settings display`
+        }
+    }
+    LOOK
+}
+
+fn msg(name: &str, slot: &'static OnceLock<u32>) -> u32 {
+    *slot.get_or_init(|| unsafe { RegisterWindowMessageW(wide(name).as_ptr()) })
+}
+
+/// A second launch asks the running window to switch page (wParam) and come to the front.
+fn page_msg() -> u32 {
+    static M: OnceLock<u32> = OnceLock::new();
+    msg("WinRust.SettingsPage", &M)
+}
+
+/// Every other program (the bar, the desktop) re-reads `look.txt`/`style.txt` and rebuilds itself.
+fn changed_msg() -> u32 {
+    static M: OnceLock<u32> = OnceLock::new();
+    msg("WinRust.SettingsChanged", &M)
+}
+
+/// Announces a change that is not just a style name (side, size, monitor, autohide, search button, notifications...).
+fn changed() {
+    unsafe { PostMessageW(HWND_BROADCAST, changed_msg(), 0, 0) };
+}
+
+/// The one window has two faces: the WinRust hub (`HUB`) and the system pages this program already had (`SYSTEM`).
+const HUB: u8 = 0;
+const SYSTEM: u8 = 1;
+
+thread_local! {
+    static MODE: Cell<u8> = const { Cell::new(HUB) };
+}
+
+/// Shows the system pages (display, sound, network...) in this same window. Their procedure and painter are the ones
+/// this program already had; `Esc` comes back here.
+fn enter_system(page: usize) {
+    MODE.with(|m| m.set(SYSTEM));
+    unsafe {
+        let h = WND.with(|w| w.get());
+        if !h.is_null() {
+            crate::goto(h, page);
+            InvalidateRect(h, ptr::null(), 0);
+        }
+    }
+}
+
+fn back_to_hub() {
+    MODE.with(|m| m.set(HUB));
+    unsafe {
+        let h = WND.with(|w| w.get());
+        if !h.is_null() {
+            InvalidateRect(h, ptr::null(), 0);
+        }
+    }
+}
+
+/// The style names of the shared looks (Spanish through `es.tsv`, like every other text).
+fn style_name(s: st::Style) -> &'static str {
+    use st::Style::*;
+    match s {
+        Normal => t!("Обычный", "Normal", ja: "通常", pt: "Normal", zh: "正常"),
+        Terminal => t!("Терминал", "Terminal", ja: "ターミナル", pt: "Terminal", zh: "终端"),
+        Dock => t!("Плавающий док", "Floating dock", ja: "フローティング ドック", pt: "Dock flutuante", zh: "悬浮停靠"),
+        Tiling => t!("Тайлинг", "Tiling", ja: "タイル表示", pt: "Lado a lado", zh: "平铺"),
+        Road => t!("Белая дорога", "White road", ja: "白い道", pt: "Estrada branca", zh: "白色道路"),
+        Ruby => t!("Рубин", "Ruby", ja: "ルビー", pt: "Rubi", zh: "红宝石"),
+        Win98 => "Windows 98",
+        Win7 => "Windows 7",
+    }
+}
+
+/// Forgets how often each app was launched (the bar's Start menu ranks by it) and tells the bar to reload it.
+fn clear_history() {
+    if let Some(p) = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("topbar-usage.txt")) {
+        let _ = std::fs::remove_file(p);
+    }
+    changed();
+}
+
+/// Opens a URI, a `shell:` address or a folder with the desktop user's token.
+unsafe fn open_target(target: &str) {
+    if winrust_common::launch::is_program(target) {
+        winrust_common::launch::program(target);
         return;
     }
-    let class = wide(CLASS);
-    let mut info: WNDCLASSW = zeroed();
-    if GetClassInfoW(hi, class.as_ptr(), &mut info) == 0 {
-        // no CS_HREDRAW/CS_VREDRAW: this window paints itself, and the plain style is one less thing to go wrong
-        let wc = WNDCLASSW { lpfnWndProc: Some(proc), hInstance: hi, hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..zeroed() };
-        SetLastError(0);
-        let atom = RegisterClassW(&wc);
-        crate::tlog(&format!("settings: class {:?} registered atom {atom}, hinstance {hi:?}, last error {}", CLASS, GetLastError()));
-    } else {
-        crate::tlog(&format!("settings: class {:?} already registered, hinstance {:?}, procedure {:?}", CLASS, info.hInstance, info.lpfnWndProc));
+    let w = wide(target);
+    if ShellExecuteW(ptr::null_mut(), wide("open").as_ptr(), w.as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL) as isize <= 32 {
+        let _ = std::process::Command::new("explorer.exe").arg(target).spawn();
     }
-    let h = create(hi);
-    WND.with(|w| w.set(h));
-    refresh_cache();
+}
+
+/// Starts one of our programs (Program Files, beside this exe, or the launcher's bin), off the UI thread.
+fn launch_app(app: &str, exe: &str, args: &[&str]) {
+    let mut v = Vec::new();
+    if let Some(pf) = std::env::var_os("ProgramFiles") {
+        v.push(PathBuf::from(pf).join(app).join(exe));
+    }
+    if let Ok(e) = std::env::current_exe() {
+        v.push(e.with_file_name(exe));
+    }
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        v.push(PathBuf::from(la).join(r"plugin-launcher\bin").join(exe));
+    }
+    if let Some(p) = v.into_iter().find(|p| p.is_file()) {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        std::thread::spawn(move || {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new(p).args(args).creation_flags(0x0800_0000).spawn();
+        });
+    }
 }
 
 /// Re-reads what the window shows but should not read on every repaint: the templates, the monitor count, the apps.
@@ -1182,96 +1349,70 @@ fn refresh_cache() {
     HAVE.with(|h| h.set(have));
 }
 
-unsafe fn existing() -> Option<HWND> {
-    let own = WND.with(|w| w.get());
-    if !own.is_null() && IsWindow(own) != 0 {
-        return Some(own);
-    }
-    let h = FindWindowW(wide(CLASS).as_ptr(), ptr::null());
-    if !h.is_null() {
-        return Some(h);
-    }
-    let h = FindWindowW(ptr::null(), wide(TITLE).as_ptr());
-    (!h.is_null()).then_some(h)
-}
-
-/// Where the window goes: centered on the monitor of the bar whose menu opened it, then on the bar in front, then on the
-/// monitor under the pointer. Never bigger than that monitor allows.
-fn place() -> (i32, i32, i32, i32) {
-    let m = unsafe {
-        // the menu remembers the bar it belonged to even after `close()`, so this is exact
-        if let Some(r) = crate::fly::menu_monitor() {
-            winrust_common::monitors::at((r.left + r.right) / 2, (r.top + r.bottom) / 2)
-        } else {
-            let bar = crate::cur_bar();
-            if !bar.is_null() && IsWindow(bar) != 0 {
-                winrust_common::monitors::of(bar)
-            } else {
-                let mut pt: POINT = zeroed();
-                GetCursorPos(&mut pt);
-                winrust_common::monitors::at(pt.x, pt.y)
-            }
-        }
-    };
-    let m = m.rc;
+/// Registers the class and makes the window: frameless, centered on the monitor under the pointer, 960x680 (never
+/// smaller than 720x560, never bigger than the monitor).
+unsafe fn create(page: u8) -> HWND {
+    // the size and the corner radius are logical: take the system scale before measuring
+    DPI.with(|d| d.set((GetDpiForSystem() as i32).max(96)));
+    let class = wide(CLASS);
+    let inst = GetModuleHandleW(ptr::null());
+    let wc = WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst, hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..zeroed() };
+    RegisterClassW(&wc);
+    let mut pt: POINT = zeroed();
+    GetCursorPos(&mut pt);
+    let m = winrust_common::monitors::at(pt.x, pt.y).rc;
     let (mw, mh) = (m.right - m.left, m.bottom - m.top);
-    let w = sc(W).min(mw - sc(32)).max(sc(720));
-    let h = sc(H).min(mh - sc(48)).max(sc(560));
+    let w = sc(W).min(mw - sc(32)).max(sc(MIN_W));
+    let h = sc(H).min(mh - sc(48)).max(sc(MIN_H));
     let x = m.left + (mw - w) / 2;
     let y = m.top + ((mh - h) / 2).max(sc(16));
-    (x, y, w, h)
-}
-
-unsafe fn show(h: HWND, cat: u8, r: (i32, i32, i32, i32)) {
-    CAT.with(|c| c.set(cat.min(CATS as u8 - 1)));
-    SCROLL.with(|s| s.set(0));
-    CONFIRM.with(|c| c.set(false));
-    HOT.with(|v| v.set(-1));
-    HOT_CAT.with(|v| v.set(-1));
-    HOTX.with(|v| v.set(false));
-    let (x, y, w, hh) = r;
-    // above every other topmost window (the bar is one) and visible even when it was only hidden
-    SetWindowPos(h, HWND_TOPMOST, x, y, w, hh, SWP_SHOWWINDOW);
-    ShowWindow(h, SW_SHOW);
-    // and really in front, with the keyboard: Windows refuses the foreground to a process that did not get the last input,
-    // and a window that only looks active eats the first click (Esc did nothing) — `fg::force` is the same dance the
-    // flyouts use
-    crate::force_fg(h);
-    InvalidateRect(h, ptr::null(), 0);
-}
-
-/// Opens the settings window on `cat` (one of `LOOK`, `DESK`, `BAR`, `START`, `LANG`, `APPS`, `ADV`). False only when the
-/// process cannot create a window at all: the caller then says so instead of leaving the click doing nothing.
-pub(crate) unsafe fn open_at(cat: u8) -> bool {
-    refresh_cache();
-    let mut h = existing().unwrap_or(ptr::null_mut());
-    if h.is_null() || IsWindow(h) == 0 {
-        crate::tlog("settings: no window yet, creating one now");
-        init(GetModuleHandleW(ptr::null()));
-        h = existing().unwrap_or(ptr::null_mut());
-        if h.is_null() || IsWindow(h) == 0 {
-            let msg = t!("Не удалось открыть настройки WinRust.", "WinRust Settings could not be opened.", ja: "WinRust の設定を開けませんでした。", pt: "Não foi possível abrir as Configurações do WinRust.", zh: "无法打开 WinRust 设置。");
-            crate::tlog(&format!("settings: the window could not be created (last error {}): {msg}", GetLastError()));
-            MessageBoxW(ptr::null_mut(), wide(msg).as_ptr(), wide("WinRust").as_ptr(), MB_OK | MB_ICONERROR);
-            return false;
-        }
+    let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, class.as_ptr(), wide(TITLE).as_ptr(), WS_POPUP, x, y, w, h, ptr::null_mut(), ptr::null_mut(), inst, ptr::null());
+    if hwnd.is_null() {
+        return hwnd;
     }
-    // the fading ghost of the menu that opened this window would sit on top and eat the clicks (and end up in the blur).
-    // Only a flyout is ever destroyed here (`kill_ghost` checks the class), so the taskbar cannot be caught by a stale
-    // handle.
-    let bars_before = crate::bars_list();
-    crate::fly::kill_ghost();
-    let (x, y, w, ht) = place();
-    SetWindowRgn(h, CreateRoundRectRgn(0, 0, w + 1, ht + 1, sc(24), sc(24)), 1);
-    if IsWindowVisible(h) == 0 {
-        let radius = sc(lk::menu_radius()).max(ht / 22).max(sc(10));
-        let px = crate::blur::capture_rect(RECT { left: x, top: y, right: x + w, bottom: y + ht }, radius);
-        BITS.with(|b| *b.borrow_mut() = px);
-    }
+    DPI.with(|d| d.set((GetDpiForWindow(hwnd) as i32).max(96)));
+    CAT.with(|c| c.set(page.min(CATS as u8 - 1)));
+    // the screen behind it, blurred, then the rounded corners and the fonts
+    let px = frost::capture_rect(RECT { left: x, top: y, right: x + w, bottom: y + h }, frost::radius_for(w, h));
+    BITS.with(|b| *b.borrow_mut() = px);
     ensure_fonts();
-    show(h, cat, (x, y, w, ht));
-    let bars_after = crate::bars_list();
-    crate::tlog(&format!("settings: opened on category {cat} at {x},{y} {w}x{ht}, visible {}, bars {bars_before} -> {bars_after}", IsWindowVisible(h)));
-    debug_assert_eq!(bars_before, bars_after, "opening the settings window must not touch the bars");
-    true
+    SetWindowRgn(hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, sc(24), sc(24)), 1);
+    hwnd
+}
+
+/// The app entry: one window, its own message loop. A second launch only switches the page of the running one.
+pub(crate) unsafe fn run() {
+    let page = page_from_args();
+    let h = FindWindowW(wide(CLASS).as_ptr(), ptr::null());
+    if !h.is_null() {
+        PostMessageW(h, page_msg(), page as usize, 0);
+        winrust_common::fg::force(h);
+        return;
+    }
+    // the system pages keep their state in thread-locals: read it before the window exists (COM calls inside can
+    // dispatch messages)
+    let (pg, lay) = (crate::pages(), crate::display::layout());
+    let hwnd = create(page);
+    if hwnd.is_null() {
+        return;
+    }
+    WND.with(|w| w.set(hwnd));
+    let dpi = DPI.with(|d| d.get());
+    crate::APP.with_borrow_mut(|a| (a.pages, a.page, a.dpi, a.layout) = (pg, 0, dpi, lay));
+    crate::refresh_fonts();
+    crate::MAIN.store(hwnd as isize, std::sync::atomic::Ordering::Relaxed);
+    crate::wifi::watch(hwnd);
+    crate::frame(hwnd);
+    refresh_cache();
+    // `rust-settings ms-settings:sound` (how the bar's Windows Settings entries call this program): that page
+    if let Some(sys) = system_page_from_args() {
+        enter_system(sys);
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    winrust_common::fg::force(hwnd);
+    let mut m: MSG = zeroed();
+    while GetMessageW(&mut m, ptr::null_mut(), 0, 0) > 0 {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
 }

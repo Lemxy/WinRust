@@ -1,35 +1,61 @@
 //! topbar: settings (split out of main.rs; shares its items through `super::*`).
 //!
-//! There is one settings window (`settingswin`) and every entry point goes straight to it: the bar's context menu, the
-//! Start gear, the Start menu's "WinRust Settings" row and the tray clock's menu. This module keeps only the way in and the
-//! pieces the hub uses from the bar (the look broadcast and the bar's opacity); the flyout pages that used to hold these
-//! options are gone, so nothing opens a second window or an intermediate menu.
+//! The settings window is a program of its own (`rust-settings`, its WinRust hub): this module only starts it on the right
+//! page and announces, to the programs that are already running, that a value changed. There is no settings UI in the bar
+//! any more: one implementation, one window.
 use super::*;
 
-/// The bar's context menu: the hub, on the look category.
+/// The pages `rust-settings --page` takes (the categories of its rail).
+pub(crate) const PAGE_LOOK: &str = "apariencia";
+pub(crate) const PAGE_BAR: &str = "barra";
+pub(crate) const PAGE_START: &str = "inicio";
+
+/// The bar's context menu: the settings program, on the look page.
 pub(crate) unsafe fn style_menu() {
-    style_menu_at(crate::settingswin::LOOK);
+    style_menu_at(PAGE_LOOK);
 }
 
-/// The same on another category (`settingswin::DESK`, `BAR`, `START`...).
-pub(crate) unsafe fn style_menu_at(cat: u8) {
-    if !crate::settingswin::open_at(cat) {
-        crate::tlog("settings: the settings window is not available");
+/// The same on another page. A second launch only switches the page of the window that is already open.
+pub(crate) unsafe fn style_menu_at(page: &str) {
+    if launch_settings(page) {
+        return;
     }
+    // not installed: say so above the bar instead of doing nothing (the bar keeps working)
+    crate::tlog("settings: rust-settings.exe is not installed");
+    let msg = t!(
+        "Программа настроек (rust-settings) не установлена.\nУстановите её через установщик WinRust.",
+        "The settings program (rust-settings) is not installed.\nInstall it with the WinRust installer.",
+        ja: "設定プログラム (rust-settings) がインストールされていません。\nWinRust インストーラーでインストールしてください。",
+        pt: "O programa de ajustes (rust-settings) não está instalado.\nInstale-o com o instalador do WinRust.",
+        zh: "设置程序 (rust-settings) 未安装。\n请使用 WinRust 安装程序安装。"
+    );
+    show_tip(msg.to_string(), GetSystemMetrics(SM_CXSCREEN) / 2);
+    SetTimer(crate::leader_bar(), 6, 3000, None);
 }
 
-pub(crate) fn style_name(s: i18n::style::Style) -> &'static str {
-    use i18n::style::Style::*;
-    match s {
-        Normal => t!("Обычный", "Normal", ja: "通常", pt: "Normal", zh: "正常"),
-        Terminal => t!("Терминал", "Terminal", ja: "ターミナル", pt: "Terminal", zh: "终端"),
-        Dock => t!("Плавающий док", "Floating dock", ja: "フローティング ドック", pt: "Dock flutuante", zh: "悬浮停靠"),
-        Tiling => t!("Тайлинг", "Tiling", ja: "タイル表示", pt: "Lado a lado", zh: "平铺"),
-        Road => t!("Белая дорога", "White road", ja: "白い道", pt: "Estrada branca", zh: "白色道路"),
-        Ruby => t!("Рубин", "Ruby", ja: "ルビー", pt: "Rubi", zh: "红宝石"),
-        Win98 => "Windows 98",
-        Win7 => "Windows 7",
+/// Where the settings program is: beside the bar, in the installer's folder, or in the launcher's bin.
+fn settings_exe() -> Option<PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(e) = std::env::current_exe() {
+        v.push(e.with_file_name("rust-settings.exe"));
     }
+    if let Some(pf) = std::env::var_os("ProgramFiles") {
+        v.push(PathBuf::from(pf).join(r"rust-settings\rust-settings.exe"));
+    }
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        v.push(PathBuf::from(la).join(r"plugin-launcher\bin\rust-settings.exe"));
+    }
+    v.into_iter().find(|p| p.is_file())
+}
+
+fn launch_settings(page: &str) -> bool {
+    let Some(exe) = settings_exe() else { return false };
+    let page = page.to_string();
+    // off the bar's thread: a slow start must not freeze the bar
+    std::thread::spawn(move || {
+        let _ = Command::new(exe).arg("--page").arg(page).creation_flags(0x0800_0000).spawn();
+    });
+    true
 }
 
 /// Repaints the bars in the new look; `moved` = their place or size may have changed too.
@@ -42,7 +68,7 @@ pub(crate) unsafe fn relook(moved: bool) {
     invalidate_bars(); // place() already did, but keep a style change visible even if a place was a no-op
 }
 
-/// Bar transparency from the settings window (the window is layered; 100 % = opaque).
+/// Bar transparency from the shared look (the window is layered; 100 % = opaque).
 pub(crate) unsafe fn apply_opacity(hwnd: HWND) {
     // With the blur on, the transparency lives in the tinted background instead of the whole window: that keeps the
     // icons and the text crisp instead of washing them out.

@@ -1,4 +1,4 @@
-﻿#![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 // rust-settings [page]   A small Settings window that does not need Explorer or the Store Settings app.
 // Pages: Display (resolution, refresh rate, scale, orientation, HDR, night light, arrangement of several displays by dragging), Sound (output/input
 // device, volume, mute, volume per app), Power & storage (battery, power plan, drives, disk cleanup), Network (adapters, Wi-Fi on every adapter:
@@ -19,6 +19,7 @@ mod audio;
 mod bt;
 mod display;
 mod ext;
+mod hub;
 mod net;
 mod power;
 mod sys;
@@ -39,7 +40,7 @@ use windows_sys::Win32::{
         Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
         SystemInformation::*,
     },
-    UI::{HiDpi::GetDpiForSystem, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
 const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -2107,25 +2108,9 @@ fn main() {
         input.GdiplusVersion = 1;
         windows_sys::Win32::Graphics::GdiPlus::GdiplusStartup(&mut token, &input, null_mut()); // for the smooth rounded shapes
         SetProcessDPIAware();
-        let dpi = GetDpiForSystem() as i32;
-        let start = std::env::args().nth(1).map_or(0, |a| page_for(&a));
-        let (pg, lay) = (pages(), display::layout()); // read before the borrow: COM calls inside can run the window procedure
-        APP.with_borrow_mut(|a| (a.pages, a.page, a.dpi, a.layout) = (pg, start, dpi, lay));
-        refresh_fonts();
-        let (inst, class) = (GetModuleHandleW(null()), wide("WinRustSettings"));
-        let wc = WNDCLASSW { style: 0, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
-        RegisterClassW(&wc);
-        let hwnd = CreateWindowExW(0, class.as_ptr(), wide(t!("Параметры", "Settings", ja: "設定", pt: "Configurações", zh: "设置")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 940 * dpi / 96, 620 * dpi / 96, null_mut(), null_mut(), inst, null());
-        frame(hwnd);
-        MAIN.store(hwnd as isize, std::sync::atomic::Ordering::Relaxed);
-        wifi::watch(hwnd);
-        goto(hwnd, start); // reads the page fresh and starts what it needs (a Wi-Fi scan, the Bluetooth lists)
-        SetTimer(hwnd, 2, 4000, None);
-        let mut m: MSG = std::mem::zeroed();
-        while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
-            TranslateMessage(&m);
-            DispatchMessageW(&m);
-        }
+        // The window is the WinRust settings hub (`hub.rs`); the system pages of this program live in the same
+        // window, on their own procedure (see `hub::enter_system`). A second launch only switches the page.
+        hub::run();
     }
 }
 

@@ -29,7 +29,6 @@ mod run;
 mod shot;
 mod lang;
 mod settings;
-mod settingswin;
 mod thumbs;
 mod blur;
 mod notify;
@@ -342,13 +341,11 @@ fn bump_name(name: &str) {
     *m.entry(name).or_insert(0) += 1;
     let _ = std::fs::write(appdata_file("topbar-usage.txt"), m.iter().map(|(k, n)| format!("{k}\t{n}\n")).collect::<String>());
 }
-/// Forgets how often each app was launched and removes the file: the settings window's "clear the app history".
-pub(crate) fn clear_usage() {
+/// Re-reads the launch counts from disk: the settings program may have cleared them, and Start ranks by them.
+pub(crate) fn reload_usage() {
     if let Ok(mut g) = USAGE.lock() {
-        *g = Some(HashMap::new());
+        *g = None;
     }
-    let _ = std::fs::remove_file(appdata_file("topbar-usage.txt"));
-    crate::tlog("settings: app history cleared");
 }
 fn lnk_uses(lnk: &std::path::Path) -> u32 {
     uses(&lnk.file_stem().unwrap_or_default().to_string_lossy().to_lowercase())
@@ -386,6 +383,7 @@ thread_local! {
     static EP: RefCell<Option<IAudioEndpointVolume>> = const { RefCell::new(None) };
     static TB_MSG: Cell<u32> = const { Cell::new(0) }; // "TaskbarCreated"
     static SH_MSG: Cell<u32> = const { Cell::new(0) }; // "SHELLHOOK": window events for the shell (we are the shell hook window without explorer)
+    static SETTINGS_CHANGED: Cell<u32> = const { Cell::new(0) }; // "WinRust.SettingsChanged": the settings program saved a value
     static EXP_TRAY: Cell<HWND> = const { Cell::new(null_mut()) }; // explorer's taskbar we registered with
     static FLASH: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // windows asking for attention (FlashWindowEx) until activated (#129)
     static APP_FG: Cell<HWND> = const { Cell::new(null_mut()) }; // last foreground window that is not ours: the language button acts on it
@@ -2960,7 +2958,7 @@ unsafe fn start_menu_page(page: u8) {
             "!page1" => return start_menu_page(1),
             "!page2" => return start_menu_page(2),
             "!back" => return start_menu_page(0),
-            "!startpage" => crate::settings::style_menu_at(crate::settingswin::START),
+            "!startpage" => crate::settings::style_menu_at(crate::settings::PAGE_START),
             "!term" => {
                 let wt = std::env::var_os("LOCALAPPDATA").map(|b| PathBuf::from(b).join(r"Microsoft\WindowsApps\wt.exe")).filter(|p| p.is_file());
                 open(&wide(if wt.is_some() { "wt.exe" } else { "powershell.exe" }));
@@ -3083,7 +3081,7 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
                     open(&wide("ms-settings:notifications"));
                 } else {
                     // the tray's way into the one settings window (notifications live in the bar category)
-                    crate::settings::style_menu_at(crate::settingswin::BAR);
+                    crate::settings::style_menu_at(crate::settings::PAGE_BAR);
                 }
             });
         }
@@ -3331,6 +3329,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         InvalidateRect(hwnd, null(), 0);
         return 0;
     }
+        if msg != 0 && msg == SETTINGS_CHANGED.get() {
+            // the settings program saved a value: re-read the shared look and put the bars back where they belong
+            reload_usage(); // the app history may have been cleared
+            relook(true);
+            return 0;
+        }
     if msg != 0 && msg == TB_MSG.get() {
         // also our own announce(): act only when explorer's taskbar is a new window (explorer restarted / came back)
         let t = tray()[0];
@@ -3593,6 +3597,7 @@ fn main() {
         GdiplusStartup(&mut gtok, &gin, null_mut()); // anti-aliased shapes; fill() falls back to GDI if this failed
         TB_MSG.set(RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()));
         SH_MSG.set(RegisterWindowMessageW(wide("SHELLHOOK").as_ptr()));
+        SETTINGS_CHANGED.set(RegisterWindowMessageW(wide("WinRust.SettingsChanged").as_ptr())); // the settings program saved a value
         SetProcessDPIAware();
         let dc = GetDC(null_mut());
         SCALE.set(GetDeviceCaps(dc, LOGPIXELSX as i32) as f32 / 96.0);
@@ -3604,10 +3609,7 @@ fn main() {
         thread::spawn(winrust_common::mem::auto_loop); // standby purge when memory runs short, switched on from the task manager's Speed page
         let hi = GetModuleHandleW(null_mut());
         notify::init(hi);
-        // the settings window exists before the first click (its class and window are made here, with the same hInstance
-        // as the bar and the flyouts): a lazy CreateWindowExW from inside a menu click is what left the entry doing
-        // nothing at all
-        settingswin::init(hi);
+
         let class = wide("topbar");
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..zeroed() };
         RegisterClassW(&wc);
