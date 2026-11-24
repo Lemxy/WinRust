@@ -50,11 +50,34 @@ pub fn stamp() -> String {
 }
 
 pub fn pictures_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join(r"Pictures\Screenshots")
+    known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Pictures)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join("Pictures"))
+        .join("Screenshots")
 }
 
 pub fn recordings_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join(r"Videos\rs-shot")
+    known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Videos)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join("Videos"))
+        .join("Screen Records")
+}
+
+/// The real user folder (redirected Pictures/Videos included), via SHGetKnownFolderPath.
+fn known_folder(id: &GUID) -> Option<PathBuf> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::{System::Com::CoTaskMemFree, UI::Shell::SHGetKnownFolderPath};
+    unsafe {
+        let mut p: *mut u16 = null_mut();
+        if SHGetKnownFolderPath(id, 0, null_mut(), &mut p) != 0 || p.is_null() {
+            return None;
+        }
+        let mut len = 0usize;
+        while *p.add(len) != 0 {
+            len += 1;
+        }
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+        CoTaskMemFree(p as *const core::ffi::c_void);
+        (!s.is_empty()).then(|| PathBuf::from(s))
+    }
 }
 
 /// `Screenshot_2026-11-24_15-30-00.png` in Pictures\Screenshots, with a `-2`, `-3` suffix if two land in one second.
@@ -74,10 +97,11 @@ pub fn auto_path() -> PathBuf {
 pub fn default_video_path() -> PathBuf {
     let dir = recordings_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let mut p = dir.join(format!("Recording_{}.mp4", stamp()));
+    let base = stamp();
+    let mut p = dir.join(format!("Recording_{base}.mp4"));
     let mut n = 2;
     while p.exists() {
-        p = dir.join(format!("Recording_{}-{n}.mp4", stamp()));
+        p = dir.join(format!("Recording_{base}-{n}.mp4"));
         n += 1;
     }
     p

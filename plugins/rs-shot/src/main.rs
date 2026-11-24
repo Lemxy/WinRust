@@ -10,6 +10,7 @@
 extern crate winrust_common;
 
 mod annot;
+mod audio;
 mod cap;
 mod editor;
 mod img;
@@ -95,20 +96,23 @@ Capture options:
   --delay N                       wait N seconds before capturing (0, 2, 5, 10, ...)
   --cursor                        include the mouse pointer in the capture
   --clipboard                     with --no-ui: also copy to the clipboard (it is copied anyway)
-  --file PATH                     save here instead of Pictures\\Screenshots\\Screenshot_<date>.png
-  --no-ui                         skip the editor: save and copy immediately
+  --file PATH                     save here on Save/--no-ui (default Pictures\\Screenshots\\Screenshot_<date>.png)
+  --no-ui                         skip the editor/recording UI: clipboard only (plus --file); with --record,
+                                  record --duration N seconds headlessly (Region uses the cursor monitor)
 
-Recording (no audio in this pass; WGC + Media Foundation first, ffmpeg bridge when needed):
-  --record                        record the region overlay selection
+Recording (WGC + Media Foundation first, ffmpeg bridge when needed):
+  --record                        open the Photo/Video selection bar on the region
   --record --monitor [N]          record a monitor
   --record --window               record the foreground window
-  --duration N                    stop after N seconds (default: until Stop/Esc)
+  --duration N                    stop after N seconds (default: unlimited until Stop/Esc/Win+Alt+S)
   --fps N                         frames per second (default 30, 1..60)
-  --out PATH                      MP4 path (default Videos\\rs-shot\\Recording_<date>.mp4)
+  --out PATH                      MP4 path (default Videos\\Screen Records\\Recording_<date>.mp4)
   --encoder auto|wgc|ffmpeg       auto (default): WGC + Media Foundation when it works, else ffmpeg
-  --audio                         not implemented yet; the flag is accepted and ignored
+  --audio                         record PC sound (WASAPI loopback + AAC, on by default)
+  --no-audio                      video only
 
-Keys: PrintScreen / Win+Shift+S = region capture, Win+Alt+R = region recording (through the WinRust shell).
+Keys: PrintScreen / Win+Shift+S = Photo + Region; Win+Alt+R = Video + Region (through the WinRust shell).
+      While recording: Win+Alt+S or Esc stops (Fn is firmware and cannot be a shortcut).
       In the editor: Ctrl+S save+copy, Ctrl+C copy, Ctrl+Z/Y undo/redo, Esc close.
 ";
 
@@ -125,7 +129,7 @@ fn parse(a: &[String]) -> Result<Opts, String> {
         fps: 30,
         duration: 0,
         out: None,
-        audio: false,
+        audio: true,
         encoder: Encoder::Auto,
     };
     let mut i = 0;
@@ -174,12 +178,10 @@ fn parse(a: &[String]) -> Result<Opts, String> {
                 };
             }
             "--audio" => o.audio = true,
+            "--no-audio" => o.audio = false,
             other => return Err(format!("unknown option {other:?}")),
         }
         i += 1;
-    }
-    if o.audio {
-        // accepted on purpose: the spec marks audio as a pending feature, and scripts can already pass it
     }
     Ok(o)
 }
@@ -291,13 +293,19 @@ fn finish_image(img: Option<img::Image>, o: &Opts) -> i32 {
     if !o.no_ui {
         return editor::run(img, o.file.clone());
     }
-    let mut path = o.file.clone().unwrap_or_else(save::auto_path);
-    if path.extension().is_none() {
-        path.set_extension("png");
-    }
-    let saved = unsafe { save::save(&img, &path) };
+    // No UI: clipboard is the primary result; --file additionally writes the file.
     let copied = unsafe { save::copy_to_clipboard(&img) };
-    if saved || copied {
+    let saved = match &o.file {
+        Some(path) => {
+            let mut path = path.clone();
+            if path.extension().is_none() {
+                path.set_extension("png");
+            }
+            unsafe { save::save(&img, &path) }
+        }
+        None => true,
+    };
+    if saved && (copied || o.file.is_some()) {
         0
     } else {
         msg(

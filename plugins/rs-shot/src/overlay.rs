@@ -72,6 +72,7 @@ struct St {
     vy: i32,
     from: Option<(i32, i32)>,
     to: (i32, i32),
+    dragging: bool,
     pick: Option<PickData>,
     video: bool,
     kind: Kind,
@@ -175,6 +176,7 @@ unsafe fn run(opt: Options) -> Option<Pick> {
         vy,
         from: None,
         to: (0, 0),
+        dragging: false,
         pick: None,
         video: opt.video,
         kind: opt.kind,
@@ -278,7 +280,7 @@ unsafe fn draw_cursor(mem: HDC, origin: POINT) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Act {
     Photo,
     Video,
@@ -416,20 +418,28 @@ unsafe fn paint(hw: HWND) {
 unsafe fn hint(dc: HDC, hw: HWND) {
     let mon = ST.with_borrow(|s| s.as_ref().map(|s| s.mon.work).unwrap_or(RECT { left: 0, top: 0, right: 1, bottom: 1 }));
     let s = scale(hw);
-    let a = t!(
-        "Протяните мышью, чтобы выбрать область · Esc — отмена",
-        "Drag to select a region · Esc cancels",
-        ja: "ドラッグして範囲を選択 · Esc でキャンセル",
-        pt: "Arraste para selecionar uma região · Esc cancela",
-        zh: "拖动选择区域 · Esc 取消"
-    );
-    let b = t!(
-        "Win+Alt+R — запись · кнопка внизу — снимок",
-        "Win+Alt+R records · the bottom button captures",
-        ja: "Win+Alt+R で録画 · 下のボタンでキャプチャ",
-        pt: "Win+Alt+R grava · o botão inferior captura",
-        zh: "Win+Alt+R 录制 · 底部按钮截图"
-    );
+    let (kind, video) = ST.with_borrow(|s| s.as_ref().map(|s| (s.kind, s.video)).unwrap_or((Kind::Region, false)));
+    let a = if kind == Kind::Region {
+        t!(
+            "Протяните мышью, чтобы выбрать область · Esc — отмена",
+            "Drag to select a region · Esc cancels",
+            ja: "ドラッグして範囲を選択 · Esc でキャンセル",
+            pt: "Arraste para selecionar uma região · Esc cancela",
+            zh: "拖动选择区域 · Esc 取消"
+        )
+    } else {
+        match kind {
+            Kind::Full => t!("Кнопка снизу снимет весь экран · Esc — отмена", "The bottom button captures the full screen · Esc cancels", ja: "下のボタンで全画面をキャプチャ · Esc でキャンセル", pt: "O botão inferior captura a tela inteira · Esc cancela", zh: "底部按钮截取全屏 · Esc 取消"),
+            Kind::Monitor => t!("Кнопка снизу снимет этот монитор · Esc — отмена", "The bottom button captures this monitor · Esc cancels", ja: "下のボタンでこのモニターをキャプチャ · Esc でキャンセル", pt: "O botão inferior captura este monitor · Esc cancela", zh: "底部按钮截取此显示器 · Esc 取消"),
+            Kind::Window => t!("Наведите на окно и нажмите кнопку снизу · Esc — отмена", "Point at a window and press the bottom button · Esc cancels", ja: "ウィンドウを指して下のボタンを押す · Esc でキャンセル", pt: "Aponte para uma janela e pressione o botão inferior · Esc cancela", zh: "指向窗口并按底部按钮 · Esc 取消"),
+            Kind::Region => unreachable!(),
+        }
+    };
+    let b = if video {
+        t!("Win+Alt+R — запись · кнопка внизу — начать", "Win+Alt+R records · the bottom button starts", ja: "Win+Alt+R で録画 · 下のボタンで開始", pt: "Win+Alt+R grava · o botão inferior inicia", zh: "Win+Alt+R 录制 · 底部按钮开始")
+    } else {
+        t!("Win+Alt+R — запись · кнопка внизу — снимок", "Win+Alt+R records · the bottom button captures", ja: "Win+Alt+R で録画 · 下のボタンでキャプチャ", pt: "Win+Alt+R grava · o botão inferior captura", zh: "Win+Alt+R 录制 · 底部按钮截图")
+    };
     let f = ui::make_font(15 * s, 600, winrust_common::style::ui_face());
     let f2 = ui::make_font(12 * s, 400, winrust_common::style::ui_face());
     let tw = (ui::text_w(dc, a, f).max(ui::text_w(dc, b, f2)) + 30 * s).min((mon.right - mon.left) - 24 * s).max(220 * s);
@@ -590,6 +600,7 @@ unsafe fn act(hw: HWND, a: Act) {
                     s.kind = k;
                     if k != Kind::Region {
                         s.from = None;
+                        s.dragging = false;
                     }
                 }
             });
@@ -672,6 +683,7 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         WM_MOUSEMOVE => {
             let old_sel = selection();
             let old_bar = bar_rect(hw);
+            let old_hover = ST.with_borrow(|s| s.as_ref().and_then(|s| s.hover));
             let mut m = POINT { x: 0, y: 0 };
             GetCursorPos(&mut m);
             let new_mon = monitors::at(m.x, m.y);
@@ -680,7 +692,7 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     if s.mon.handle != new_mon.handle {
                         s.mon = new_mon;
                     }
-                    if s.from.is_some() {
+                    if s.from.is_some() && s.dragging {
                         s.to = (x, y);
                     }
                 }
@@ -728,7 +740,7 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             let bar_changed = !rect_eq(old_bar, new_bar);
             if bar_changed {
                 inval(hw, union(old_bar, new_bar));
-            } else {
+            } else if old_hover != hover {
                 inval(hw, new_bar);
             }
             0
@@ -748,6 +760,7 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                     if let Some(s) = s {
                         s.from = Some((x, y));
                         s.to = (x, y);
+                        s.dragging = true;
                     }
                 });
                 InvalidateRect(hw, null(), 0);
@@ -755,6 +768,11 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             0
         }
         WM_LBUTTONUP => {
+            ST.with_borrow_mut(|s| {
+                if let Some(s) = s {
+                    s.dragging = false;
+                }
+            });
             // Selection stays on screen; the Capture/Record button finishes it.
             if let Some(sel) = selection() {
                 if sel.right - sel.left < 3 && sel.bottom - sel.top < 3 {

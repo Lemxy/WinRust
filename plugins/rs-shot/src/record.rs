@@ -21,7 +21,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::{
-        Input::KeyboardAndMouse::VK_ESCAPE,
+        Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_NOREPEAT, MOD_WIN, VK_ESCAPE},
         WindowsAndMessaging::*,
     },
 };
@@ -52,6 +52,7 @@ struct Ui {
     hover: bool,
     stopped: bool,
     stop_rec: Arc<AtomicBool>,
+    audio: bool,
     back: HBITMAP,
     bdc: HDC,
     bw: i32,
@@ -64,6 +65,7 @@ thread_local! {
 
 static ESC_STOP: AtomicBool = AtomicBool::new(false);
 static HOOK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+const HOTKEY_STOP: i32 = 0x5254; // Win+Alt+S while the recording bar exists
 
 /// A low-level hook only for the length of a recording: a quick Esc tap is caught even when a timer tick would miss it,
 /// and the recorded application does not receive the key.
@@ -224,20 +226,22 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
     if use_wgc {
         let target = target.unwrap();
         let cursor = o.cursor;
+        let with_audio = o.audio;
         std::thread::spawn(move || {
-            let res = match wgc::record(&target, fps, cursor, &out2, stop2) {
-                Ok((frames, elapsed_ms)) => RecRes { frames, elapsed_ms, err: String::new() },
+            let res = match wgc::record(&target, fps, cursor, &out2, stop2, with_audio) {
+                Ok((frames, elapsed_ms, audio, note)) => RecRes { frames, elapsed_ms, err: String::new(), audio, note },
                 Err(e) => {
                     let _ = std::fs::write(std::env::temp_dir().join("rs-shot-wgc.log"), format!("WGC record failed: {e}\n"));
-                    RecRes { frames: 0, elapsed_ms: 0, err: e }
+                    RecRes { frames: 0, elapsed_ms: 0, err: e, audio: false, note: None }
                 }
             };
             let _ = tx.send(res);
         });
     } else {
+        let audio_note = o.audio.then(|| "audio is not available with the ffmpeg bridge; video is silent".to_string());
         std::thread::spawn(move || {
             let (frames, elapsed_ms, err) = record_loop(source, stop2, dir2, fps);
-            let _ = tx.send(RecRes { frames: frames as u64, elapsed_ms, err });
+            let _ = tx.send(RecRes { frames: frames as u64, elapsed_ms, err, audio: false, note: audio_note });
         });
     }
 
@@ -265,7 +269,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
         return finish(res, use_wgc, ffmpeg, &dir, &out, false);
     }
 
-    if let Err(e) = make_ui(rect, fps, o.duration, stop.clone()) {
+    if let Err(e) = make_ui(rect, fps, o.duration, stop.clone(), o.audio) {
         stop.store(true, Relaxed);
         let _ = rx.recv_timeout(Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&dir);
@@ -300,6 +304,17 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
     finish(res, use_wgc, ffmpeg, &dir, &out, true)
 }
 
+fn audio_text(res: &RecRes, _wgc: bool) -> String {
+    if res.audio {
+        t!("звук: AAC", "audio: AAC", ja: "音声: AAC", pt: "áudio: AAC", zh: "音频：AAC").to_string()
+    } else if let Some(n) = &res.note {
+        let n: String = n.chars().take(120).collect();
+        tf!("без звука ({})", "no audio ({})", ja: "音声なし ({})", pt: "sem áudio ({})", zh: "无音频（{}）", n)
+    } else {
+        t!("без звука", "no audio", ja: "音声なし", pt: "sem áudio", zh: "无音频").to_string()
+    }
+}
+
 /// Stops the recorder, finalizes the file and closes the process path. No modal dialog: a success toast (when the UI
 /// ran) is fire-and-forget, so `--duration`, Stop and Esc all end in a real exit instead of a lingering message loop.
 fn finish(res: RecRes, use_wgc: bool, ffmpeg: Option<PathBuf>, dir: &Path, out: &Path, notify_ui: bool) -> i32 {
@@ -307,8 +322,9 @@ fn finish(res: RecRes, use_wgc: bool, ffmpeg: Option<PathBuf>, dir: &Path, out: 
         if res.frames > 0 && res.err.is_empty() && out.is_file() {
             let secs = (res.elapsed_ms as f64 / 1000.0).max(0.05);
             let real_fps = (res.frames as f64 / secs).clamp(1.0, 120.0);
+            let audio = audio_text(&res, true);
             event(
-                &tf!("Записано (WGC + Media Foundation, H.264/MP4, {} кадров, {:.1} fps): {}", "Recorded (WGC + Media Foundation, H.264/MP4, {} frames, {:.1} fps): {}", ja: "録画しました (WGC + Media Foundation、H.264/MP4、{} フレーム、{:.1} fps): {}", pt: "Gravado (WGC + Media Foundation, H.264/MP4, {} quadros, {:.1} fps): {}", zh: "已录制（WGC + Media Foundation，H.264/MP4，{} 帧，{:.1} fps）：{}", res.frames, real_fps, out.display()),
+                &tf!("Записано (WGC + Media Foundation, H.264/MP4, {} кадров, {:.1} fps, {}): {}", "Recorded (WGC + Media Foundation, H.264/MP4, {} frames, {:.1} fps, {}): {}", ja: "録画しました (WGC + Media Foundation、H.264/MP4、{} フレーム、{:.1} fps、{}): {}", pt: "Gravado (WGC + Media Foundation, H.264/MP4, {} quadros, {:.1} fps, {}): {}", zh: "已录制（WGC + Media Foundation，H.264/MP4，{} 帧，{:.1} fps，{}）：{}", res.frames, real_fps, audio, out.display()),
                 notify_ui,
             );
             std::thread::sleep(Duration::from_millis(80)); // short flush before process::exit
@@ -350,8 +366,9 @@ fn finish(res: RecRes, use_wgc: bool, ffmpeg: Option<PathBuf>, dir: &Path, out: 
     match to_mp4(&ffmpeg, dir, real_fps, out) {
         Ok(()) => {
             let _ = std::fs::remove_dir_all(dir);
+            let audio = audio_text(&res, false);
             event(
-                &tf!("Записано (ffmpeg, H.264/MP4, {} кадров, {:.1} fps): {}", "Recorded (ffmpeg, H.264/MP4, {} frames, {:.1} fps): {}", ja: "録画しました (ffmpeg、H.264/MP4、{} フレーム、{:.1} fps): {}", pt: "Gravado (ffmpeg, H.264/MP4, {} quadros, {:.1} fps): {}", zh: "已录制（ffmpeg，H.264/MP4，{} 帧，{:.1} fps）：{}", res.frames, real_fps, out.display()),
+                &tf!("Записано (ffmpeg, H.264/MP4, {} кадров, {:.1} fps, {}): {}", "Recorded (ffmpeg, H.264/MP4, {} frames, {:.1} fps, {}): {}", ja: "録画しました (ffmpeg、H.264/MP4、{} フレーム、{:.1} fps、{}): {}", pt: "Gravado (ffmpeg, H.264/MP4, {} quadros, {:.1} fps, {}): {}", zh: "已录制（ffmpeg，H.264/MP4，{} 帧，{:.1} fps，{}）：{}", res.frames, real_fps, audio, out.display()),
                 notify_ui,
             );
             std::thread::sleep(Duration::from_millis(80));
@@ -418,6 +435,8 @@ struct RecRes {
     frames: u64,
     elapsed_ms: u128,
     err: String,
+    audio: bool,
+    note: Option<String>,
 }
 
 /// One monitor or one window is a single WGC item. The full virtual desktop (or a region crossing monitors) is not;
@@ -476,7 +495,7 @@ unsafe fn record_loop(source: Source, stop: Arc<AtomicBool>, dir: PathBuf, fps: 
     (n, t0.elapsed().as_millis(), err)
 }
 
-unsafe fn make_ui(rect: RECT, fps: u32, duration: u32, stop_rec: Arc<AtomicBool>) -> Result<(), String> {
+unsafe fn make_ui(rect: RECT, fps: u32, duration: u32, stop_rec: Arc<AtomicBool>, audio: bool) -> Result<(), String> {
     let hi = GetModuleHandleW(null());
     let cls = ui::wide("rs-shot-recbar");
     let mut wc: WNDCLASSW = zeroed();
@@ -546,8 +565,11 @@ unsafe fn make_ui(rect: RECT, fps: u32, duration: u32, stop_rec: Arc<AtomicBool>
         return Err(t!("Не удалось открыть панель записи", "Could not open the recording bar", ja: "録画バーを開けませんでした", pt: "Não foi possível abrir a barra de gravação", zh: "无法打开录制栏").to_string());
     }
     SetWindowDisplayAffinity(bar, WDA_EXCLUDEFROMCAPTURE);
-    REC.set(Some(Ui { source: rect, start: Ui::now(), duration, fps, stop: bar, frame, hover: false, stopped: false, stop_rec, back: null_mut(), bdc: null_mut(), bw: 0, bh: 0 }));
+    REC.set(Some(Ui { source: rect, start: Ui::now(), duration, fps, stop: bar, frame, hover: false, stopped: false, stop_rec, audio, back: null_mut(), bdc: null_mut(), bw: 0, bh: 0 }));
     SetTimer(bar, 1, 200, None);
+    // Stop shortcut while recording. RegisterHotKey reaches the bar even when another app has focus. Fn is firmware:
+    // a laptop's "Fn+S" never reaches Windows, so this must be a real Win+Alt+S chord (or the Stop button).
+    RegisterHotKey(bar, HOTKEY_STOP, MOD_WIN | MOD_ALT | MOD_NOREPEAT, b'S' as u32);
     ShowWindow(bar, SW_SHOW);
     Ok(())
 }
@@ -557,6 +579,7 @@ unsafe fn destroy_ui() {
         r.as_ref().map(|r| (r.stop, r.frame, r.back, r.bdc)).unwrap_or((null_mut(), null_mut(), null_mut(), null_mut()))
     });
     if !bar.is_null() {
+        UnregisterHotKey(bar, HOTKEY_STOP);
         DestroyWindow(bar);
     }
     if !frame.is_null() {
@@ -641,8 +664,8 @@ unsafe fn bar_paint(hw: HWND) {
     let hdc = if back_dc.is_null() { screen } else { back_dc };
     ui::fill(hdc, c, pal().bg);
     ui::outline(hdc, c, pal().line, 1);
-    let (start, duration, fps, source, hover, stopped) = REC.with_borrow(|r| {
-        r.as_ref().map(|r| (r.start, r.duration, r.fps, r.source, r.hover, r.stopped)).unwrap_or((0, 0, 30, RECT { left: 0, top: 0, right: 0, bottom: 0 }, false, false))
+    let (start, duration, fps, source, hover, stopped, audio) = REC.with_borrow(|r| {
+        r.as_ref().map(|r| (r.start, r.duration, r.fps, r.source, r.hover, r.stopped, r.audio)).unwrap_or((0, 0, 30, RECT { left: 0, top: 0, right: 0, bottom: 0 }, false, false, false))
     });
     if stopped {
         if !back_dc.is_null() {
@@ -665,7 +688,8 @@ unsafe fn bar_paint(hw: HWND) {
     let f2 = ui::make_font(ui::sc(hw, 11), 400, winrust_common::style::ui_face());
     let rec = t!("ЗАПИСЬ", "REC", ja: "録画中", pt: "GRAVANDO", zh: "录制中");
     ui::text(hdc, &format!("{rec}   {}", elapsed_text(ms)), RECT { left: 40, top: 6, right: c.right - 100, bottom: 32 }, f, pal().text, 0);
-    let dims = format!("{}×{}  ·  {} fps{}", source.right - source.left, source.bottom - source.top, fps, if duration > 0 { format!("  ·  max {}s", duration) } else { String::new() });
+    let audio_txt = if audio { t!("звук", "audio", ja: "音声", pt: "áudio", zh: "音频") } else { t!("без звука", "mute", ja: "無音", pt: "mudo", zh: "静音") };
+    let dims = format!("{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}", source.right - source.left, source.bottom - source.top, fps, audio_txt, if duration > 0 { format!("  ·  max {}s", duration) } else { String::new() });
     ui::text(hdc, &dims, RECT { left: 40, top: 30, right: c.right - 100, bottom: 54 }, f2, pal().dim, 0);
     let br = RECT { left: c.right - ui::sc(hw, 96), top: ui::sc(hw, 15), right: c.right - ui::sc(hw, 12), bottom: c.bottom - ui::sc(hw, 15) };
     ui::rounded(hdc, br, if hover { rgb(220, 50, 45) } else { rgb(170, 38, 35) }, ui::sc(hw, 8));
@@ -713,6 +737,10 @@ unsafe extern "system" fn bar_proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             0
         }
         WM_LBUTTONUP => {
+            stop_now();
+            0
+        }
+        WM_HOTKEY if wp as i32 == HOTKEY_STOP => {
             stop_now();
             0
         }
@@ -886,3 +914,4 @@ fn to_mp4(ff: &Path, dir: &Path, fps: f64, out: &Path) -> Result<(), String> {
         Err(if s.is_empty() { format!("ffmpeg exited with {}", output.status) } else { s })
     }
 }
+

@@ -44,10 +44,24 @@ Relevant Spectacle files:
 | Include/exclude pointer | ✅ `--cursor` / default excluded |
 | Magnifier in the overlay | ❌ pending (size label, thirds guides, handles and window hover outline are present) |
 
-Overlay behaviour: desktop frozen and dimmed, dragged rectangle stays bright; accent 2 px border, eight handles, live
-“W × H” badge, thirds guide lines, hint pill; Esc or right click cancels, Enter confirms; a click without a drag picks
-the window under the pointer (or the monitor when the desktop is clicked). Coordinates are physical pixels; the process
-is per-monitor DPI aware v2, so monitors at different scales line up.
+Overlay behaviour: **one window over the whole virtual desktop** (all monitors, including negative origins, physical
+pixels), desktop frozen and dimmed, dragged rectangle stays bright; accent 2 px border, eight handles, live “W × H”
+badge, thirds guide lines, hint pill on the cursor monitor. A selection can be dragged **across monitor boundaries**;
+mouse positions come from `GetCursorPos` rather than WM_MOUSE lparam so mixed-DPI monitors stay coherent. Esc or right
+click cancels; a click without a drag picks the window under the pointer (or the monitor).
+
+**Bottom selection bar** (Snipping-Tool style) on the cursor monitor: **Photo | Video**, **Region | Full | Monitor |
+Window**, delay `0/2/5/10 s`, and **Capture/Record**. `PrintScreen` opens Photo+Region, `Win+Alt+R` opens Video+Region;
+`--region`/`--record` set the same defaults. The bar moves above the selection when the selection reaches the bottom,
+and stays on the cursor monitor as the pointer crosses screens. Existing explicit `--full/--monitor/--window` paths stay
+direct; `--record --window/--monitor/--full` stays direct too.
+
+**Repaint:** all three surfaces are double-buffered. The overlay keeps the frozen desktop and a full virtual-size back
+buffer; a paint copies only the dirty rectangle from the dim image, draws there, and makes one `BitBlt` to the screen.
+Mouse movement invalidates only the previous/new selection (plus guides/handles margin), the moved bar, or the changed
+hover rectangle. The editor keeps a client-size back buffer and, on toolbar hover, invalidates only the old/new button
+and the status hint; the canvas `StretchBlt` is skipped for toolbar-only paints. The recording bar also paints into a
+back buffer and the timer invalidates only the dot/time block, not the Stop button.
 
 ### Editor (Spectacle tool set)
 
@@ -72,12 +86,21 @@ is per-monitor DPI aware v2, so monitors at different scales line up.
 
 ### Output
 
-- Default folder `%USERPROFILE%\Pictures\Screenshots` (created), name
+- **Images** default folder is `SHGetKnownFolderPath(FOLDERID_Pictures)\Screenshots` (normally
+  `%USERPROFILE%\Pictures\Screenshots`, redirected folders included; created). Name
   `Screenshot_2026-11-24_15-30-00.png` (a `-2` suffix is added if two land in the same second).
-- `--file PATH` overrides the name; the extension chooses PNG (default), JPEG (`.jpg`/`.jpeg`) or BMP.
+- **Videos** default folder is `SHGetKnownFolderPath(FOLDERID_Videos)\Screen Records` (normally
+  `%USERPROFILE%\Videos\Screen Records`; created). Name `Recording_2026-11-24_15-30-00.mp4` (`-2` on collision).
+- **Capture goes to the clipboard first.** A normal capture puts the bitmap on the clipboard immediately and opens the
+  editor; closing the editor without saving leaves only the clipboard copy and shows no “save?” prompt. The editor
+  writes a file only on **Save / Ctrl+S** (and shows “Copied to the clipboard” in its status bar at open).
+- `--no-ui` capture: clipboard only; `--file PATH` additionally writes PNG/JPEG/BMP. There is no automatic
+  `Pictures\Screenshots` file without `--file`.
+- `--file PATH` overrides the image name; the extension chooses PNG (default), JPEG (`.jpg`/`.jpeg`) or BMP.
 - Clipboard: 24-bit `CF_DIB` (top-down buffer converted to bottom-up rows, 4-byte aligned), accepted by Paint,
-  Word, browsers and `System.Windows.Forms.Clipboard` (verified).
-- The editor's **Save and copy** writes the file and the clipboard; **Copy** only the clipboard.
+  Word, browsers and `System.Windows.Forms.Clipboard` (verified). A registered `PNG` clipboard format is not written
+  yet (CF_DIB is the compatibility path).
+- The editor's **Save and copy** writes the file and refreshes the clipboard; **Copy** only the clipboard.
 
 ### Recording (new in this pass)
 
@@ -89,11 +112,12 @@ documented bridge for sources/builds WGC cannot take.
 |---|---|
 | Record region / monitor / window | ✅ region (default), monitor (cursor or `N`), foreground window |
 | Choose a window from a list | ❌ same as capture |
-| Floating stop button, border, timer | ✅ topmost recording bar (pulsing red dot, elapsed mm:ss, source size, fps, Stop), 3 px accent frame around the source |
+| Floating stop button, border, timer | ✅ topmost recording bar (pulsing red dot, elapsed mm:ss, source size, fps, audio/mute, Stop), 3 px accent frame around the source |
 | Stop with Esc | ✅ temporary low-level keyboard hook (swallows Esc while recording, catches a quick tap) |
-| Duration, fps, output path | ✅ `--duration`, `--fps`, `--out` |
+| Stop with Win+Alt+S | ✅ `RegisterHotKey` while the recording bar exists (Fn+S cannot be seen by software; see below) |
+| Duration, fps, output path | ✅ `--duration` (omitted = unlimited until Stop/Esc/Win+Alt+S), `--fps`, `--out` |
 | H.264/MP4 | ✅ WGC + Media Foundation (window verified; monitor where the OS allows it), ffmpeg bridge otherwise |
-| Audio | ❌ `--audio` accepted and ignored; pending |
+| Audio | ✅ WASAPI loopback + AAC in the WGC path (`--no-audio` disables); ffmpeg bridge stays silent |
 | Pause / resume, hardware encoding | ❌ |
 
 ## 3. Technology decisions
@@ -157,8 +181,16 @@ encoder keeps real time.
 
 **No partial or orphan recordings:**
 
+- `--duration`, the Stop button and Esc all follow the same path: stop flag → recorder thread finalizes (`SinkWriter::Finalize`
+  or ffmpeg) → UI closes → 80 ms flush → process exits 0. Completion is a non-blocking WinRust toast/log line, never a
+  modal message box that would keep the process alive.
+- `--record --no-ui --duration N` is headless: no selection bar when the source is explicit, no recording bar/border, no
+  dialogs; it records N seconds, finalizes and exits 0. Without `--duration` it refuses (there is no Stop button).
+  A headless Region source uses the monitor under the cursor because there is no overlay to select with.
+- a recorder that never returns is detected with a 15–20 s channel timeout and the process exits non-zero instead of
+  hanging.
 - the encoder is resolved/probed *after* the source is chosen but *before* the recording bar appears; if neither WGC
-  nor ffmpeg can take the source, a dialog explains ffmpeg installation and the command exits 4 — nothing is recorded;
+  nor ffmpeg can take the source, an error is logged/toasted and the command exits 4 — nothing is recorded;
 - WGC writes directly to the final MP4; a failed WGC recording deletes the partial file;
 - the ffmpeg bridge uses one temp folder per take, deleted **on success and on failure**; a hard-killed process is
   cleaned by the next run (folders older than 12 h);
@@ -175,14 +207,22 @@ ffmpeg -version
 A machine-PATH update is picked up by a *new* rs-shot process; the explicit `Program Files\ffmpeg\*\bin` lookup works
 even when the shell was started before the PATH change.
 
+**Audio (implemented and tested):** `--audio` is on by default. The WGC encoder opens the default render endpoint in
+WASAPI loopback, converts the mix (normally 48 kHz float32 stereo) to 16-bit PCM, and adds an **AAC** stream to the
+same `IMFSinkWriter`; timestamps are derived from the running sample count, so video and audio share one clock. The
+recording bar shows `audio`/`mute`, and a completed take reports `audio: AAC`. If the endpoint rejects loopback or MF
+has no AAC encoder, the writer is rebuilt video-only and the result reports `no audio (…)` instead of failing the
+recording. The ffmpeg bridge does not mix audio (no dshow device guessing): it records silent video and reports that.
+
+**Fn is firmware.** A laptop's “Fn+S” never reaches Windows as a key event, so it cannot be a stop shortcut. Use
+**Win+Alt+S**, the on-screen **Stop** button, or **Esc**.
+
 **Next WGC work:**
 
 1. monitor capture once the Windows build regression is fixed or via `TryCreateFromDisplayId`;
 2. GPU-side colour conversion (Video Processor MFT) instead of the CPU staging copy;
-3. `--audio` through WASAPI loopback;
-4. pause/resume, hardware encoder preferences.
-
-**Audio** is not recorded. `--audio` parses and is ignored; the spec marks it pending.
+3. pause/resume, hardware encoder preferences;
+4. optional `--audio-device` selection when the default render endpoint is not the wanted one.
 
 ## 4. Exact commands
 
@@ -201,10 +241,11 @@ rs-shot.exe --region --no-ui --file "%TEMP%\region.png"
 rs-shot.exe --region --file "%USERPROFILE%\Pictures\Screenshots\demo.png"
 
 # Recording (WGC + Media Foundation first; ffmpeg bridge for monitor/region on this Windows build)
-rs-shot.exe --record                                          # region overlay, 30 fps, until Stop/Esc
+rs-shot.exe --record                                          # Photo+Region bar; 30 fps, until Stop/Esc/Win+Alt+S
 rs-shot.exe --record --window --duration 10 --fps 30 --out "%TEMP%\clip.mp4"
-rs-shot.exe --record --window --encoder wgc --duration 5
-rs-shot.exe --record --monitor 1 --duration 10 --fps 30 --out "%TEMP%\clip.mp4"
+rs-shot.exe --record --window --duration 5 --encoder wgc --no-ui --out "%TEMP%\headless.mp4"
+rs-shot.exe --record --window --fps 30 --out "%TEMP%\until-stop.mp4"          # unlimited; Stop/Esc/Win+Alt+S
+rs-shot.exe --record --monitor 1 --duration 10 --no-audio --out "%TEMP%\silent.mp4"
 rs-shot.exe --record --monitor 1 --encoder ffmpeg --duration 10
 rs-shot.exe --record --region --delay 2 --fps 60 --out "%TEMP%\region.mp4"
 
@@ -248,6 +289,7 @@ Ctrl+C copy, Ctrl+wheel zoom, Esc close/cancel.
 - `annot.rs` — annotation model and pixel/GDI renderer.
 - `record.rs` — frame recorder, recording bar, stop hook, ffmpeg bridge.
 - `wgc.rs` — Windows.Graphics.Capture + Media Foundation H.264/MP4 encoder (probe, D3D11, SinkWriter, region crop).
+- `audio.rs` — WASAPI loopback → 16-bit PCM → AAC track in the same SinkWriter.
 - `ui.rs` — DPI, fonts, fills, dashed rectangles, Segoe MDL2 text.
 - `Cargo.toml` root — added `plugins/rs-shot` to `members`; `payload.txt` — `rs-shot.exe`; installer entry in
   `src/main.rs` + `src/install/tools.rs` (`%ProgramFiles%\rs-shot`); installer height in `src/ui.rs`.
@@ -256,7 +298,7 @@ Ctrl+C copy, Ctrl+wheel zoom, Esc close/cancel.
 
 - `cargo check -p rs-shot` and `cargo check -p topbar` pass with the local toolchain (`cargo 1.100.0`); rs-shot adds
   no warnings of its own.
-- `--full --no-ui` produced a 2800 × 900 PNG; the same to `.jpg` produced a valid JPEG (394 KB).
+- `--full --no-ui --file …` produced a 2800 × 900 PNG; the same to `.jpg` produced a valid JPEG (394 KB).
 - `--window --no-ui` produced a 504 × 576 PNG.
 - Clipboard was read back with `System.Windows.Forms.Clipboard.GetImage()` (1360 × 768).
 - The editor was drawn into with a synthetic arrow drag; Ctrl+S wrote a 1.8 MB PNG containing the arrow.
@@ -272,7 +314,27 @@ Ctrl+C copy, Ctrl+wheel zoom, Esc close/cancel.
 - **ffmpeg bridge**: `--record --monitor --duration 3 --fps 10 --out …mp4` produced a 102 KB file; `ffprobe` reports
   `h264`, 1360 × 768, 31 frames, 3.109 s (~9.97 fps). A forced ffmpeg failure (`.txt` output) left neither an output
   file nor a frame folder.
-- **Not executed:** the WGC monitor/region crop path (blocked by the OS bug above), WGC on Windows 10, and audio.
+- **Selection bar / multi-monitor**: `--region` showed Photo+Region, `--record` showed Video+Region; a drag from
+  (1200,300) to (1500,450) crossed the 1360 px monitor boundary and produced a 300 × 150 capture. The bar followed the
+  cursor monitor and its Capture button finished the selection (300 × 200 in the click test).
+- **No hang**: `--record --window --duration 3` exits 0 in ~3.5 s; `--record --window --duration 2 --no-ui
+  --encoder wgc` exits 0 in ~2.4 s; `--record --monitor --duration 2 --no-ui --encoder ffmpeg` exits 0 in ~2.3 s,
+  all with valid H.264 MP4s and no leftover `rs-shot-rec-*` folders.
+- **Double buffering**: overlay/editor/recording bar compose into persistent back buffers; only dirty rects are
+  invalidated (selection union, toolbar button/status, timer text). Visual checks after fast selection drags and
+  toolbar hover show no flash.
+- **Clipboard default**: `--full` opened the editor with a 2800 × 900 clipboard image and wrote **no** file; closing
+  without saving left the clipboard intact. `--full --no-ui` copied and wrote no file; `--full --no-ui --file …`
+  copied and wrote the PNG.
+- **Audio**: `--record --window --duration 4 --fps 15 --encoder wgc` produced an MP4 with `h264` **and `aac`
+  (48 kHz stereo)**; `ffprobe` duration 3.05 s. `--no-audio` produced video only. The ffmpeg fallback reported
+  `no audio (audio is not available with the ffmpeg bridge; video is silent)`.
+- **Unlimited + Win+Alt+S**: `--record --window --fps 15 --encoder wgc` (no `--duration`) stopped on a synthetic
+  Win+Alt+S, finalized a video+aac MP4 and exited 0.
+- **Default video folder**: without `--out`, the file landed as
+  `SHGetKnownFolderPath(FOLDERID_Videos)\Screen Records\Recording_2026-11-24-17-32-47.mp4`.
+- **Not executed:** the WGC monitor/region crop path (blocked by the OS bug above), WGC on Windows 10, and AAC on a
+  device whose loopback mix is not mono/stereo float/PCM16 (that path degrades by design).
 
 ## 8. Review list before shipping
 
@@ -291,7 +353,16 @@ Ctrl+C copy, Ctrl+wheel zoom, Esc close/cancel.
 5. **ffmpeg dependency**: the lookup covers beside-the-exe, `Program Files\rs-shot`, versioned
    `Program Files\ffmpeg\*\bin`, PATH and WinGet. Check the versioned glob after a Gyan upgrade and on a machine where
    PATH is stale in an already-running topbar.
-6. **PrintWindow** can return a black frame for some GPU/composited apps and does not capture hardware overlays; the
+6. **Audio**: WASAPI loopback + AAC works with the default 48 kHz float32 stereo mix; test 44.1 kHz, mono and a device
+   exposing more than two channels (currently degrades to video-only). The ffmpeg bridge is intentionally silent.
+   Laptop `Fn+S` is firmware, never reaches Windows; use Win+Alt+S, Stop or Esc.
+7. **Default folders**: Pictures and Videos come from `SHGetKnownFolderPath` (`FOLDERID_Pictures`,
+   `FOLDERID_Videos`); check a redirected Videos folder on another drive. Videos go to `Screen Records`, images to
+   `Screenshots`.
+8. **Painting**: overlay/editor/recording bar are double-buffered with dirty-rect invalidation; check on a 4K monitor
+   and with mixed-DPI screens (mouse coordinates use `GetCursorPos`, not WM_MOUSE lparam). The bar/hint must stay on
+   the cursor monitor and move above a bottom selection.
+7. **PrintWindow** can return a black frame for some GPU/composited apps and does not capture hardware overlays; the
    fallback is a screen `BitBlt` only when PrintWindow fails, not when it returns a black bitmap.
 6. **DPI/multi-monitor**: test 100 % + 150 % monitors side by side, mixed heights (virtual desktop has uncovered black
    areas), and moving the editor between monitors (WM_DPICHANGED).
@@ -305,3 +376,42 @@ Ctrl+C copy, Ctrl+wheel zoom, Esc close/cancel.
     flattened onto the screenshot.
 11. **Release build**: `cargo build --release -p rs-shot` (workspace `panic = "abort"`, `opt-level = "s"`); the icon and
     manifest come from the shared `app.ico` / `app.rc` copied from photoview.
+
+## 9. New localization keys (English form for `es.tsv`)
+
+`common/es.tsv` is owned by another agent; these are the new English strings that need entries. `{}` / `{n}` / `{:.1}`
+are format placeholders.
+
+Capture/editor:
+- `Copied to the clipboard`
+- `Could not copy to the clipboard`
+- `Could not save the screenshot`
+
+Selection bar:
+- `Photo`, `Video`, `Region`, `Full`, `Monitor`, `Window`, `Record`, `Capture`
+- `audio`, `mute`
+- `Drag to select a region · Esc cancels`
+- `The bottom button captures the full screen · Esc cancels`
+- `The bottom button captures this monitor · Esc cancels`
+- `Point at a window and press the bottom button · Esc cancels`
+- `Win+Alt+R records · the bottom button captures`
+- `Win+Alt+R records · the bottom button starts`
+
+Recording:
+- `Headless recording needs --duration N (seconds): there is no Stop button to end it.`
+- `Windows.Graphics.Capture captures one monitor or one window; the full multi-monitor desktop is not one item. Use --encoder ffmpeg.`
+- `Windows.Graphics.Capture is not available`
+- `WGC recording could not start: {}`
+- `Recording is unavailable: {}.\n\nThe fallback needs ffmpeg:\nwinget install --id Gyan.FFmpeg -e\n\nNothing was recorded.`
+- `WGC/Media Foundation could not record the video; the partial file was removed. {}`
+- `No frames were captured: {}`
+- `ffmpeg could not build the MP4; the temporary frames were removed. {}`
+- `Could not create the video folder: {}`
+- `Could not create the temporary folder: {}`
+- `Could not open the recording bar`
+- `There is no foreground window to record`
+- `Recorded (WGC + Media Foundation, H.264/MP4, {} frames, {:.1} fps, {}): {}`
+- `Recorded (ffmpeg, H.264/MP4, {} frames, {:.1} fps, {}): {}`
+- `audio: AAC`
+- `no audio`
+- `no audio ({})`

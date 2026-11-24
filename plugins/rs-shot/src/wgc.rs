@@ -34,12 +34,13 @@ use windows::{
             Gdi::HMONITOR,
         },
         Media::MediaFoundation::{
-            IMFDXGIDeviceManager, IMFMediaType, IMFSinkWriter, MFMediaType_Video, MFSTARTUP_FULL, MFVideoFormat_H264,
-            MFVideoInterlace_Progressive, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+            IMFDXGIDeviceManager, IMFMediaType, IMFSinkWriter, MFAudioFormat_AAC, MFAudioFormat_PCM, MFMediaType_Audio, MFMediaType_Video,
+            MFSTARTUP_FULL, MFVideoFormat_H264, MFVideoInterlace_Progressive, MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, MF_MT_AAC_PAYLOAD_TYPE,
+            MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT,
+            MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
             MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
-            MF_SINK_WRITER_D3D_MANAGER, MF_VERSION, MFVideoFormat_RGB32, MFStartup, MFCreateAttributes, MFCreateDXGIDeviceManager, MFCreateMediaType,
-            MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL,
-
+            MF_SINK_WRITER_D3D_MANAGER, MF_VERSION, MFVideoFormat_RGB32, MFStartup, MFCreateAttributes, MFCreateDXGIDeviceManager,
+            MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL,
         },
         System::{
             Com::{COINIT_MULTITHREADED, CoInitializeEx},
@@ -49,6 +50,8 @@ use windows::{
     },
     core::{HSTRING, Interface},
 };
+
+use crate::audio;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Target {
@@ -80,7 +83,7 @@ pub fn probe(target: &Target, fps: u32, cursor: bool) -> Result<(), String> {
     let path = std::env::temp_dir().join(format!("rs-shot-wgc-probe-{}.mp4", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let result = (|| -> Result<(), String> {
-        let enc = Enc::open(target, fps, cursor, &path)?;
+        let enc = Enc::open(target, fps, cursor, &path, false)?;
         enc.session.Close().map_err(err)?;
         Ok(())
     })();
@@ -100,6 +103,9 @@ struct Enc {
     stream: u32,
     /// CPU-readable copy of the frame; MF takes memory-buffer samples, which every H.264 encoder accepts.
     staging: ID3D11Texture2D,
+    audio: Option<audio::Audio>,
+    audio_stream: Option<u32>,
+    audio_note: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -111,7 +117,7 @@ struct RectU {
 }
 
 impl Enc {
-    fn open(target: &Target, fps: u32, cursor: bool, out: &Path) -> Result<Enc, String> {
+    fn open(target: &Target, fps: u32, cursor: bool, out: &Path, with_audio: bool) -> Result<Enc, String> {
         unsafe {
             // MTA is enough for WGC/MF; both probe and recorder threads initialize their own COM apartment.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -164,9 +170,24 @@ impl Enc {
             let _ = session.SetIsBorderRequired(false); // Windows 10 ignores this; Windows 11 hides the yellow frame
             session.StartCapture().map_err(err)?;
 
-            let (writer, stream) = make_writer(out, dims, fps, &device)?;
+            let (mut loopback, mut audio_note) = if with_audio {
+                match audio::open() {
+                    Ok(a) => (Some(a), None),
+                    Err(e) => (None, Some(e)),
+                }
+            } else {
+                (None, None)
+            };
+            let audio_fmt = loopback.as_ref().map(|a| a.format());
+            let (writer, stream, audio_stream, note) = make_writer(out, dims, fps, &device, audio_fmt)?;
+            if let Some(n) = note {
+                audio_note = Some(n);
+            }
+            if audio_stream.is_none() {
+                loopback = None;
+            }
             let staging = make_staging(&device, dims.0 as u32, dims.1 as u32)?;
-            Ok(Enc { writer, pool, session, device, context, crop, dims, stream, staging })
+            Ok(Enc { writer, pool, session, device, context, crop, dims, stream, staging, audio: loopback, audio_stream, audio_note })
         }
     }
 
@@ -206,8 +227,19 @@ impl Enc {
             sample.SetSampleTime((n as i64) * unit).map_err(|e| format!("SetSampleTime: {e}"))?;
             sample.SetSampleDuration(unit).map_err(|e| format!("SetSampleDuration: {e}"))?;
             self.writer.WriteSample(self.stream, &sample).map_err(|e| format!("WriteSample: {e}"))?;
+            self.pump_audio();
             let _ = frame.Close();
             Ok(true)
+        }
+    }
+
+    fn pump_audio(&mut self) {
+        let (Some(a), Some(idx)) = (self.audio.as_mut(), self.audio_stream) else { return };
+        if let Err(e) = a.pump(&self.writer, idx) {
+            self.audio = None;
+            if self.audio_note.is_none() {
+                self.audio_note = Some(e);
+            }
         }
     }
 }
@@ -239,7 +271,31 @@ unsafe fn video_type(w: i32, h: i32, fps: u32, subtype: windows::core::GUID) -> 
     Ok(t)
 }
 
-unsafe fn make_writer(out: &Path, dims: (i32, i32), fps: u32, device: &ID3D11Device) -> Result<(IMFSinkWriter, u32), String> {
+unsafe fn make_writer(
+    out: &Path,
+    dims: (i32, i32),
+    fps: u32,
+    device: &ID3D11Device,
+    audio_fmt: Option<audio::Format>,
+) -> Result<(IMFSinkWriter, u32, Option<u32>, Option<String>), String> {
+    match build_writer(out, dims, fps, device, audio_fmt) {
+        Ok((w, v, a)) => Ok((w, v, a, None)),
+        Err(e) if audio_fmt.is_some() => {
+            // AAC rejected (or no AAC encoder): rebuild video-only and keep the recording alive.
+            let (w, v, _) = build_writer(out, dims, fps, device, None)?;
+            Ok((w, v, None, Some(format!("audio unavailable: {e}"))))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+unsafe fn build_writer(
+    out: &Path,
+    dims: (i32, i32),
+    fps: u32,
+    device: &ID3D11Device,
+    audio_fmt: Option<audio::Format>,
+) -> Result<(IMFSinkWriter, u32, Option<u32>), String> {
     let mut attrs = None;
     MFCreateAttributes(&mut attrs, 2).map_err(err)?;
     let attrs = attrs.ok_or("MFCreateAttributes returned nothing")?;
@@ -262,8 +318,38 @@ unsafe fn make_writer(out: &Path, dims: (i32, i32), fps: u32, device: &ID3D11Dev
     in_type.SetUINT32(&MF_MT_DEFAULT_STRIDE, (dims.0 * 4) as u32).map_err(err)?;
     in_type.SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 1).map_err(err)?;
     writer.SetInputMediaType(stream, &in_type, None).map_err(err)?;
+
+    let audio_stream = match audio_fmt {
+        Some(f) => {
+            let out_a = audio_type(f, false)?;
+            let idx = writer.AddStream(&out_a).map_err(err)?;
+            let in_a = audio_type(f, true)?;
+            writer.SetInputMediaType(idx, &in_a, None).map_err(err)?;
+            Some(idx)
+        }
+        None => None,
+    };
     writer.BeginWriting().map_err(err)?;
-    Ok((writer, stream))
+    Ok((writer, stream, audio_stream))
+}
+
+unsafe fn audio_type(f: audio::Format, input: bool) -> Result<IMFMediaType, String> {
+    let t = MFCreateMediaType().map_err(err)?;
+    t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).map_err(err)?;
+    t.SetGUID(&MF_MT_SUBTYPE, if input { &MFAudioFormat_PCM } else { &MFAudioFormat_AAC }).map_err(err)?;
+    t.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, f.rate).map_err(err)?;
+    t.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, f.channels as u32).map_err(err)?;
+    t.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16).map_err(err)?;
+    let block = f.channels as u32 * 2;
+    if input {
+        t.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, block).map_err(err)?;
+        t.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, f.rate * block).map_err(err)?;
+    } else {
+        t.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16_000).map_err(err)?; // ~128 kbps
+        t.SetUINT32(&MF_MT_AAC_PAYLOAD_TYPE, 0).map_err(err)?;
+        t.SetUINT32(&MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29).map_err(err)?;
+    }
+    Ok(t)
 }
 
 unsafe fn make_staging(device: &ID3D11Device, w: u32, h: u32) -> Result<ID3D11Texture2D, String> {
@@ -305,8 +391,8 @@ unsafe fn crop_texture(device: &ID3D11Device, context: &ID3D11DeviceContext, src
 }
 
 /// Records until `stop`; returns (frames, elapsed milliseconds).
-pub fn record(target: &Target, fps: u32, cursor: bool, out: &Path, stop: Arc<AtomicBool>) -> Result<(u64, u128), String> {
-    let mut enc = Enc::open(target, fps, cursor, out)?;
+pub fn record(target: &Target, fps: u32, cursor: bool, out: &Path, stop: Arc<AtomicBool>, with_audio: bool) -> Result<(u64, u128, bool, Option<String>), String> {
+    let mut enc = Enc::open(target, fps, cursor, out, with_audio)?;
     let start = Instant::now();
     let interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
     let mut frames = 0u64;
@@ -333,12 +419,17 @@ pub fn record(target: &Target, fps: u32, cursor: bool, out: &Path, stop: Arc<Ato
         }
     }
     unsafe {
+        enc.pump_audio(); // drain the last loopback packets
         let _ = enc.session.Close();
         let _ = enc.writer.Finalize();
     }
     if frames == 0 {
         return Err("no frames were encoded".into());
     }
-    Ok((frames, start.elapsed().as_millis()))
+    let audio_ok = enc.audio.is_some() && enc.audio_stream.is_some();
+    let note = enc.audio_note.take();
+    Ok((frames, start.elapsed().as_millis(), audio_ok, note))
 }
+
+
 

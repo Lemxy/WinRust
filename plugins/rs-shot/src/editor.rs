@@ -230,6 +230,22 @@ unsafe fn open(img: Image, file: Option<PathBuf>) -> i32 {
     }));
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+    // The capture is on the clipboard from the start; the editor only writes a file when the user saves.
+    let copied = ED.with_borrow_mut(|slot| {
+        let Some(e) = slot.as_mut() else { return false };
+        let ok = save::copy_to_clipboard(&e.base);
+        set_status(
+            e,
+            if ok {
+                t!("Скопировано в буфер обмена", "Copied to the clipboard", ja: "クリップボードにコピーしました", pt: "Copiado para a área de transferência", zh: "已复制到剪贴板").to_string()
+            } else {
+                t!("Не удалось скопировать в буфер обмена", "Could not copy to the clipboard", ja: "クリップボードにコピーできませんでした", pt: "Não foi possível copiar para a área de transferência", zh: "无法复制到剪贴板").to_string()
+            },
+        );
+        ok
+    });
+    let _ = copied;
+    InvalidateRect(hwnd, null(), 0);
     winrust_common::fg::force(hwnd);
     let mut m: MSG = zeroed();
     while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
