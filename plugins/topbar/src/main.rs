@@ -1,4 +1,4 @@
-﻿// topbar: replaces the Windows taskbar with a panel at the bottom of the screen (the name stayed from when it sat on top),
+// topbar: replaces the Windows taskbar with a panel at the bottom of the screen (the name stayed from when it sat on top),
 // drawn in the Windows 11 taskbar palette: Start, pinned apps and open windows in the center; tray apps, language, wifi,
 // volume, battery and date/time on the right. `--restore` brings the normal taskbar back (used by uninstall).
 #![windows_subsystem = "windows"]
@@ -268,6 +268,7 @@ struct Pin {
     lnk: Vec<u16>,
     target: String, // lower-case exe path, "" if unknown
     args: String,   // what the shortcut passes to it (browser profile), "" if none
+    aumid: String,  // lower-case AppUserModelID the shortcut carries (a browser profile's own, #132), "" if none
     icon: HICON,
 }
 struct Btn {
@@ -359,6 +360,7 @@ thread_local! {
     static TB_MSG: Cell<u32> = const { Cell::new(0) }; // "TaskbarCreated"
     static SH_MSG: Cell<u32> = const { Cell::new(0) }; // "SHELLHOOK": window events for the shell (we are the shell hook window without explorer)
     static EXP_TRAY: Cell<HWND> = const { Cell::new(null_mut()) }; // explorer's taskbar we registered with
+    static FLASH: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // windows asking for attention (FlashWindowEx) until activated (#129)
     static APP_FG: Cell<HWND> = const { Cell::new(null_mut()) }; // last foreground window that is not ours: the language button acts on it
     static LANG_TRY: Cell<(u32, usize, usize)> = const { Cell::new((0, 0, 0)) }; // (thread, layout before, layout asked for) of the last switch, checked by timer 7
 }
@@ -1378,7 +1380,8 @@ unsafe fn load_pins() {
         // the shortcut's own name helps for pins whose target does not resolve (our own file manager)
         let icon = sys_pin_icon(&format!("{target} {}", f.file_stem().unwrap_or_default().to_string_lossy()), lnk_icon(&lnk, &target));
         let args = lnk_args(&lnk);
-        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target, args, icon }));
+        let aumid = lnk_aumid(&lnk).to_lowercase();
+        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target, args, aumid, icon }));
     }
     // once: a File Explorer button for the installed file manager (the marker keeps an unpinned one gone)
     let marker = appdata_file("topbar-explorer-pin.txt");
@@ -1397,7 +1400,16 @@ fn refresh_buttons() {
     let mut loose: Vec<HWND> = Vec::new();
     for w in wins {
         let exe = unsafe { exe_of(w) };
-        let pin = PINS.with_borrow(|p| p.iter().position(|p| !p.target.is_empty() && p.target == exe));
+        // pins of one exe (two browser profiles, #132) tell their windows apart by AppUserModelID; a pin or window without one
+        // takes any window of its exe
+        let pin = PINS.with_borrow(|p| {
+            let mine: Vec<usize> = (0..p.len()).filter(|&i| !p[i].target.is_empty() && p[i].target == exe).collect();
+            if mine.is_empty() {
+                return None;
+            }
+            let id = unsafe { win_meta(w).0 };
+            mine.iter().copied().find(|&i| !id.is_empty() && p[i].aumid == id).or_else(|| mine.iter().copied().find(|&i| id.is_empty() || p[i].aumid.is_empty()))
+        });
         match pin {
             Some(i) => btns[1 + i].wins.push(w),
             None => loose.push(w),
@@ -2001,9 +2013,23 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4], leader: bool) {
             let r = cell(y, l.bw);
             let mid = y + l.bw / 2;
             let act = b.wins.contains(&fg);
+            let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
                 fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(8));
+            }
+            if att {
+                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
+            }
+            if i == 0 {
+                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let g = sc(1).max(1);
+                let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
+                for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
+                    let (px, py) = (cx + if dx < 0 { -t - g } else { g }, mid + if dy < 0 { -t - g } else { g });
+                    fill(dc, RECT { left: px, top: py, right: px + t, bottom: py + t }, tint[k], sc(3));
+                }
+                continue;
             }
             let ic = match b.pin {
                 Some(p) => PINS.with_borrow(|pins| pins.get(p).map_or(null_mut(), |p| p.icon)),
@@ -2019,7 +2045,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4], leader: bool) {
                 // the running-app pill stands on the edge facing the screen's border
                 let min = b.wins.iter().all(|&w| IsIconic(w) != 0);
                 let pl = sc(6) + (sc(12) as f32 * ta) as i32;
-                let col = if act { pal().accent } else if min { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
+                let col = if act || att { pal().accent } else if min { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
                 let px = if left { sc(1) } else { cr.right - sc(4) };
                 fill(dc, RECT { left: px, top: mid - pl / 2, right: px + sc(3), bottom: mid + pl / 2 }, col, sc(3));
             }
@@ -2221,11 +2247,24 @@ unsafe fn paint(hwnd: HWND) {
             let x = l.x0 + button_slot(i as i32) * (l.bw + l.gap);
             let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
             let act = b.wins.contains(&fg);
-            let th = hv(i as i32, hot == i as i32);
-            let ta = hv(2000 + i as i32, act);
-            let tp = press_t(i as i32);
+            let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
+            let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
                 fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(8));
+            }
+            if att {
+                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
+            }
+            if i == 0 {
+                // Windows logo in four tiles, lit from the top left; grows a little on hover, squeezes on click
+                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let (g, cx) = (sc(1).max(1), (r.left + r.right) / 2);
+                let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
+                for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
+                    let (px, py) = (cx + if dx < 0 { -t - g } else { g }, mid + if dy < 0 { -t - g } else { g });
+                    fill(dc, RECT { left: px, top: py, right: px + t, bottom: py + t }, tint[k], sc(3));
+                }
+                continue;
             }
             let ic = match b.pin {
                 Some(p) => PINS.with_borrow(|pins| pins.get(p).map_or(null_mut(), |p| p.icon)),
@@ -2242,7 +2281,7 @@ unsafe fn paint(hwnd: HWND) {
                 let min = b.wins.iter().all(|&w| IsIconic(w) != 0);
                 let pw = sc(6) + (sc(12) as f32 * ta) as i32; // the running-app pill stretches when its window is active
                 let py = bot - sc(4);
-                let col = if act { pal().accent } else if min { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
+                let col = if act || att { pal().accent } else if min { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
                 fill(dc, RECT { left: x + (l.bw - pw) / 2, top: py, right: x + (l.bw + pw) / 2, bottom: py + sc(3) }, col, sc(3));
                 if b.wins.len() > 1 {
                     // a second, shorter pill: more than one window behind this button
@@ -2649,7 +2688,7 @@ unsafe fn pin_exe(path: &str, args: &str) {
             let _ = std::fs::write(unpinned_file(), t.lines().filter(|l| *l != line).map(|l| format!("{l}\n")).collect::<String>());
         }
         let icon = sys_pin_icon(exe, lnk_icon(&lnk, exe));
-        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target: exe.to_string(), args, icon }));
+        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target: exe.to_string(), args, aumid: String::new(), icon }));
     }
 }
 
@@ -2901,14 +2940,24 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
                 fly::toggle(fly::Kind::Start);
             }
         }
-        TASKVIEW if left => keys(&[VK_LWIN, VK_TAB]), // virtual desktops (#83)
+        // virtual desktops (#83). Task View lives in explorer's shell: without it Win+Tab does nothing (#120), so the button
+        // opens our window grid instead (the Alt+Tab one: click a card, arrows + Enter, Esc or the button again closes)
+        TASKVIEW if left && !find_other("Shell_TrayWnd").is_null() => keys(&[VK_LWIN, VK_TAB]),
+        TASKVIEW if left => {
+            if IsWindowVisible(SWWND.get()) != 0 {
+                SWITCHING.store(false, Relaxed);
+                alt_done(true);
+            } else {
+                SWITCHING.store(true, Relaxed);
+                alt_tab(false);
+            }
+        }
         // left: the language picker; right: straight to the next one (Win+Space is explorer's, gone under rs-shell)
-        LANG if left => lang_menu(hwnd),
-        LANG => next_lang(hwnd, false),
-        WIFI_I => fly::toggle(if left { fly::Kind::Quick } else { fly::Kind::Wifi }), // right click: the network list
-        VOL_I | BAT_I => fly::toggle(fly::Kind::Quick),
-        BELL => notify::toggle_center(),
-        CLOCK if left => fly::toggle(fly::Kind::Cal),
+        LANG if left => lang_menu(BAR.load(Relaxed) as HWND),
+        LANG => next_lang(BAR.load(Relaxed) as HWND, false),
+        WIFI_I => fly::toggle_click(if left { fly::Kind::Quick } else { fly::Kind::Wifi }), // right click: the network list
+        VOL_I | BAT_I => fly::toggle_click(fly::Kind::Quick),
+        CLOCK if left => fly::toggle_click(fly::Kind::Cal),
         CLOCK => {
             // right click: like Windows 11, a menu with the date and time and notification settings (#126)
             let items = vec![
@@ -2940,7 +2989,7 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
                 ti.into_iter().for_each(|ti| tray_click(ti, left));
             }
         }
-        0 if left => fly::toggle(fly::Kind::Start),
+        0 if left => fly::toggle_click(fly::Kind::Start),
         0 => start_menu(hwnd),
         1.. => {
             let (wins, lnk) = BTNS.with_borrow(|b| b.get(h as usize).map(|b| (b.wins.clone(), b.pin.and_then(|p| PINS.with_borrow(|p2| p2.get(p).map(|x| x.lnk.clone()))))).unwrap_or_default());
@@ -3140,6 +3189,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             min_rect(lp as *mut ShellHookInfo, hwnd); // HSHELL_GETMINRECT
             return 1;
         }
+        let w = lp as HWND;
+        match wp {
+            0x8006 => FLASH.with_borrow_mut(|f| if !f.contains(&w) { f.push(w) }), // HSHELL_FLASH
+            4 | 0x8004 | 2 => FLASH.with_borrow_mut(|f| f.retain(|&x| x != w)), // activated (HSHELL_WINDOWACTIVATED / RUDEAPPACTIVATED), destroyed
+            _ => return 0,
+        }
+        InvalidateRect(hwnd, null(), 0);
         return 0;
     }
     if msg != 0 && msg == TB_MSG.get() {
