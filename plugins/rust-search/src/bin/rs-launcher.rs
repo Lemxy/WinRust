@@ -153,6 +153,25 @@ fn ask(q: &str) -> Vec<String> {
     winrust_common::search::ask_all(q)
 }
 
+/// The row that opens WinRust Disk's cleaner: it stands in the results like a path, and only this file knows it is not one.
+const CLEAN_ROW: &str = "winrust:clean";
+
+/// WinRust Disk, when it is installed: it does the cleaning (as admin, all drives).
+fn cleaner_exe() -> Option<std::path::PathBuf> {
+    let exe = std::path::PathBuf::from(std::env::var_os("ProgramFiles")?).join(r"wiztree\wiztree.exe");
+    exe.is_file().then_some(exe)
+}
+
+/// The search looks like a wish for disk space ("limpiar", "free up", "мусор"...): the cleaner row goes on top.
+fn wants_cleaner(q: &str) -> bool {
+    const WORDS: [&str; 27] = [
+        "clean", "cleanup", "cleaner", "free up", "free space", "disk space", "junk", "temp files", "limpiar", "limpieza", "limpiador", "liberar", "espacio",
+        "basura", "temporales", "limpar", "limpeza", "lixo", "очистить", "очистка", "освободить", "мусор", "クリーンアップ", "空き領域", "清理", "垃圾", "释放空间",
+    ];
+    let q = q.trim().to_lowercase();
+    q.len() >= 4 && WORDS.iter().any(|w| w.starts_with(&q) || q.starts_with(w))
+}
+
 fn is_app(path: &str) -> bool {
     let l = path.to_lowercase();
     l.ends_with(".lnk") && l.contains("\\start menu\\programs\\")
@@ -162,6 +181,12 @@ fn is_app(path: &str) -> bool {
 fn labels(path: &str) -> (String, String) {
     use winrust_common::t;
     let (dir, file) = path.rsplit_once('\\').unwrap_or(("", path));
+    if path == CLEAN_ROW {
+        return (
+            t!("Освободить место на дисках", "Free up disk space", ja: "ディスクの空き領域を増やす", pt: "Liberar espaço em disco", zh: "释放磁盘空间", es: "Liberar espacio en disco").into(),
+            t!("WinRust Disk: временные файлы, кеши и копии на всех дисках", "WinRust Disk: temporary files, caches and copies on every drive", ja: "WinRust Disk: すべてのドライブの一時ファイル、キャッシュ、重複ファイル", pt: "WinRust Disk: arquivos temporários, caches e cópias em todas as unidades", zh: "WinRust Disk：所有磁盘上的临时文件、缓存和重复文件", es: "WinRust Disk: archivos temporales, cachés y copias en todos los discos").into(),
+        );
+    }
     if is_app(path) {
         (
             file.trim_end_matches(".lnk").trim_end_matches(".LNK").to_string(),
@@ -303,6 +328,9 @@ unsafe fn refresh(h: HWND) {
     if q.trim().is_empty() {
         return apply_results(h, vec![]);
     }
+    if wants_cleaner(&q) {
+        apply_results(h, vec![]); // the cleaner row shows at once; the files follow when the services answer
+    }
     let hw = h as isize;
     std::thread::spawn(move || {
         let res = ask(&q);
@@ -313,7 +341,10 @@ unsafe fn refresh(h: HWND) {
     });
 }
 
-unsafe fn apply_results(h: HWND, res: Vec<String>) {
+unsafe fn apply_results(h: HWND, mut res: Vec<String>) {
+    if !st(|s| s.run) && wants_cleaner(&st(|s| String::from_utf16_lossy(&s.text))) && cleaner_exe().is_some() {
+        res.insert(0, CLEAN_ROW.into());
+    }
     st(|s| {
         s.results = res;
         s.menu = None;
@@ -329,6 +360,12 @@ unsafe fn open(h: HWND, reveal: bool) {
     }
     let Some(p) = st(|s| if s.rename.is_some() { None } else { s.results.get(s.sel).cloned() }) else { return };
     hide(h);
+    if p == CLEAN_ROW {
+        if let Some(exe) = cleaner_exe() {
+            ShellExecuteW(null_mut(), wide("open").as_ptr(), wide(&exe.to_string_lossy()).as_ptr(), wide("--clean").as_ptr(), null(), SW_SHOWNORMAL);
+        }
+        return;
+    }
     if reveal {
         winrust_common::reveal(&p);
     } else {
@@ -844,7 +881,7 @@ fn menu_hit(x: i32, y: i32) -> Option<Option<usize>> {
 
 unsafe fn open_menu(h: HWND, row: usize, x: i32, y: i32) {
     st(|s| {
-        if let Some(path) = s.results.get(row).cloned() {
+        if let Some(path) = s.results.get(row).cloned().filter(|p| p != CLEAN_ROW) {
             s.sel = row;
             s.menu = Some(MenuSt { x, y, hot: 0, path });
             s.th = target_height(s); // room for the menu even under a single result
@@ -1338,6 +1375,9 @@ unsafe fn draw_purge(dc: HDC, w: i32, v: &View, pv: &PView) {
 /// bare name looked up on PATH like Win+R does. Anything else comes back as it was.
 unsafe fn icon_path(p: &str) -> String {
     use windows_sys::Win32::Storage::FileSystem::SearchPathW;
+    if p == CLEAN_ROW {
+        return cleaner_exe().map_or_else(String::new, |e| e.to_string_lossy().into());
+    }
     let mut e = String::new();
     let mut rest = p;
     while let Some(a) = rest.find('%') {
@@ -1722,6 +1762,16 @@ fn main() {
 mod tests {
     use super::*;
     use std::os::windows::process::CommandExt;
+
+    #[test]
+    fn a_wish_for_space_brings_the_cleaner() {
+        for q in ["limpiar", "Liberar espacio", "basu", "free up space", "clean", "очистить диск", "清理"] {
+            assert!(wants_cleaner(q), "{q}");
+        }
+        for q in ["lim", "photo", "report.pdf", "espadas"] {
+            assert!(!wants_cleaner(q), "{q}");
+        }
+    }
 
     #[test]
     fn wipe_unlocks_read_only_and_never_follows_junctions() {
