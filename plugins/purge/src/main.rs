@@ -184,6 +184,7 @@ fn apply(od: bool, edge: bool) -> Result<(), String> {
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     winrust_common::utf8_console();
     let a: Vec<String> = env::args().skip(1).collect();
     let has = |f: &str| a.iter().any(|x| x == f);

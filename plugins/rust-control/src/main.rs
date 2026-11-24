@@ -1698,6 +1698,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 // ───────────────────────────── entry point ─────────────────────────────
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     unsafe {
         let mut token = 0usize;
         let mut input: GdiplusStartupInput = std::mem::zeroed();

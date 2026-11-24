@@ -33,6 +33,7 @@ Options:
 Exit codes: 0 sent, 1 bad arguments, 2 the bar is not listening, 3 write failed.";
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     std::process::exit(run());
 }
 

@@ -13,6 +13,7 @@
 //! "Always use this app" writes the type's default ProgID under HKCU - never UserChoice, which Windows protects.
 #![allow(unsafe_op_in_unsafe_fn)]
 use std::{
+    ffi::c_void,
     mem::{size_of, zeroed},
     path::{Path, PathBuf},
     ptr,
@@ -20,6 +21,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, RECT, ERROR_MORE_DATA, ERROR_SUCCESS, S_OK},
     Graphics::Gdi::*,
+    Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
     System::{
         LibraryLoader::GetModuleHandleW,
         Registry::{
@@ -30,6 +32,7 @@ use windows_sys::Win32::{
         Threading::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW, STARTF_USESHOWWINDOW},
     },
     UI::{
+        Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST},
         Input::KeyboardAndMouse::{
             SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_UP,
         },
@@ -443,6 +446,7 @@ fn candidates(file: &Path) -> Vec<App> {
 unsafe fn remember(file: &Path, exe: &Path, progid: Option<String>) {
     let Some(ext) = file.extension() else { return };
     let key = format!(".{}", ext.to_string_lossy().to_lowercase());
+    let manual = progid.is_none(); // picked by hand: it has no ProgID of its own
     let Some(progid) = progid.or_else(|| exe.file_name().map(|n| format!(r"Applications\{}", n.to_string_lossy()))) else {
         return;
     };
@@ -453,6 +457,24 @@ unsafe fn remember(file: &Path, exe: &Path, progid: Option<String>) {
     }
     if let Some(k) = create_key(HKEY_CURRENT_USER, &format!(r"{base}\OpenWithProgids")) {
         set_none(k, &progid); // and it is listed as one of the type's handlers
+        RegCloseKey(k);
+    }
+    // Applications\<exe> only resolves through a registered command: without this the default value above points at
+    // nothing, because a browsed exe may live in any folder and no App Paths entry knows it.
+    let Some(name) = exe.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
+    if !manual {
+        return;
+    }
+    let app_key = format!(r"Software\Classes\Applications\{name}");
+    if let Some(k) = create_key(HKEY_CURRENT_USER, &app_key) {
+        let label = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        if !label.is_empty() {
+            set_string(k, "FriendlyAppName", &label); // the name our own list shows next time
+        }
+        if let Some(c) = create_key(HKEY_CURRENT_USER, &format!(r"{app_key}\shell\open\command")) {
+            set_string(c, "", &format!("\"{}\" \"%1\"", exe.display()));
+            RegCloseKey(c);
+        }
         RegCloseKey(k);
     }
 }
@@ -507,6 +529,7 @@ enum Hit {
     Check,
     Open,
     Cancel,
+    Browse,
 }
 
 struct Dlg {
@@ -518,7 +541,10 @@ struct Dlg {
     always_text: String,
     open_text: String,
     cancel_text: String,
+    browse_text: String,
     n: usize, // apps.len() + the "search another app" row
+    /// Rows (search row included) that fit on this monitor: the cap a browsed app has to respect.
+    rows_fit: usize,
     w: i32,
     head: i32,
     sel: usize,
@@ -527,6 +553,8 @@ struct Dlg {
     /// A double click in progress: the click that opens the row is its button-up, so the dialog is gone only after the
     /// whole gesture has been consumed.
     dbl: bool,
+    /// The Win32 file dialog is up: the deactivation it causes must not close this window.
+    modal: bool,
     always: bool,
     chosen: Option<usize>,
     done: bool,
@@ -535,6 +563,7 @@ struct Dlg {
     check_row: RECT,
     open_btn: RECT,
     cancel_btn: RECT,
+    browse_btn: RECT,
 }
 
 impl Drop for Dlg {
@@ -554,6 +583,22 @@ fn row_rect(d: &Dlg, i: usize) -> RECT {
     RECT { left: sc(8), top: top + sc(2), right: d.w - sc(8), bottom: top + sc(ROW_H) - sc(2) }
 }
 
+/// Everything that depends on the number of rows. Called once when the dialog is built and again when "Browse..." adds
+/// a row: the window grows, the checkbox and the buttons move down and the rounded region follows. Returns the new
+/// client height.
+fn reflow(d: &mut Dlg) -> i32 {
+    let rows = sc(ROW_H) * d.n as i32;
+    let h = d.head + rows + sc(48) + sc(56);
+    d.check_row = RECT { left: sc(8), top: d.head + rows + sc(4), right: d.w - sc(8), bottom: d.head + rows + sc(44) };
+    let (bh, bw) = (sc(32), sc(92));
+    let by = h - sc(12) - bh;
+    // Browse on the left (a secondary action, away from Abrir), Cancel and Open on the right as before
+    d.browse_btn = RECT { left: sc(14), top: by, right: sc(14) + bw, bottom: by + bh };
+    d.open_btn = RECT { left: d.w - sc(14) - bw, top: by, right: d.w - sc(14), bottom: by + bh };
+    d.cancel_btn = RECT { left: d.w - sc(14) - 2 * bw - sc(10), top: by, right: d.w - sc(14) - bw - sc(10), bottom: by + bh };
+    h
+}
+
 fn inside(r: RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
@@ -564,6 +609,9 @@ fn hit(d: &Dlg, x: i32, y: i32) -> Hit {
     }
     if inside(d.cancel_btn, x, y) {
         return Hit::Cancel;
+    }
+    if inside(d.browse_btn, x, y) {
+        return Hit::Browse;
     }
     if inside(d.check_row, x, y) {
         return Hit::Check;
@@ -659,7 +707,11 @@ unsafe fn paint(h: HWND, d: &Dlg) {
     SelectObject(dc, d.fonts[1]);
     ui::text(dc, &d.always_text, RECT { left: check.right + sc(10), top: d.check_row.top, right: d.check_row.right, bottom: d.check_row.bottom }, p.text, DT_LEFT);
 
-    // the buttons: Open in the accent, Cancel a plain surface
+    // the buttons: Browse on the left in the plain surface of Cancel, Open in the accent
+    let browse_bg = if d.hover == Hit::Browse { ui::mix(p.bg, p.text, 0.16) } else { ui::mix(p.bg, p.text, 0.08) };
+    ui::fill(dc, d.browse_btn, browse_bg, sc(6));
+    SelectObject(dc, d.fonts[1]);
+    ui::text(dc, &d.browse_text, d.browse_btn, p.text, DT_CENTER);
     let open_bg = if d.hover == Hit::Open { ui::mix(p.accent, p.text, 0.12) } else { p.accent };
     ui::fill(dc, d.open_btn, open_bg, sc(6));
     SelectObject(dc, d.fonts[1]);
@@ -718,6 +770,13 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
                     d.done = true;
                 }
                 Hit::Cancel => d.done = true,
+                Hit::Browse => {
+                    // the file dialog deactivates this window: the modal flag keeps that from closing it
+                    d.modal = true;
+                    browse(h, d);
+                    d.modal = false;
+                    InvalidateRect(h, ptr::null(), 0);
+                }
                 Hit::Check => {
                     d.always = !d.always;
                     InvalidateRect(h, ptr::null(), 0);
@@ -769,8 +828,8 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             0
         }
         WM_ACTIVATE => {
-            // a click anywhere else dismisses it, like a menu (WA_INACTIVE = 0)
-            if (wp as u32) & 0xffff == 0 {
+            // a click anywhere else dismisses it, like a menu (WA_INACTIVE = 0) - except while the file dialog is up
+            if !d.modal && (wp as u32) & 0xffff == 0 {
                 d.done = true;
             }
             0
@@ -781,6 +840,120 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
         }
         _ => DefWindowProcW(h, msg, wp, lp),
     }
+}
+
+/// The Win32 "open file" dialog for picking a program: comdlg32, a plain common dialog, so it renders without Explorer.
+unsafe fn pick_exe(owner: HWND) -> Option<PathBuf> {
+    // the filter is a run of NUL-terminated pairs ending in a second NUL
+    let filter: Vec<u16> = "Programs (*.exe)\0*.exe\0All files (*.*)\0*.*\0\0".encode_utf16().collect();
+    let ext = wc("exe"); // kept in a local: the struct only borrows it
+    let mut buf = vec![0u16; 1024];
+    let mut ofn: OPENFILENAMEW = zeroed();
+    ofn.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = filter.as_ptr();
+    ofn.nFilterIndex = 1; // Programs (*.exe)
+    ofn.lpstrFile = buf.as_mut_ptr();
+    ofn.nMaxFile = buf.len() as u32;
+    ofn.lpstrDefExt = ext.as_ptr();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if GetOpenFileNameW(&mut ofn) == 0 {
+        return None; // Cancel (or a failure): the caller leaves the dialog exactly as it was
+    }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let p = PathBuf::from(String::from_utf16_lossy(&buf[..n]));
+    (!p.as_os_str().is_empty()).then_some(p)
+}
+
+/// The `FileDescription` of the exe's version resource ("Notepad", "WordCraft"), when it has one: a better row title
+/// than the file stem, and version.dll is already reachable, so no dependency is added.
+unsafe fn file_description(exe: &Path) -> Option<String> {
+    let path = wc(&exe.to_string_lossy());
+    let size = GetFileVersionInfoSizeW(path.as_ptr(), ptr::null_mut());
+    if size == 0 {
+        return None;
+    }
+    let mut block = vec![0u8; size as usize];
+    if GetFileVersionInfoW(path.as_ptr(), 0, size, block.as_mut_ptr() as *mut _) == 0 {
+        return None;
+    }
+    // the string table is keyed by the language/codepage pair the resource declares
+    let mut tr: *mut c_void = ptr::null_mut();
+    let mut tr_len = 0u32;
+    let key = wc(r"\VarFileInfo\Translation");
+    if VerQueryValueW(block.as_ptr() as *const _, key.as_ptr(), &mut tr, &mut tr_len) == 0 || tr.is_null() || tr_len < 4 {
+        return None;
+    }
+    let pair = tr as *const u16;
+    let (lang, cp) = (*pair, *pair.add(1));
+    let key = wc(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\FileDescription"));
+    let mut val: *mut c_void = ptr::null_mut();
+    let mut val_len = 0u32;
+    if VerQueryValueW(block.as_ptr() as *const _, key.as_ptr(), &mut val, &mut val_len) == 0 || val.is_null() || val_len == 0 {
+        return None;
+    }
+    let s = String::from_utf16_lossy(std::slice::from_raw_parts(val as *const u16, val_len as usize));
+    let s = s.trim_end_matches('\0').trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// "Browse...": pick the program by hand. It joins the list at the top, selected, and nothing is started yet - Abrir
+/// (or Enter) does that, so "always use this app" still gets a say.
+unsafe fn browse(h: HWND, d: &mut Dlg) {
+    // the common dialog is a normal window: a topmost owner would leave it behind this one, so the flag is dropped for
+    // the trip (and put back afterwards)
+    let top = (GetWindowLongPtrW(h, GWL_EXSTYLE) as u32) & WS_EX_TOPMOST != 0;
+    if top {
+        SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    let picked = pick_exe(h);
+    if top {
+        SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    InvalidateRect(h, ptr::null(), 0);
+    let Some(exe) = picked else { return }; // cancelled: the dialog stays exactly as it was
+    let lower = exe.to_string_lossy().to_lowercase();
+    // an exe already listed (under another ProgID) just moves to the top instead of appearing twice
+    d.apps.retain(|a| a.exe.to_string_lossy().to_lowercase() != lower);
+    let name = file_description(&exe);
+    d.apps.insert(0, app_of(exe, name, None));
+    // one row is always "search another app": the cap keeps the buttons reachable on this monitor
+    d.apps.truncate(d.rows_fit.saturating_sub(1).clamp(1, MAX_APPS));
+    d.icons = d.apps.iter().map(|a| winrust_common::icon::best(&a.exe, sc(ICON))).collect();
+    d.n = d.apps.len() + 1;
+    d.sel = 0;
+    d.hover = Hit::None;
+    d.dbl = false;
+
+    let mut wr: RECT = zeroed();
+    GetWindowRect(h, &mut wr);
+    let (ww, old_h) = (wr.right - wr.left, wr.bottom - wr.top);
+    let new_h = reflow(d);
+    if new_h > old_h {
+        // the frost was captured for the old height: take the strip the taller window uncovers before growing it
+        let mut y = wr.top;
+        let mon = winrust_common::monitors::of(h);
+        let area = if mon.work.bottom > mon.work.top { mon.work } else { mon.rc };
+        if y + new_h > area.bottom {
+            y = (area.bottom - new_h).max(area.top); // a window that no longer fits at the bottom moves up
+        }
+        if y == wr.top && !d.px.is_empty() {
+            let strip = winrust_common::frost::capture_rect(
+                RECT { left: wr.left, top: wr.bottom, right: wr.right, bottom: wr.bottom + (new_h - old_h) },
+                winrust_common::look::menu_radius(),
+            );
+            if strip.len() == ww.max(0) as usize * (new_h - old_h) as usize {
+                d.px.extend_from_slice(&strip);
+            } else {
+                d.px.clear(); // a solid background is better than pixels captured over our own window
+            }
+        } else {
+            d.px.clear();
+        }
+        SetWindowPos(h, ptr::null_mut(), wr.left, y, ww, new_h, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowRgn(h, CreateRoundRectRgn(0, 0, ww + 1, new_h + 1, sc(16), sc(16)), 1);
+    }
+    InvalidateRect(h, ptr::null(), 0);
 }
 
 unsafe fn ensure_class() {
@@ -818,15 +991,8 @@ unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
     let n = apps.len() + 1;
     let w = sc(WIN_W);
     let head = sc(HEAD);
-    let rows = sc(ROW_H) * n as i32;
-    let h = head + rows + sc(48) + sc(56);
-    let check_row = RECT { left: sc(8), top: head + rows + sc(4), right: w - sc(8), bottom: head + rows + sc(44) };
-    let (bh, bw) = (sc(32), sc(92));
-    let by = h - sc(12) - bh;
-    let open_btn = RECT { left: w - sc(14) - bw, top: by, right: w - sc(14), bottom: by + bh };
-    let cancel_btn = RECT { left: w - sc(14) - 2 * bw - sc(10), top: by, right: w - sc(14) - bw - sc(10), bottom: by + bh };
     let icons: Vec<HICON> = apps.iter().map(|a| unsafe { winrust_common::icon::best(&a.exe, sc(ICON)) }).collect();
-    let d = Box::new(Dlg {
+    let mut d = Box::new(Dlg {
         apps,
         icons,
         file_name: file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -835,13 +1001,16 @@ unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
         always_text: t!("Всегда использовать это приложение", "Always use this app", ja: "常にこのアプリを使用する", pt: "Usar sempre este aplicativo", zh: "始终使用此应用").to_string(),
         open_text: t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开").to_string(),
         cancel_text: t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消").to_string(),
+        browse_text: t!("Обзор…", "Browse…", ja: "参照…", pt: "Procurar…", zh: "浏览…").to_string(),
         n,
+        rows_fit: fit,
         w,
         head,
         sel: 0,
         hover: Hit::None,
         tracking: false,
         dbl: false,
+        modal: false,
         always: false,
         chosen: None,
         done: false,
@@ -852,12 +1021,15 @@ unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
             ui::font(11, 400, ui::ui_face()) as HFONT,
             ui::font(15, 400, winrust_common::style::icon_face()) as HFONT,
         ],
-        check_row,
-        open_btn,
-        cancel_btn,
+        // filled by reflow below: the height is only known once the row count is final
+        check_row: zeroed(),
+        open_btn: zeroed(),
+        cancel_btn: zeroed(),
+        browse_btn: zeroed(),
     });
+    let h = reflow(&mut d);
 
-    // the two formulas from the layout above: centred on the work area of the owner's monitor
+    // centred on the work area of the monitor the click happened on
     let x = area.left + ((area.right - area.left) - w) / 2;
     let y = area.top + ((area.bottom - area.top) - h) / 2;
 

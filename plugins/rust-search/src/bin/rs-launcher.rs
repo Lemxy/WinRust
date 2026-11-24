@@ -1519,6 +1519,7 @@ fn search_host_guard() {
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     if std::env::args().nth(1).as_deref() == Some("--autostart") {
         let exe = std::env::current_exe().unwrap();
         let ok = std::process::Command::new("reg")

@@ -2097,6 +2097,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     if std::env::args().nth(1).as_deref() == Some("--nightlight") {
         return ext::night_helper(); // the colour filter's background process, see ext.rs
     }

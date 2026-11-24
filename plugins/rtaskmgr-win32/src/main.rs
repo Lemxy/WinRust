@@ -68,6 +68,7 @@ fn xy(l: isize) -> (i32, i32) {
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     if let Some(i) = std::env::args().position(|a| a == "--net-selftest")
         && let Some(out) = std::env::args().nth(i + 1) {
             return net_selftest(&out);

@@ -27,6 +27,7 @@ fn wipe(p: &Path) {
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     winrust_common::utf8_console();
     let a: Vec<String> = env::args().skip(1).collect();
     let flag = |f: &str| a.iter().any(|x| x == f);

@@ -3329,6 +3329,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     unsafe {
         if std::env::args().any(|a| a == "--restore") {
             show_taskbar(saved_taskbar_state().unwrap_or(ABS_ALWAYSONTOP as usize));

@@ -2458,6 +2458,7 @@ fn namespace_target() -> Option<String> {
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     if let Some(t) = namespace_target() {
         // control.exe opens its own window; explorer.exe given a namespace address opens it directly (no folder verb involved)
         // Only the "open" verb of folders is ours: control.exe and explorer.exe <address> both come back here through it

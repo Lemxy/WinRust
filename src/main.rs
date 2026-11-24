@@ -186,6 +186,7 @@ thread_local! { static SETTINGS: Cell<Option<usize>> = const { Cell::new(None) }
 thread_local! { static HOVER: Cell<Option<usize>> = const { Cell::new(None) }; }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     let args: Vec<String> = env::args().skip(1).collect();
     if !args.is_empty() {
         std::process::exit(cli(&args));

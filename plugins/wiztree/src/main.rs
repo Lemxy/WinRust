@@ -306,6 +306,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     unsafe {
         let drive = std::env::args().nth(1).and_then(|a| a.chars().next()).filter(char::is_ascii_alphabetic).map_or('C', |c| c.to_ascii_uppercase());
         if IsUserAnAdmin() == 0 {

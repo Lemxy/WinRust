@@ -644,6 +644,7 @@ fn serve_log(drive: char) {
 }
 
 fn main() {
+    winrust_common::appid::set("WinRust"); // group every WinRust process under one Task Manager entry
     let mut args: Vec<String> = env::args().skip(1).collect();
     let (mut drive, mut explicit) = ('C', None);
     if args.first().map(|a| a == "-d").unwrap_or(false) && args.len() >= 2 {
