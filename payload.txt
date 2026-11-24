@@ -12,6 +12,7 @@ rust-explorer.exe = target/release/rust-explorer.exe
 rs-shell.exe = target/release/rs-shell.exe
 wiztree.exe = target/release/wiztree.exe
 photoview.exe = target/release/photoview.exe
+rs-shot.exe = target/release/rs-shot.exe
 rust-settings.exe = target/release/rust-settings.exe
 rust-control.exe = target/release/rust-control.exe
 debloat.exe = target/release/debloat.exe

@@ -43,6 +43,7 @@ members = [
     "plugins/rs-shell",
     "plugins/wiztree",
     "plugins/photoview",
+    "plugins/rs-shot",
     "plugins/debloat",
     "plugins/purge",
     "plugins/rust-settings",
