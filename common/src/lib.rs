@@ -2,13 +2,11 @@
 //! Use it with `#[macro_use] extern crate winrust_common;` at the crate root.
 //!
 //! English by default; Russian, Japanese, Portuguese (Brazil), Simplified Chinese or Spanish when
-//! %ProgramData%\WinRust\lang.txt contains "ru", "ja", "pt", "zh" or "es" (the language list in the installer and in
-//! rust-settings writes it). Spanish lives in `es.tsv` (see `es`), so a text that is not translated yet shows English.
-//! Programs read the file once at start; the one that flips the switch updates its own texts at once.
-use std::{
-    path::PathBuf,
-    sync::atomic::{AtomicU8, Ordering::Relaxed},
-};
+//! %ProgramData%\WinRust\lang.txt contains "ru", "ja", "pt", "zh" or "es" (one list, `Lang::ALL`: the installer, the bar's
+//! settings window and rust-settings all write that file through `lang::set`). Spanish lives in `es.tsv` (see `es`), so a
+//! text that is not translated yet shows English.
+//! The file is re-read a couple of times a second (`lang`), so a switch reaches the programs that are already running.
+use std::path::PathBuf;
 
 pub mod appid;
 pub mod desktop;
@@ -17,6 +15,7 @@ pub mod fg;
 pub mod frost;
 pub mod icon;
 pub mod journal;
+pub mod lang;
 pub mod look;
 pub mod launch;
 pub mod mem;
@@ -28,6 +27,8 @@ pub mod reg;
 pub mod search;
 pub mod settings;
 pub mod style;
+
+pub use lang::{get, lang, set, set_lang, Lang};
 
 /// Console programs print the UI language, and Rust writes UTF-8: a console decodes those bytes with its output code page,
 /// which is 936 on a Chinese Windows, so every non-ASCII line would come out as noise. Switch this window's output code
@@ -51,99 +52,6 @@ pub fn reveal(path: &str) {
         Some(rx) => Command::new(rx).raw_arg(format!("/select,\"{path}\"")).spawn(),
         None => Command::new("explorer.exe").raw_arg(format!("/select,\"{path}\"")).spawn(),
     };
-}
-
-/// The UI languages. English by default; the choice lives in %ProgramData%\WinRust\lang.txt.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lang {
-    En,
-    Ru,
-    Ja,
-    Pt,
-    Zh,
-    Es,
-}
-
-impl Lang {
-    /// Every language, in the order the switch goes round them.
-    pub const ALL: [Lang; 6] = [Lang::En, Lang::Ru, Lang::Ja, Lang::Pt, Lang::Zh, Lang::Es];
-}
-
-impl Lang {
-    /// The name of the language in itself (for the switch button).
-    pub fn name(self) -> &'static str {
-        match self {
-            Lang::En => "English",
-            Lang::Ru => "Русский",
-            Lang::Ja => "日本語",
-            Lang::Pt => "Português",
-            Lang::Zh => "简体中文",
-            Lang::Es => "Español",
-        }
-    }
-    /// The language after this one: the switch button goes round them.
-    pub fn next(self) -> Lang {
-        match self {
-            Lang::En => Lang::Ru,
-            Lang::Ru => Lang::Ja,
-            Lang::Ja => Lang::Pt,
-            Lang::Pt => Lang::Zh,
-            Lang::Zh => Lang::Es,
-            Lang::Es => Lang::En,
-        }
-    }
-    fn code(self) -> &'static str {
-        ["en", "ru", "ja", "pt", "zh", "es"][self as usize]
-    }
-    /// The language of a code or a lang.txt line (`en`, `ru`, `ja`, `pt`, `zh`, `es`; `zh-CN` and `zh_CN` work too).
-    pub fn parse(s: &str) -> Lang {
-        let s = s.trim().to_ascii_lowercase();
-        match s.get(..2) {
-            Some("ru") => Lang::Ru,
-            Some("ja") => Lang::Ja,
-            Some("pt") => Lang::Pt,
-            Some("zh") => Lang::Zh,
-            Some("es") => Lang::Es,
-            _ => Lang::En,
-        }
-    }
-}
-
-static LANG: AtomicU8 = AtomicU8::new(u8::MAX); // MAX = not read yet, else a `Lang`
-
-fn file() -> Option<PathBuf> {
-    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("lang.txt"))
-}
-
-/// The current language at run time. In code that has unit tests use `lang!()` instead: it is always Russian under `cargo test`.
-pub fn lang() -> Lang {
-    match LANG.load(Relaxed) {
-        0 => Lang::En,
-        1 => Lang::Ru,
-        2 => Lang::Ja,
-        3 => Lang::Pt,
-        4 => Lang::Zh,
-        5 => Lang::Es,
-        _ => {
-            let l = file().and_then(|f| std::fs::read_to_string(f).ok()).map_or(Lang::En, |s| Lang::parse(&s));
-            LANG.store(l as u8, Relaxed);
-            l
-        }
-    }
-}
-
-/// Switches this process and writes the choice for the other programs (they pick it up when they start).
-/// False: the file could not be written (an unelevated installer, a user without rights on %ProgramData%), so the
-/// other programs keep their language; the caller can say so instead of promising a restart that changes nothing.
-pub fn set_lang(l: Lang) -> bool {
-    LANG.store(l as u8, Relaxed);
-    match file() {
-        Some(f) => {
-            let _ = std::fs::create_dir_all(f.parent().unwrap());
-            std::fs::write(&f, l.code()).is_ok()
-        }
-        None => false,
-    }
 }
 
 /// `lang!()`: the current `Lang`. `cfg!(test)` is checked in the calling crate, so its unit tests keep their Russian expectations.

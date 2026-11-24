@@ -2952,7 +2952,7 @@ unsafe fn start_menu_page(page: u8) {
             "!page1" => return start_menu_page(1),
             "!page2" => return start_menu_page(2),
             "!back" => return start_menu_page(0),
-            "!startpage" => crate::settings::start_page(),
+            "!startpage" => crate::settings::style_menu_at(crate::settingswin::START),
             "!term" => {
                 let wt = std::env::var_os("LOCALAPPDATA").map(|b| PathBuf::from(b).join(r"Microsoft\WindowsApps\wt.exe")).filter(|p| p.is_file());
                 open(&wide(if wt.is_some() { "wt.exe" } else { "powershell.exe" }));
@@ -3065,13 +3065,17 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
             let items = vec![
                 fly::MItem::new(t!("Настройка даты и времени", "Adjust date and time", ja: "日付と時刻を調整する", pt: "Ajustar data e hora", zh: "调整日期和时间")),
                 fly::MItem::new(t!("Параметры уведомлений", "Notification settings", ja: "通知の設定", pt: "Configurações de notificação", zh: "通知设置")),
+                fly::MItem::new(t!("Настройки WinRust", "WinRust settings", ja: "WinRust の設定", pt: "Configurações do WinRust", zh: "WinRust 设置")).hint("›").sep(),
             ];
             fly::menu(tip_cx(&bar_layout(hwnd), CLOCK), None, items, |i| {
                 if i == 0 {
                     // the classic applet opens at once with or without Explorer; the Settings page needs Explorer started first
                     let _ = Command::new("control.exe").arg("timedate.cpl").creation_flags(NO_WINDOW).spawn();
-                } else {
+                } else if i == 1 {
                     open(&wide("ms-settings:notifications"));
+                } else {
+                    // the tray's way into the one settings window (notifications live in the bar category)
+                    crate::settings::style_menu_at(crate::settingswin::BAR);
                 }
             });
         }
@@ -3564,6 +3568,10 @@ fn main() {
         thread::spawn(winrust_common::mem::auto_loop); // standby purge when memory runs short, switched on from the task manager's Speed page
         let hi = GetModuleHandleW(null_mut());
         notify::init(hi);
+        // the settings window exists before the first click (its class and window are made here, with the same hInstance
+        // as the bar and the flyouts): a lazy CreateWindowExW from inside a menu click is what left "Bar settings" doing
+        // nothing at all
+        settingswin::init(hi);
         let class = wide("topbar");
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..zeroed() };
         RegisterClassW(&wc);

@@ -1426,9 +1426,10 @@ mod sh {
         let hwnd = h as isize; // HWND is not Send: cross the thread boundary as a plain number
         std::thread::spawn(move || {
             let init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-            let mut err = init.err().map(|e| format!("CoInitializeEx: {e:?}"));
+            let initialized = init.is_ok();
+            let mut err = if initialized { None } else { Some(format!("CoInitializeEx: {init:?}")) };
             let mut failed_delete = false;
-            if init.is_ok() {
+            if initialized {
                 let none = PathBuf::new();
                 if let Err(e) = fileop_ex(hwnd as *mut c_void, op, &from, to.as_ref().unwrap_or(&none), undo) {
                     err = Some(format!("{e:?}"));
@@ -1436,8 +1437,8 @@ mod sh {
                 }
                 unsafe { CoUninitialize() }; // on the thread that initialized COM, even when the operation failed
             }
-            if let (true, Some(e)) = (failed_delete, &err) {
-                log_delete(e, &from);
+            if failed_delete {
+                if let Some(e) = &err { log_delete(e, &from); }
             }
             // only a failed recycle is worth a retry: a permanent delete already is the last word
             let retry = if failed_delete && undo { from.clone() } else { vec![] };
@@ -1763,8 +1764,11 @@ unsafe fn hide_system_zip(cm: &IContextMenu, menu: HMENU) {        use windows::
             // like Explorer: same drive moves, other drive copies, Ctrl forces copy
             let copy = k.0 & 8 != 0 || paths.first().and_then(|p| p.components().next()) != to.components().next();
             unsafe { *e = if copy { DROPEFFECT_COPY } else { DROPEFFECT_MOVE } };
-            let _ = fileop_async(self.main as *mut c_void, if copy { Op::Copy } else { Op::Move }, &paths, &to);
-            // the window reloads when the worker reports (WM_DELETED): Drop returns before the copy is done
+            // synchronous on purpose: for a DROPEFFECT_MOVE the OLE source (Explorer) deletes its originals as soon as
+            // Drop returns, so the move must be finished by then. A cross-drive copy here still blocks this thread; going
+            // async needs the "Performed DropEffect" format set first so the source does not delete its originals.
+            let _ = fileop(self.main as *mut c_void, if copy { Op::Copy } else { Op::Move }, &paths, &to);
+            unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), WM_APP, WPARAM(0), LPARAM(0)); }
             Ok(())
         }
     }
@@ -1931,7 +1935,7 @@ mod desk {
         if tgt >= 0 && !sel.contains(&(tgt as usize)) {
             let target = ST.with_borrow(|st| st.rows.get(tgt as usize).filter(|r| r.dir).map(|r| st.dir.join(&r.name)));
             if let Some(t) = target {
-                let _ = sh::fileop(h as _, sh::Op::Move, &paths, &t);
+                let _ = sh::fileop(h as _, sh::Op::Move, &paths, &t); // a rename: instant, no need for a worker
                 let _ = dir;
                 unsafe { PostMessageW(h, WM_APP, 0, 0) }; // reload: the moved icons are gone from here
                 return true;

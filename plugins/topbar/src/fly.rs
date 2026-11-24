@@ -1431,7 +1431,8 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
         }
         Act::StartSettings => {
             close();
-            crate::settings::start_page();
+            // the gear opens the one settings window, on its Start category
+            crate::settings::style_menu_at(crate::settingswin::START);
         }
         Act::Place(p) => {
             close();

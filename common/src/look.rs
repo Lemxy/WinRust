@@ -197,6 +197,10 @@ pub fn win_blur() -> bool {
     flag("win-blur", false)
 }
 
+pub fn win_blur_set(on: bool) {
+    set("win-blur", i32::from(on));
+}
+
 /// The notification pop-ups of the bar.
 pub fn notify() -> bool {
     flag("notify", true)
@@ -213,4 +217,27 @@ pub fn notify_timeout() -> i32 {
 
 pub fn notify_timeout_set(secs: i32) {
     set("notify-timeout", secs.clamp(1, 60));
+}
+
+/// Every value in this file back to what a fresh install has. Used by the settings window's "reset everything"; the
+/// programs that are running pick the defaults up on their next read, like any other change made there.
+pub fn reset_all() {
+    for (key, value) in [
+        ("bar-blur", 1),
+        ("bar-radius", 8),
+        ("bar-search", 1),
+        ("bar-taskview", 1),
+        ("bar-monitor", 0),
+        ("menu-blur", 1),
+        ("menu-alpha", 67),
+        ("menu-radius", 18),
+        ("start-left", 0),
+        ("start-style", 0),
+        ("start-scale", 1),
+        ("win-blur", 0),
+        ("notify", 1),
+        ("notify-timeout", 5),
+    ] {
+        set(key, value);
+    }
 }
