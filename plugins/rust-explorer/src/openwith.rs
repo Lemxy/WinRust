@@ -461,10 +461,10 @@ unsafe fn remember(file: &Path, exe: &Path, progid: Option<String>) {
     }
     // Applications\<exe> only resolves through a registered command: without this the default value above points at
     // nothing, because a browsed exe may live in any folder and no App Paths entry knows it.
-    let Some(name) = exe.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
     if !manual {
         return;
     }
+    let Some(name) = exe.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
     let app_key = format!(r"Software\Classes\Applications\{name}");
     if let Some(k) = create_key(HKEY_CURRENT_USER, &app_key) {
         let label = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -976,7 +976,6 @@ unsafe fn ensure_class() {
 /// Shows the picker for `file`, centred on `owner`'s monitor, and returns what was picked.
 unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
     ensure_class();
-    // centred on the monitor of the window that asked, inside its work area (never the primary's, on a second screen)
     // centre on the monitor the user is working on: the owner may be the desktop window (it spans every monitor, so
     // MonitorFromWindow picks one arbitrarily) and the point is that the dialog shows where the click happened
     let mut cur: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();

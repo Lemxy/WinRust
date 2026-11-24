@@ -42,6 +42,35 @@ Notes:
 - `rust-control` pays for its GDI+ surfaces on first paint; the window itself appears in ~17 ms.
 - The whole shell (bar + desktop + supervisor) sits at **≈ 70 MB** and under 1 % of one core in normal use.
 
+## The shell group (bar + desktop + supervisor)
+
+Measured together, idle, same machine:
+
+| Process | RAM | CPU (one core) |
+|---|---|---|
+| `topbar` (bar) | 38.7 MB | 1.56 % |
+| `rust-explorer` (desktop) | 23.9 MB | 0 % |
+| `rs-shell` (supervisor) | 7.0 MB | 0 % |
+| **Total** | **69.6 MB** | **1.56 %** |
+
+The bar's CPU is the live blur: with `bar-blur=0` it drops to ~0 %.
+
+## Operation latency
+
+| Operation | Median |
+|---|---|
+| Open the Control Panel | 40 ms |
+| Open Task Manager | 29 ms |
+| Open Settings | 97 ms |
+| New file-manager window | 83 ms |
+| Raise a notification (`rs-notify` → pipe) | 8.7 ms (8.3–13.3) |
+
+Method: median of 3 runs (10 for the pipe), `Stopwatch` from `CreateProcess` to `MainWindowHandle != 0`. The first Settings run took 2125 ms (cold DLL load) and the median discards it.
+
+> A like-for-like comparison with Explorer + ShellExperienceHost + SearchHost is not in this table because Explorer is
+> not running on this machine (WinRust is the shell); starting it only to measure would bring the stock taskbar back.
+> The numbers above are what the whole shell costs instead.
+
 ## Startup of the session
 
 `rs-shell` is the logon shell. It frees the console, starts the Run keys and the Startup folder through `cmd /c start`
