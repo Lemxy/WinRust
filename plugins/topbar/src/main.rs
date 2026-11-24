@@ -1997,16 +1997,17 @@ unsafe fn paint(hwnd: HWND) {
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
             let x = l.x0 + (i as i32 + lead) * (l.bw + l.gap);
-            let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
+            let r = app_cell(x, l.bw, top, bot);
             let act = b.wins.contains(&fg);
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
             if th > 0.01 || ta > 0.01 || tp > 0.0 {
-                fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(8));
+                fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), active_bg, ta), pal().accent, 0.5 * tp), sc(6));
             }
             if att {
-                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
+                fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(6));
             }
+            let mid = (r.top + r.bottom) / 2;
             if i == 0 {
                 // Windows logo in four tiles, lit from the top left; grows a little on hover, squeezes on click
                 let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
@@ -2025,14 +2026,16 @@ unsafe fn paint(hwnd: HWND) {
             let ic = if ic.is_null() { b.wins.first().map_or(ic, |&w| icon_of(w)) } else { ic }; // a pin whose icon failed to load (#91)
             let key = b.pin.map(|p| -(p as isize) - 1).or_else(|| b.wins.first().map(|&w| w as isize)).unwrap_or(0);
             // squeezes on click, grows in when new, lifts a pixel on hover
-            let isz = (icon_px().min(l.bw - sc(6)) as f32 * (1.0 - 0.18 * tp) * (0.55 + 0.45 * appear(key))) as i32;
+            // the size the icon was loaded at (scaling a loaded icon by any amount blurs it); the square only frames it
+            let isz = (icon_px().min(r.bottom - r.top - sc(2)) as f32 * (1.0 - 0.18 * tp) * (0.55 + 0.45 * appear(key))) as i32;
             if !ic.is_null() {
-                DrawIconEx(dc, x + (l.bw - isz) / 2, mid - isz / 2 - sc(2) - (sc(1) as f32 * th) as i32, ic, isz, isz, 0, null_mut(), DI_NORMAL);
+                // centred in the square, a hair above the middle to leave the pill its room
+                DrawIconEx(dc, (r.left + r.right - isz) / 2, mid - isz / 2 - sc(1) - (sc(1) as f32 * th) as i32, ic, isz, isz, 0, null_mut(), DI_NORMAL);
             }
             if !b.wins.is_empty() {
                 let min = b.wins.iter().all(|&w| IsIconic(w) != 0);
-                let pw = sc(6) + (sc(12) as f32 * ta) as i32; // the running-app pill stretches when its window is active
-                let py = bot - sc(4);
+                let pw = sc(6) + (sc(10) as f32 * ta) as i32; // the running-app pill stretches when its window is active
+                let py = r.bottom - sc(4);
                 let col = if act || att { pal().accent } else if min { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
                 fill(dc, RECT { left: x + (l.bw - pw) / 2, top: py, right: x + (l.bw + pw) / 2, bottom: py + sc(3) }, col, sc(3));
                 if b.wins.len() > 1 {
@@ -2741,6 +2744,14 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
 
 fn lead_glyph(id: i32) -> &'static str {
     if id == SEARCH { "\u{E721}" } else { "\u{E7C4}" }
+}
+
+/// The highlight of an app button: a rounded square around the icon, centred in its slot and in the bar's height, so it
+/// looks the same at every bar size and scale (the old one was the slot's full height: tall and narrow on a big bar).
+fn app_cell(x: i32, bw: i32, top: i32, bot: i32) -> RECT {
+    let side = (bot - top).min(bw).min(sc(40)).max(sc(24));
+    let (cx, cy) = (x + bw / 2, (top + bot) / 2);
+    RECT { left: cx - side / 2, top: cy - side / 2, right: cx - side / 2 + side, bottom: cy - side / 2 + side }
 }
 
 /// Screen x of the middle of a bar element, for its tooltip and menus.
