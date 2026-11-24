@@ -1634,7 +1634,9 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     let tile = r(14, 12, 48, 46);
                     fill(dc, tile, mix(pal().bg, pal().accent, 0.16), sc(10));
                     if !ic.is_null() {
-                        DrawIconEx(dc, tile.left + sc(5), tile.top + sc(5), *ic, sc(24), sc(24), 0, null_mut(), DI_NORMAL);
+                        // at the size the bar loaded it (16 px on the small bar): stretched it would blur
+                        let (cx, cy, s) = ((tile.left + tile.right) / 2, (tile.top + tile.bottom) / 2, icon_px());
+                        DrawIconEx(dc, cx - s / 2, cy - s / 2, *ic, s, s, 0, null_mut(), DI_NORMAL);
                     } else {
                         SelectObject(dc, f_glyph); // no app icon (Style, Language): the menu's own symbol
                         text(dc, glyph, tile, pal().accent, DT_CENTER);
@@ -1747,11 +1749,11 @@ unsafe fn paint(hw: HWND, k: Kind) {
                         let ic = ICONS.with_borrow_mut(|m| {
                             *m.entry(app.1.clone()).or_insert_with(|| {
                                 let t = lnk_target(&app.1);
-                                lnk_icon(&app.1, &t)
+                                lnk_icon_at(&app.1, &t, sc(24))
                             })
                         });
                         if !ic.is_null() {
-                            DrawIconEx(dc, rc.left + sc(13), (rc.top + rc.bottom - icon_px()) / 2, ic, icon_px(), icon_px(), 0, null_mut(), DI_NORMAL); // at its loaded size: no stretching
+                            DrawIconEx(dc, rc.left + sc(13), (rc.top + rc.bottom) / 2 - sc(12), ic, sc(24), sc(24), 0, null_mut(), DI_NORMAL); // at its loaded size: no stretching
                         }
                         let store = wstr(&app.1).starts_with("shell:");
                         text(dc, &app.0, RECT { left: rc.left + sc(52), top: rc.top, right: rc.right - sc(110), bottom: rc.bottom }, pal().text, DT_LEFT);

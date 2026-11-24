@@ -136,6 +136,7 @@ pub(crate) fn style_name(s: i18n::style::Style) -> &'static str {
 pub(crate) unsafe fn relook(moved: bool) {
     let bar = BAR.load(Relaxed) as HWND;
     place(bar);
+    reload_icons(); // the small bar has smaller icons
     if moved {
         bar_anim(bar);
     }

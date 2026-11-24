@@ -940,9 +940,14 @@ unsafe fn lnk_target(lnk: &[u16]) -> String {
     .unwrap_or_default()
 }
 
-/// The target's own icon: SHGetFileInfo on the .lnk adds the shortcut arrow, so that is only the fallback.
+/// The target's own icon at the bar's size: SHGetFileInfo on the .lnk adds the shortcut arrow, so that is only the fallback.
 unsafe fn lnk_icon(lnk: &[u16], target: &str) -> HICON {
-    let ic = item_icon(&resolve_cmd(&wstr_of(lnk)), icon_px());
+    lnk_icon_at(lnk, target, icon_px())
+}
+
+/// `lnk_icon` at `px` pixels (menus keep theirs whatever the bar's size).
+unsafe fn lnk_icon_at(lnk: &[u16], target: &str, px: i32) -> HICON {
+    let ic = item_icon(&resolve_cmd(&wstr_of(lnk)), px);
     if !ic.is_null() {
         return ic;
     }
@@ -958,10 +963,29 @@ unsafe fn lnk_icon(lnk: &[u16], target: &str) -> HICON {
     icon
 }
 
-/// Size app icons are drawn at (24 logical px, like the Windows 11 taskbar). Icons are loaded at exactly this size:
-/// a 32 px icon stretched by DrawIconEx comes out jagged.
+/// Size app icons are drawn at: 24 logical px like the Windows taskbar, 16 on the small bar like its small buttons (24 filled
+/// almost the whole height there). Icons are loaded at exactly this size: one stretched by DrawIconEx comes out jagged.
 fn icon_px() -> i32 {
-    sc(24)
+    sc(if i18n::style::bar_size() == 0 { 16 } else { 24 })
+}
+
+thread_local! { static ICONS_AT: Cell<i32> = const { Cell::new(0) }; } // the size the loaded icons have
+
+/// After the bar size changed, the pins and running apps get their icons again at the new size.
+unsafe fn reload_icons() {
+    if ICONS_AT.replace(icon_px()) == icon_px() {
+        return;
+    }
+    META.with_borrow_mut(|m| m.clear());
+    let old: Vec<HICON> = EXE_ICONS.with_borrow_mut(|m| m.drain().map(|(_, i)| i).collect());
+    let pins: Vec<(Vec<u16>, String)> = PINS.with_borrow(|p| p.iter().map(|p| (p.lnk.clone(), p.target.clone())).collect());
+    let fresh: Vec<HICON> = pins.iter().map(|(lnk, target)| lnk_icon(lnk, target)).collect();
+    let old_pins: Vec<HICON> = PINS.with_borrow_mut(|p| p.iter_mut().zip(fresh).map(|(p, i)| std::mem::replace(&mut p.icon, i)).collect());
+    refresh_windows(); // the buttons take the new ones
+    // ours to free: a window's own icon (WM_GETICON) never went into these
+    old.into_iter().chain(old_pins).filter(|i| !i.is_null()).for_each(|i| {
+        DestroyIcon(i);
+    });
 }
 
 /// Icon of a file, shortcut (its target's icon, no arrow) or shell item ("shell:AppsFolder\<app id>") rendered by the
@@ -1239,6 +1263,7 @@ unsafe fn load_pins() {
         let aumid = lnk_aumid(&lnk).to_lowercase();
         PINS.with_borrow_mut(|p| p.push(Pin { lnk, target, args, aumid, icon }));
     }
+    ICONS_AT.set(icon_px());
     // once: a File Explorer button for the installed file manager (the marker keeps an unpinned one gone)
     let marker = appdata_file("topbar-explorer-pin.txt");
     let rx = std::env::var_os("ProgramFiles").map(|pf| PathBuf::from(pf).join(r"rust-explorer\rust-explorer.exe"));
@@ -1905,7 +1930,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
                 pill(dc, r, pal().bg, &[(pal().accent, 0.4)], sc(8));
             }
             if i == 0 {
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_px() as f32 / 3.0) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32; // as big as an app icon
                 let g = sc(1).max(1);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
@@ -2132,7 +2157,7 @@ unsafe fn paint(hwnd: HWND) {
             let mid = (r.top + r.bottom) / 2;
             if i == 0 {
                 // Windows logo in four tiles, lit from the top left; grows a little on hover, squeezes on click
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_px() as f32 / 3.0) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32; // as big as an app icon
                 let (g, cx) = (sc(1).max(1), (r.left + r.right) / 2);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
