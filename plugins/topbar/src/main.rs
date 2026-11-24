@@ -2899,7 +2899,7 @@ unsafe fn start_menu_page(page: u8) {
     CURRENT.set(bar); // the menu (and its fold-out pages) anchor to this bar's monitor
     // (label in ru/en/ja/pt/zh, target); "!" targets are actions of ours, the rest goes through `open`
     let tools: [(&str, &str, &str, &str, &str, &str); 16] = [
-        ("Меню «Пуск»…", "Start menu…", "スタート メニュー…", "Menu Iniciar…", "开始菜单…", "!startpage"),
+        ("Настройки WinRust", "WinRust Settings", "WinRust の設定", "Configurações do WinRust", "WinRust 设置", "!startpage"),
         ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "应用和功能", "ms-settings:appsfeatures"),
         ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "电源选项", "powercfg.cpl"),
         ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "事件查看器", "eventvwr.msc"),
@@ -2937,7 +2937,7 @@ unsafe fn start_menu_page(page: u8) {
         }
         // the main page: the settings and the two groups, then the desktop toggles and the power buttons
         _ => {
-            items.push(fly::MItem::new(t!("Меню «Пуск»…", "Start menu…", ja: "スタート メニュー…", pt: "Menu Iniciar…", zh: "开始菜单…")).hint("›"));
+            items.push(fly::MItem::new(t!("Настройки WinRust", "WinRust Settings", ja: "WinRust の設定", pt: "Configurações do WinRust", zh: "WinRust 设置")).hint("›"));
             targets.push("!startpage");
             items.push(fly::MItem::new(t!("Система", "System", ja: "システム", pt: "Sistema", zh: "系统")).hint("›").sep());
             targets.push("!page1");
@@ -3073,7 +3073,7 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
             let items = vec![
                 fly::MItem::new(t!("Настройка даты и времени", "Adjust date and time", ja: "日付と時刻を調整する", pt: "Ajustar data e hora", zh: "调整日期和时间")),
                 fly::MItem::new(t!("Параметры уведомлений", "Notification settings", ja: "通知の設定", pt: "Configurações de notificação", zh: "通知设置")),
-                fly::MItem::new(t!("Настройки WinRust", "WinRust settings", ja: "WinRust の設定", pt: "Configurações do WinRust", zh: "WinRust 设置")).hint("›").sep(),
+                fly::MItem::new(t!("Настройки WinRust", "WinRust Settings", ja: "WinRust の設定", pt: "Configurações do WinRust", zh: "WinRust 设置")).hint("›").sep(),
             ];
             fly::menu(tip_cx(&bar_layout(hwnd), CLOCK), None, items, |i| {
                 if i == 0 {
@@ -3577,7 +3577,7 @@ fn main() {
         let hi = GetModuleHandleW(null_mut());
         notify::init(hi);
         // the settings window exists before the first click (its class and window are made here, with the same hInstance
-        // as the bar and the flyouts): a lazy CreateWindowExW from inside a menu click is what left "Bar settings" doing
+        // as the bar and the flyouts): a lazy CreateWindowExW from inside a menu click is what left the entry doing
         // nothing at all
         settingswin::init(hi);
         let class = wide("topbar");

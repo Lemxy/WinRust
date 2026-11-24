@@ -1,9 +1,9 @@
 //! topbar: settings (split out of main.rs; shares its items through `super::*`).
 //!
 //! There is one settings window (`settingswin`) and every entry point goes straight to it: the bar's context menu, the
-//! Start gear, the "Start menu" row and the tray clock's menu. This module keeps only the way in and the pieces the hub
-//! uses from the bar (the look broadcast and the bar's opacity); the flyout pages that used to hold these options are gone,
-//! so nothing opens a second window or an intermediate menu.
+//! Start gear, the Start menu's "WinRust Settings" row and the tray clock's menu. This module keeps only the way in and the
+//! pieces the hub uses from the bar (the look broadcast and the bar's opacity); the flyout pages that used to hold these
+//! options are gone, so nothing opens a second window or an intermediate menu.
 use super::*;
 
 /// The bar's context menu: the hub, on the look category.

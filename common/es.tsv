@@ -1453,3 +1453,38 @@ Windows.Graphics.Capture is not available	Windows.Graphics.Capture no está disp
 Windows.Graphics.Capture produced no frames (minimized window, protected content or capture disabled)	Windows.Graphics.Capture no generó ningún fotograma (ventana minimizada, contenido protegido o captura desactivada)
 More options…	Más opciones…
 Could not open the app	No se pudo abrir la aplicacián
+WinRust Settings	Ajustes de WinRust
+WinRust Settings could not be opened.	No se pudieron abrir los Ajustes de WinRust.
+Taskbar	Barra de tareas
+Advanced	Avanzado
+Theme, colors, templates and effects	Tema, colores, plantillas y efectos
+Desktop icons, background and shortcuts	Iconos, fondo y accesos del escritorio
+Where it is, how it looks and behaves	Dónde está, cómo se ve y cómo se comporta
+Position, style, search and shortcuts	Posición, estilo, buscador y accesos
+One choice for every app	Una sola elección para todas las apps
+Each app's own settings window	La ventana de ajustes de cada app
+Reset, version and files	Restablecer, versión y archivos
+Colors	Colores
+Effects	Efectos
+Frost in WinRust windows	Efecto escarcha en las ventanas de WinRust
+The icon size applies when the desktop starts again	El tamaño de los iconos se aplica al reiniciar el escritorio
+Pick a picture…	Elegir una imagen…
+Reload the background	Recargar el fondo
+rs-shell converts the picture at sign-in: a new one needs a sign-out	rs-shell convierte la imagen al iniciar sesión: una imagen nueva necesita cerrar sesión
+Shortcuts	Accesos
+Desktop folder	Carpeta del escritorio
+Search	Buscador
+Rank results by use	Ordenar los resultados por uso
+Clear the app history	Borrar el historial de aplicaciones
+Open the pinned apps folder	Abrir la carpeta de aplicaciones fijadas
+The change applies to every app at once.	El cambio se aplica a todas las apps a la vez.
+File manager	Explorador
+Screenshots and recording	Capturas y grabación
+System settings (display, sound…)	Ajustes del sistema (pantalla, sonido…)
+Own settings	Ajustes propios
+Every app keeps its options in its own window.	Cada app guarda sus opciones en su ventana.
+rs-shot has no settings file: it uses command-line options.	rs-shot no tiene fichero de ajustes: usa sus opciones de línea de comandos.
+Reset	Restablecer
+Yes, reset everything	Sí, restablecer todo
+Theme, colors, bar, Start, language and effects. Templates stay.	Tema, colores, barra, inicio, idioma y efectos. Las plantillas se conservan.
+Program language	Idioma del programa

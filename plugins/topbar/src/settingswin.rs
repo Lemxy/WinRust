@@ -32,7 +32,7 @@ const ROW_H: i32 = 40;
 const HEAD_H: i32 = 34;
 const TOP: i32 = 104; // first card, under the page header
 const CLASS: &str = "topbar_settings";
-const TITLE: &str = "WinRust settings";
+const TITLE: &str = "WinRust Settings";
 
 /// Categories of the rail, in order: this is the index `open_at()` takes.
 pub(crate) const LOOK: u8 = 0;
@@ -248,9 +248,13 @@ thread_local! {
     static MONS: Cell<i32> = const { Cell::new(1) };
     /// Which of `APPS_LIST` are installed (checked when the window opens, not on every repaint).
     static HAVE: Cell<[bool; 5]> = const { Cell::new([false; 5]) };
-    /// True while `CreateWindowExW` runs, so the window procedure can trace the messages of a failed creation.
-    static CREATING: Cell<bool> = const { Cell::new(false) };
-    static MSGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The pointer position of the last WM_MOUSEMOVE, so a repeat of the same one costs no hit test.
+    static LAST: Cell<(i32, i32)> = const { Cell::new((-1, -1)) };
+    /// Repaint accounting (see `count_paint`): paints in the current second, when that second started, and the slowest
+    /// paint of it.
+    static PAINTS: Cell<u32> = const { Cell::new(0) };
+    static PAINT_AT: Cell<u64> = const { Cell::new(0) };
+    static PAINT_SLOW: Cell<u64> = const { Cell::new(0) };
 }
 
 const EMPTY: [bool; 5] = [false; 5];
@@ -465,10 +469,30 @@ fn max_scroll(w: i32, h: i32, cat: u8) -> i32 {
     (last + sc(10) - content_bottom(h)).max(0)
 }
 
-fn clamp_scroll(w: i32, h: i32) {
-    let cat = CAT.with(|c| c.get());
-    let s = SCROLL.with(|s| s.get()).clamp(0, max_scroll(w, h, cat));
-    SCROLL.with(|x| x.set(s));
+/// Counts a repaint and says so when the window repaints too often or a paint takes too long. At most two lines per
+/// second (never one per paint: the log lives on disk), so a repaint loop shows up in `topbar.log` instead of freezing
+/// the bar silently.
+fn count_paint(started: u64) {
+    let now = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
+    let dt = now.saturating_sub(started);
+    PAINTS.with(|c| c.set(c.get() + 1));
+    let worst = PAINT_SLOW.with(|c| c.get().max(dt));
+    PAINT_SLOW.with(|c| c.set(worst));
+    let at = PAINT_AT.with(|c| c.get());
+    if now.saturating_sub(at) >= 1000 {
+        let span = now.saturating_sub(at).max(1);
+        let n = PAINTS.with(|c| c.get());
+        let rate = n as u64 * 1000 / span;
+        let worst = PAINT_SLOW.with(|c| c.replace(0));
+        if rate > 30 {
+            crate::tlog(&format!("settings: {n} repaints in {span} ms ({rate}/s): a repaint loop"));
+        }
+        if worst > 50 {
+            crate::tlog(&format!("settings: a paint took {worst} ms"));
+        }
+        PAINTS.with(|c| c.set(0));
+        PAINT_AT.with(|c| c.set(now));
+    }
 }
 
 fn tab_rect(i: usize) -> RECT {
@@ -501,6 +525,7 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 unsafe fn paint(h: HWND) {
+    let started = windows_sys::Win32::System::SystemInformation::GetTickCount64();
     let mut ps: PAINTSTRUCT = zeroed();
     let wdc = BeginPaint(h, &mut ps);
     let mut cr: RECT = zeroed();
@@ -510,12 +535,22 @@ unsafe fn paint(h: HWND) {
         return;
     }
     ensure_fonts();
-    clamp_scroll(cr.right, cr.bottom);
     let dc = CreateCompatibleDC(wdc);
     let bmp = CreateCompatibleBitmap(wdc, cr.right, cr.bottom);
     let obmp = SelectObject(dc, bmp);
     let p = st::pal();
-    let (cat, scroll) = (CAT.with(|c| c.get()), SCROLL.with(|s| s.get()));
+    // One layout for this paint. The scroll is only re-laid out when it had to be clamped, so the rows are built once
+    // (they read the look files) instead of three times as they were.
+    let cat = CAT.with(|c| c.get());
+    let mut scroll = SCROLL.with(|s| s.get());
+    let mut cards = layout(cr.right, cat, scroll);
+    let last = cards.last().map_or(0, |c| c.rect.bottom);
+    let max = (last + sc(10) - content_bottom(cr.bottom)).max(0);
+    if scroll > max {
+        scroll = max;
+        SCROLL.with(|s| s.set(max));
+        cards = layout(cr.right, cat, scroll);
+    }
     let inner = RECT { left: 1, top: 1, right: cr.right - 1, bottom: cr.bottom - 1 };
     let drew = BITS.with(|b| {
         let b = b.borrow();
@@ -550,7 +585,7 @@ unsafe fn paint(h: HWND) {
     SelectObject(dc, f_title);
     SetTextColor(dc, p.text);
     let mut rh = RECT { left: sc(24), top: sc(42), right: sc(RAIL - 12), bottom: sc(82) };
-    DrawTextW(dc, wide(t!("Настройки", "Settings", ja: "設定", pt: "Configurações", zh: "设置")).as_ptr(), -1, &mut rh, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    DrawTextW(dc, wide(t!("Настройки WinRust", "WinRust Settings", ja: "WinRust の設定", pt: "Configurações do WinRust", zh: "WinRust 设置")).as_ptr(), -1, &mut rh, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     // rail categories
     for i in 0..CATS {
         let r = tab_rect(i);
@@ -601,7 +636,7 @@ unsafe fn paint(h: HWND) {
     IntersectClipRect(dc, sc(RAIL + 1), sc(TOP) - sc(6), cr.right - sc(1), content_bottom(cr.bottom));
     let hot = HOT.with(|x| x.get());
     let mut idx = 0;
-    for card in layout(cr.right, cat, scroll) {
+    for card in cards {
         if card.rect.bottom < sc(TOP) - sc(6) || card.rect.top > content_bottom(cr.bottom) {
             idx += card.rows.len() as i32;
             continue;
@@ -628,7 +663,6 @@ unsafe fn paint(h: HWND) {
     }
     RestoreDC(dc, saved);
     // a slim scroll indicator when the category is longer than the window
-    let max = max_scroll(cr.right, cr.bottom, cat);
     if max > 0 {
         let track = RECT { left: cr.right - sc(9), top: sc(TOP), right: cr.right - sc(5), bottom: content_bottom(cr.bottom) };
         let br = CreateSolidBrush(st::mix(p.bg, p.text, 0.08));
@@ -650,6 +684,7 @@ unsafe fn paint(h: HWND) {
     DeleteObject(bmp);
     DeleteDC(dc);
     EndPaint(h, &ps);
+    count_paint(started);
 }
 
 unsafe fn draw_row(dc: HDC, r: &RECT, row: &Row, hovered: bool, p: &st::Pal, fonts: &[HFONT; 2]) {
@@ -974,27 +1009,33 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
 }
 
 unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize {
-    if CREATING.with(|c| c.get()) {
-        MSGS.with(|m| m.borrow_mut().push(format!("{msg:#06x}")));
-    }
     let (x, y) = ((lp & 0xffff) as i16 as i32, ((lp >> 16) & 0xffff) as i16 as i32);
     match msg {
+        // Creation: answer these ourselves. A procedure that answers WM_NCCREATE with FALSE makes CreateWindowExW return
+        // NULL *without setting the last error* (the "failed, last error 0" this window hit, with WM_NCDESTROY right
+        // after WM_NCCREATE and no WM_CREATE in between), and leaving it to the default procedure is what did that.
+        WM_NCCREATE => 1,
+        WM_CREATE => 0,
+        WM_NCCALCSIZE => 0, // a borderless popup: the client area is the whole window
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             paint(h);
             0
         }
         WM_MOUSEMOVE => {
-            let cat = hit_cat(x, y);
-            let row = hit_row(h, x, y).map_or(-1, |(i, _, _)| i);
-            let (old_cat, old_row) = (HOT_CAT.with(|c| c.replace(cat.map_or(-1, |i| i as i32))), HOT.with(|c| c.replace(row)));
-            let mut cr: RECT = zeroed();
-            GetClientRect(h, &mut cr);
-            let xr = close_rect(cr.right);
-            let on_x = x >= xr.left && x < xr.right && y >= xr.top && y < xr.bottom;
-            let was_x = HOTX.with(|c| c.replace(on_x));
-            if old_cat != cat.map_or(-1, |i| i as i32) || old_row != row || was_x != on_x {
-                InvalidateRect(h, ptr::null(), 0);
+            // the same position again (the system repeats WM_MOUSEMOVE): no hit test, no repaint
+            if LAST.with(|c| c.replace((x, y))) != (x, y) {
+                let cat = hit_cat(x, y);
+                let row = hit_row(h, x, y).map_or(-1, |(i, _, _)| i);
+                let (old_cat, old_row) = (HOT_CAT.with(|c| c.replace(cat.map_or(-1, |i| i as i32))), HOT.with(|c| c.replace(row)));
+                let mut cr: RECT = zeroed();
+                GetClientRect(h, &mut cr);
+                let xr = close_rect(cr.right);
+                let on_x = x >= xr.left && x < xr.right && y >= xr.top && y < xr.bottom;
+                let was_x = HOTX.with(|c| c.replace(on_x));
+                if old_cat != cat.map_or(-1, |i| i as i32) || old_row != row || was_x != on_x {
+                    InvalidateRect(h, ptr::null(), 0);
+                }
             }
             let mut tme: windows_sys::Win32::UI::Input::KeyboardAndMouse::TRACKMOUSEEVENT = zeroed();
             tme.cbSize = std::mem::size_of_val(&tme) as u32;
@@ -1075,41 +1116,33 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
 /// Registers the class and makes the window, trying the recipes that are known to work in this process. Returns a null
 /// handle (and says why in the log) when even a system class cannot be made, which would mean the whole process cannot
 /// create windows any more.
+///
+/// No recipe uses `WS_EX_LAYERED`: the hub paints itself with `WM_PAINT` and a blurred capture, and a layered window
+/// painted that way can stop updating (or keep repainting) on some drivers. The classes that work in this process
+/// (menus, toasts) are layered because they fade with `SetLayeredWindowAttributes`; this window does not fade.
 unsafe fn create(hi: windows_sys::Win32::Foundation::HINSTANCE) -> HWND {
     let class = wide(CLASS);
     let title = wide(TITLE);
     let (w, h) = (sc(W).max(400), sc(H).max(400));
-    for (label, ex, inst) in [
-        ("class+layered", WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, hi),
-        ("class+layered, no instance", WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, ptr::null_mut()),
-        ("class, plain", WS_EX_TOOLWINDOW | WS_EX_TOPMOST, ptr::null_mut()),
-    ] {
-        CREATING.with(|c| c.set(true));
-        MSGS.with(|m| m.borrow_mut().clear());
+    for (label, inst) in [("own class", hi), ("own class, no instance", ptr::null_mut())] {
         SetLastError(0);
-        let hw = CreateWindowExW(ex, class.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), inst, ptr::null());
-        CREATING.with(|c| c.set(false));
+        let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, class.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), inst, ptr::null());
         if !hw.is_null() {
-            if ex & WS_EX_LAYERED != 0 {
-                SetLayeredWindowAttributes(hw, 0, 255, LWA_ALPHA);
-            }
             crate::tlog(&format!("settings: window created ({label}) at {hw:?}"));
             return hw;
         }
-        let trace = MSGS.with(|m| m.borrow().join(" "));
-        crate::tlog(&format!("settings: CreateWindowExW ({label}) failed: last error {}, hinstance {inst:?}, size {w}x{h}, messages [{trace}]", GetLastError()));
+        crate::tlog(&format!("settings: CreateWindowExW ({label}) failed: last error {}, hinstance {inst:?}, size {w}x{h}", GetLastError()));
     }
     // last resort: a class Windows itself registers in every process, with our procedure as a subclass. Creating one of
     // those cannot fail because of our class, and the window looks and behaves the same.
     let stat = wide("STATIC");
     SetLastError(0);
-    let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, stat.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), hi, ptr::null());
+    let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, stat.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), hi, ptr::null());
     if hw.is_null() {
         crate::tlog(&format!("settings: even a STATIC window failed: last error {}", GetLastError()));
         return hw;
     }
     SetWindowLongPtrW(hw, GWLP_WNDPROC, proc as isize);
-    SetLayeredWindowAttributes(hw, 0, 255, LWA_ALPHA);
     crate::tlog(&format!("settings: window created as a subclassed STATIC at {hw:?}"));
     hw
 }
@@ -1198,7 +1231,7 @@ pub(crate) unsafe fn open_at(cat: u8) -> bool {
         init(GetModuleHandleW(ptr::null()));
         h = existing().unwrap_or(ptr::null_mut());
         if h.is_null() || IsWindow(h) == 0 {
-            let msg = t!("Не удалось открыть настройки WinRust.", "WinRust settings could not be opened.", ja: "WinRust の設定を開けませんでした。", pt: "Não foi possível abrir as Configurações do WinRust.", zh: "无法打开 WinRust 设置。");
+            let msg = t!("Не удалось открыть настройки WinRust.", "WinRust Settings could not be opened.", ja: "WinRust の設定を開けませんでした。", pt: "Não foi possível abrir as Configurações do WinRust.", zh: "无法打开 WinRust 设置。");
             crate::tlog(&format!("settings: the window could not be created (last error {}): {msg}", GetLastError()));
             MessageBoxW(ptr::null_mut(), wide(msg).as_ptr(), wide("WinRust").as_ptr(), MB_OK | MB_ICONERROR);
             return false;
