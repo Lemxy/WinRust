@@ -25,9 +25,9 @@ use windows_sys::Win32::{
     System::{
         LibraryLoader::GetModuleHandleW,
         Registry::{
-            RegCloseKey, RegCreateKeyExW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-            HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_NONE,
-            REG_OPTION_NON_VOLATILE, REG_SZ,
+            RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW,
+            RegSetValueExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE,
+            REG_EXPAND_SZ, REG_NONE, REG_OPTION_NON_VOLATILE, REG_SZ,
         },
         Threading::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW, STARTF_USESHOWWINDOW},
     },
@@ -314,6 +314,13 @@ unsafe fn command_of(progid: &str) -> Option<String> {
     None
 }
 
+/// `Applications\<exe>` -> the exe name, when `progid` is one of the per-application ProgIDs.
+fn app_exe(progid: &str) -> Option<&str> {
+    let app = r"Applications\";
+    let head = progid.get(..app.len())?;
+    (head.eq_ignore_ascii_case(app) && progid.len() > app.len()).then(|| &progid[app.len()..])
+}
+
 /// True when a ProgID actually leads somewhere: a `shell\open\command`, or an `Applications\<exe>` entry whose exe the
 /// shell can locate (it resolves those through App Paths and the system folder).
 ///
@@ -323,11 +330,8 @@ unsafe fn progid_resolves(progid: &str) -> bool {
     if command_of(progid).is_some() {
         return true;
     }
-    let app = r"Applications\";
-    match progid.get(..app.len()) {
-        Some(head) if head.eq_ignore_ascii_case(app) => app_path(&progid[app.len()..]).is_some(),
-        _ => false,
-    }
+    // an Applications entry may rely on the system folder instead of a command of its own
+    app_exe(progid).is_some_and(|name| app_path(name).is_some())
 }
 
 unsafe fn name_of_progid(progid: &str) -> Option<String> {
@@ -492,7 +496,17 @@ unsafe fn remember(file: &Path, exe: &Path, progid: Option<String>) {
         RegCloseKey(k);
     }
     if let Some(k) = create_key(HKEY_CURRENT_USER, &format!(r"{base}\OpenWithProgids")) {
-        set_none(k, &progid); // and it is listed as one of the type's handlers
+        // Exactly one entry: ours. Measured on Windows 11 - an extension whose per-user default resolves fine stops
+        // resolving (`AssocQueryString` answers OpenWith.exe again) as soon as OpenWithProgids names a second live
+        // handler, whatever it is (`Applications\mspaint.exe`, `txtfile`). Every further "always use" used to add one
+        // here, and that is why the setting looked like it never stuck. Machine-wide entries (HKLM) are untouched, so
+        // other apps stay in the shell's "Open with" list.
+        for other in value_names(k) {
+            if !other.eq_ignore_ascii_case(&progid) {
+                RegDeleteValueW(k, wc(&other).as_ptr());
+            }
+        }
+        set_none(k, &progid); // listed as one of the type's handlers
         RegCloseKey(k);
     }
 }
@@ -503,12 +517,7 @@ unsafe fn remember(file: &Path, exe: &Path, progid: Option<String>) {
 /// unassociated again, which is exactly the bug this closes. Real ProgIDs (`txtfile` and the like) are left alone:
 /// they already carry a command.
 unsafe fn ensure_command(progid: &str, exe: &Path) {
-    let app = r"Applications\";
-    let Some(head) = progid.get(..app.len()) else { return };
-    if !head.eq_ignore_ascii_case(app) || progid.len() == app.len() {
-        return;
-    }
-    let name = &progid[app.len()..];
+    let Some(name) = app_exe(progid) else { return };
     // a bare exe name only resolves for things in System32: the command needs the real path
     let full = if exe.is_absolute() {
         exe.to_path_buf()

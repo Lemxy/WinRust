@@ -320,10 +320,27 @@ unsafe fn new_font(face: &str, px: i32, weight: i32) -> HFONT {
 
 unsafe fn paint(h: HWND, m: &Menu) {
     let mut ps: PAINTSTRUCT = zeroed();
-    let dc = BeginPaint(h, &mut ps);
+    let hdc = BeginPaint(h, &mut ps);
     let mut cr: RECT = zeroed();
     GetClientRect(h, &mut cr);
     let (w, hh) = (cr.right, cr.bottom);
+    if w <= 0 || hh <= 0 {
+        EndPaint(h, &ps);
+        return;
+    }
+    // Everything goes to a memory bitmap and reaches the screen in one BitBlt. Drawing the blur, the rounded
+    // highlight and the text straight into the window DC flashed on every hover change (the count of GDI calls
+    // per frame is what showed, not the erase: WM_ERASEBKGND is already swallowed above).
+    let mem = CreateCompatibleDC(hdc);
+    let bmp = if mem.is_null() { ptr::null_mut() } else { CreateCompatibleBitmap(hdc, w, hh) };
+    let mut old_bmp = ptr::null_mut();
+    let mut buffered = false;
+    let dc = if !mem.is_null() && !bmp.is_null() {
+        old_bmp = SelectObject(mem, bmp);
+        if old_bmp.is_null() { hdc } else { buffered = true; mem }
+    } else {
+        hdc
+    };
     let (items, ys, icons, px, is_sub) = if h == m.sub {
         (&m.sub_items, &m.sub_ys, &m.icons[m.items.len()..], &m.sub_px, true)
     } else {
@@ -421,6 +438,17 @@ unsafe fn paint(h: HWND, m: &Menu) {
         }
     }
     SelectObject(dc, old);
+    // one blit of the finished frame; BeginPaint's clip keeps it inside the invalidated rows
+    if buffered {
+        BitBlt(hdc, 0, 0, w, hh, dc, 0, 0, SRCCOPY);
+        SelectObject(mem, old_bmp);
+    }
+    if !bmp.is_null() {
+        DeleteObject(bmp);
+    }
+    if !mem.is_null() {
+        DeleteDC(mem);
+    }
     EndPaint(h, &ps);
 }
 
@@ -435,6 +463,16 @@ unsafe fn hit(ys: &[(i32, i32)], y: i32) -> i32 {
         }
     }
     -1
+}
+
+/// Repaints only the rows whose hover changed (the old one and the new one). The captured blur and every other
+/// row stay as they are on screen: invalidating the whole window made the menu flash on each hover change.
+unsafe fn invalidate_rows(h: HWND, w: i32, ys: &[(i32, i32)], a: i32, b: i32) {
+    for i in [a, b] {
+        let Some(&(top, bot)) = usize::try_from(i).ok().and_then(|i| ys.get(i)) else { continue };
+        let r = RECT { left: 0, top, right: w, bottom: bot };
+        InvalidateRect(h, &r, 0);
+    }
 }
 
 unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize {
@@ -459,13 +497,15 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             if is_sub {
                 let i = if inside { hit(&m.sub_ys, y) } else { -1 };
                 if i != m.sub_hover {
+                    let old = m.sub_hover;
                     m.sub_hover = i;
-                    InvalidateRect(h, ptr::null(), 0);
+                    invalidate_rows(h, m.sub_w, &m.sub_ys, old, i);
                 }
             } else if inside {
                 let i = hit(&m.ys, y);
                 let i = if i >= 0 && m.items[i as usize].disabled { -1 } else { i };
                 if i != m.hover {
+                    let old = m.hover;
                     m.hover = i;
                     let open = i >= 0 && !m.items[i as usize].sub.is_empty();
                     if open {
@@ -473,14 +513,15 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
                     } else if m.sub_open >= 0 && i != m.sub_open {
                         close_sub(m);
                     }
-                    InvalidateRect(h, ptr::null(), 0);
+                    invalidate_rows(h, m.w, &m.ys, old, i);
                 }
             } else if !(m.sub_open >= 0 && x >= cr.right) {
                 // left the menu, and not on the way to its submenu: drop the highlight
                 if m.hover != -1 || m.sub_open >= 0 {
+                    let old = m.hover;
                     m.hover = -1;
                     close_sub(m);
-                    InvalidateRect(h, ptr::null(), 0);
+                    invalidate_rows(h, m.w, &m.ys, old, -1);
                 }
             }
             0
