@@ -622,7 +622,7 @@ unsafe fn wifi_join(n: &Net, pass: &str) {
 
 fn size(k: Kind) -> (i32, i32) {
     match k {
-        Kind::Quick => (360, 252 + 44 * sliders()),
+        Kind::Quick => (360, QT_CARD + 2 * QT_CARD_PAD + 44 * sliders() + QT_FOOT),
         Kind::Cal => (330, 340),
         Kind::Wifi => (360, wifi_rows().2),
         Kind::Start => (560, 640),
@@ -655,6 +655,52 @@ fn wifi_rows() -> (Vec<(i32, i32)>, Option<i32>, i32) {
 /// Quick settings: how many slider rows (volume, plus brightness on a laptop).
 fn sliders() -> i32 {
     if BRIGHT.load(Relaxed) >= 0 { 2 } else { 1 }
+}
+
+// ---------- quick settings ----------
+// A 3 x 2 grid of tiles: 16 px of air round the grid, 8 between the tiles. Inside a tile the badge sits 12 px in from
+// the top and the left and the two text lines follow it; the tile then ends with the same air under the text as the
+// badge has above it (the state line used to stop 1.5 px above the edge, which read as a mistake).
+const QT_W: i32 = 104;
+const QT_H: i32 = 84;
+const QT_COL: i32 = 112;
+const QT_ROW: i32 = 92;
+const QT_X0: i32 = 16;
+const QT_Y0: i32 = 16;
+const QT_GAP: i32 = 8;
+const QT_PAD: i32 = 12;
+const QT_BADGE: i32 = 32;
+const QT_LABEL: (i32, i32) = (46, 62); // the title line, from the tile's top edge
+const QT_STATE: (i32, i32) = (61, 75); // the state line under it
+const QT_CARD_PAD: i32 = 4;
+const QT_CARD: i32 = QT_Y0 + QT_ROW + QT_H + QT_GAP; // the slider card under the grid
+const QT_FOOT: i32 = 60; // the battery pill and the settings gear under the card
+
+/// Top-left of tile `i` of the grid.
+fn qt_at(i: i32) -> (i32, i32) {
+    (QT_X0 + QT_COL * (i % 3), QT_Y0 + QT_ROW * (i / 3))
+}
+/// Tile `i`, and the parts `paint` draws in it: the round icon badge, the title line and the state line under it.
+fn qt_tile(i: i32) -> RECT {
+    let (x, y) = qt_at(i);
+    r(x, y, x + QT_W, y + QT_H)
+}
+fn qt_badge(i: i32) -> RECT {
+    let (x, y) = qt_at(i);
+    r(x + QT_PAD, y + QT_PAD, x + QT_PAD + QT_BADGE, y + QT_PAD + QT_BADGE)
+}
+fn qt_label(i: i32) -> RECT {
+    let (x, y) = qt_at(i);
+    r(x + QT_PAD, y + QT_LABEL.0, x + QT_W - 2, y + QT_LABEL.1)
+}
+fn qt_state(i: i32) -> RECT {
+    let (x, y) = qt_at(i);
+    r(x + QT_PAD, y + QT_STATE.0, x + QT_W - 4, y + QT_STATE.1)
+}
+/// The Wi-Fi tile's round "more" button in its top right corner.
+fn qt_more(i: i32) -> RECT {
+    let t = qt_tile(i);
+    RECT { left: t.left + sc(66), top: t.top + sc(QT_GAP), right: t.left + sc(96), bottom: t.top + sc(38) }
 }
 
 const CTX_W: i32 = 196; // right-click menu width, logical px
@@ -691,13 +737,12 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
             // a 3x2 grid of tiles; the Wi-Fi tile has a round "more" button in its corner (found first: act_at searches backwards)
             let mut v = vec![];
             for i in 0..6u8 {
-                let (tl, tt) = (16 + 112 * (i as i32 % 3), 16 + 84 * (i as i32 / 3));
-                v.push((r(tl, tt, tl + 104, tt + 76), Act::Tile(i)));
+                v.push((qt_tile(i as i32), Act::Tile(i)));
                 if i == 0 {
-                    v.push((r(tl + 66, tt + 8, tl + 96, tt + 38), Act::WifiMore));
+                    v.push((qt_more(0), Act::WifiMore));
                 }
             }
-            let mut y = 188;
+            let mut y = QT_CARD + QT_CARD_PAD;
             if BRIGHT.load(Relaxed) >= 0 {
                 v.push((r(64, y, w - 24, y + 40), Act::BrightSlide));
                 y += 44;
@@ -1250,14 +1295,13 @@ fn inset(rc: RECT, d: i32) -> RECT {
     RECT { left: rc.left + d, top: rc.top + d, right: rc.right - d, bottom: rc.bottom - d }
 }
 
-unsafe fn paint(hw: HWND, k: Kind) {
-    let mut ps: PAINTSTRUCT = zeroed();
-    let wdc = BeginPaint(hw, &mut ps);
-    let mut cr: RECT = zeroed();
-    GetClientRect(hw, &mut cr);
+/// Draws the whole panel of kind `k` into `dc`, which must be `size(k)` (times the scale) big: the background, then the
+/// parts. `paint` owns the window plumbing (BeginPaint, the double buffer); the test below draws into a memory DC with
+/// the very same code.
+unsafe fn draw(dc: HDC, k: Kind) {
     BUSY.set(false);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
-    let old = SelectObject(dc, bmp);
+    let (w, h) = size(k);
+    let cr = RECT { left: 0, top: 0, right: sc(w), bottom: sc(h) };
     fill(dc, cr, if style().light() { mix(pal().bg, pal().dim, 0.3) } else { mix(pal().bg, pal().text, 0.12) }, sc(16));
     fill(dc, inset(cr, 1), pal().bg, sc(16));
     winrust_common::style::backdrop(dc, inset(cr, 1), sc(100) as f32 / 100.0);
@@ -1268,7 +1312,6 @@ unsafe fn paint(hw: HWND, k: Kind) {
     let (f_semi, f_head, f_gs, f_label) = (font(&face, 13, 600), font(&face, 18, 700), font(&gface, 11, 400), font(&face, 12, 600));
     let card = card();
     let of = SelectObject(dc, f_txt);
-    let (w, h) = size(k);
     let over = OVER.get();
     let hot = |a: Act| over == Some(a);
     // hover highlight that fades; the key is the element's position (flyout keys start at 1_000_000)
@@ -1302,14 +1345,13 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 ("\u{E7F0}", t!("Субтитры", "Live captions", ja: "ライブ キャプション", pt: "Legendas ao vivo", zh: "实时字幕").to_string(), String::new()),
             ];
             for (i, (glyph, label, sub)) in tiles.iter().enumerate() {
-                let (tl, tt) = (16 + 112 * (i as i32 % 3), 16 + 84 * (i as i32 / 3));
-                let full = r(tl, tt, tl + 104, tt + 76);
+                let full = qt_tile(i as i32); // the badge and the two text lines come from qt_badge / qt_label / qt_state
                 let on = states[i];
                 let base = if on { mix(card, pal().accent, 0.12) } else { card };
                 surface(dc, full, base, sc(18));
                 g(Act::Tile(i as u8), inset(full, 1), base, mix(base, pal().text, 0.05), sc(16));
                 // the round icon badge: lit in the accent when on
-                let badge = r(tl + 12, tt + 12, tl + 44, tt + 44);
+                let badge = qt_badge(i as i32);
                 fill(dc, badge, if on { pal().accent } else { mix(card, pal().text, 0.08) }, sc(32));
                 let ink = if on { on_accent() } else { pal().text };
                 if i == 0 {
@@ -1324,16 +1366,16 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     text(dc, glyph, badge, ink, DT_CENTER);
                 }
                 SelectObject(dc, f_label);
-                text(dc, label.as_str(), r(tl + 12, tt + 46, tl + 102, tt + 62), pal().text, DT_LEFT);
+                text(dc, label.as_str(), qt_label(i as i32), pal().text, DT_LEFT);
                 if !sub.is_empty() {
                     SelectObject(dc, f_small);
-                    text(dc, sub, r(tl + 12, tt + 61, tl + 100, tt + 75), pal().dim, DT_LEFT);
+                    text(dc, sub, qt_state(i as i32), pal().dim, DT_LEFT);
                 }
             }
             // sliders sit together on one card
             let n = sliders();
-            surface(dc, r(16, 184, w - 16, 192 + 44 * n), card, sc(18));
-            let mut y = 188;
+            surface(dc, r(QT_X0, QT_CARD, w - QT_X0, QT_CARD + 2 * QT_CARD_PAD + 44 * n), card, sc(18));
+            let mut y = QT_CARD + QT_CARD_PAD;
             let b = BRIGHT.load(Relaxed);
             if b >= 0 {
                 SelectObject(dc, f_glyph);
@@ -1732,11 +1774,21 @@ unsafe fn paint(hw: HWND, k: Kind) {
         }
     }
 
-    BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
     for f in [f_txt, f_small, f_glyph, f_title, f_big, f_semi, f_head, f_gs, f_label] {
         DeleteObject(f);
     }
+}
+
+unsafe fn paint(hw: HWND, k: Kind) {
+    let mut ps: PAINTSTRUCT = zeroed();
+    let wdc = BeginPaint(hw, &mut ps);
+    let mut cr: RECT = zeroed();
+    GetClientRect(hw, &mut cr);
+    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
+    let old = SelectObject(dc, bmp);
+    draw(dc, k);
+    BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, old);
     DeleteObject(bmp);
     DeleteDC(dc);
@@ -1971,5 +2023,121 @@ mod tests {
         assert_eq!(score("calculator", "xyz"), None);
         assert_eq!(score("calculator", ""), None);
         assert_eq!(score("v", "v"), Some(0)); // one-letter initials do not count, the prefix does
+    }
+}
+
+#[cfg(test)]
+mod quick_tiles {
+    use super::*;
+
+    /// A memory DC with the whole quick panel painted by `draw`, the code the flyout window itself runs. The fonts, the
+    /// card colour and the palette are the real ones.
+    unsafe fn panel(scale: f32) -> (HDC, HBITMAP, i32, i32) {
+        SCALE.set(scale);
+        let (w, h) = size(Kind::Quick);
+        let (w, h) = (sc(w), sc(h));
+        let sdc = GetDC(null_mut());
+        let dc = CreateCompatibleDC(sdc);
+        let bmp = CreateCompatibleBitmap(sdc, w, h);
+        SelectObject(dc, bmp);
+        ReleaseDC(null_mut(), sdc);
+        draw(dc, Kind::Quick);
+        (dc, bmp, w, h)
+    }
+
+    /// `bmp` as top-down pixels, 4 bytes (blue, green, red, unused) each.
+    unsafe fn pixels(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Vec<u8> {
+        let mut bi: BITMAPINFO = zeroed();
+        bi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        bi.bmiHeader.biWidth = w;
+        bi.bmiHeader.biHeight = -h;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        GetDIBits(dc, bmp, 0, h as u32, px.as_mut_ptr().cast(), &mut bi, 0);
+        px
+    }
+
+    /// Physical px between the bottom edge of `tile` and the lowest ink of the text line `line` drawn in it. The card's
+    /// own colour is taken from a spot under the text that no glyph reaches.
+    fn air_under(px: &[u8], w: i32, line: RECT, tile: RECT) -> i32 {
+        let at = |x: i32, y: i32| {
+            let o = ((y * w + x) * 4) as usize;
+            (px[o] as i32, px[o + 1] as i32, px[o + 2] as i32)
+        };
+        let base = at(line.left, tile.bottom - sc(4));
+        let mut lowest = None;
+        for y in line.top..tile.bottom - sc(3) {
+            for x in line.left..line.right {
+                let (b, g, r) = at(x, y);
+                if (r - base.2).abs().max((g - base.1).abs()).max((b - base.0).abs()) > 20 {
+                    lowest = Some(y);
+                    break;
+                }
+            }
+        }
+        tile.bottom - 1 - lowest.expect("the text line has ink")
+    }
+
+    /// The state line used to end 1.5 px above the tile's bottom edge while the badge began 12 px below the top; now the
+    /// text keeps about the same air under it as the badge has above it, at every scale the bar is drawn at.
+    #[test]
+    fn quick_tiles_keep_air_under_the_text() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.5] {
+            unsafe {
+                let (dc, bmp, w, h) = panel(scale);
+                let px = pixels(dc, bmp, w, h);
+                for i in 0..5 {
+                    // tiles 0..4 carry a state line ("Off", "On", ...); the captions tile has none
+                    let air = air_under(&px, w, qt_state(i), qt_tile(i));
+                    assert!(air >= sc(8) && air <= sc(14), "{scale}x: tile {i}'s state line ends {} px above the tile's edge, the badge sits {} px below the top", air as f32 / SCALE.get(), QT_PAD);
+                }
+                DeleteObject(bmp);
+                DeleteDC(dc);
+            }
+        }
+    }
+
+    /// The same line in every language, drawn with the font and the rect the panel uses: Portuguese "Desligado" (the
+    /// descender of the g) is the lowest ink of the five, so a word that keeps its air here keeps it everywhere.
+    #[test]
+    fn every_languages_state_word_keeps_its_air() {
+        const NAMES: [&str; 5] = ["en", "ru", "ja", "pt", "zh"];
+        const WORDS: [&[&str]; 5] = [
+            &["On", "Off", "Connected", "None"], // en
+            &["Вкл.", "Выкл.", "Подключено", "Нет"], // ru
+            &["オン", "オフ", "接続済み", "なし"], // ja
+            &["Ligado", "Desligado", "Conectado", "Nenhum"], // pt
+            &["开", "关", "已连接", "无"], // zh
+        ];
+        unsafe {
+            SCALE.set(2.0);
+            let tile = qt_tile(1);
+            let (w, h) = (tile.right - tile.left, tile.bottom - tile.top);
+            let sdc = GetDC(null_mut());
+            let dc = CreateCompatibleDC(sdc);
+            let bmp = CreateCompatibleBitmap(sdc, w, h);
+            SelectObject(dc, bmp);
+            ReleaseDC(null_mut(), sdc);
+            SetBkMode(dc, TRANSPARENT as i32);
+            let face = wide(ui_face());
+            let f_small = CreateFontW(-sc(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
+            let whole = RECT { left: 0, top: 0, right: w, bottom: h };
+            let line = qt_state(1);
+            let line = RECT { left: line.left - tile.left, top: line.top - tile.top, right: line.right - tile.left, bottom: line.bottom - tile.top };
+            for (l, words) in WORDS.iter().enumerate() {
+                for word in words.iter() {
+                    fill(dc, whole, card(), 0);
+                    SelectObject(dc, f_small);
+                    text(dc, word, line, pal().dim, DT_LEFT);
+                    let px = pixels(dc, bmp, w, h);
+                    let air = air_under(&px, w, line, whole);
+                    assert!(air >= sc(8) && air <= sc(14), "{}: \u{201C}{word}\u{201D} ends {} px above the edge", NAMES[l], air as f32 / SCALE.get());
+                }
+            }
+            DeleteObject(f_small);
+            DeleteObject(bmp);
+            DeleteDC(dc);
+        }
     }
 }
