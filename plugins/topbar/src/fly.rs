@@ -1,4 +1,4 @@
-﻿// Own flyouts instead of the stock Windows ones: Start (search + all apps + power), Wi-Fi, volume, battery
+// Own flyouts instead of the stock Windows ones: Start (search + all apps + power), Wi-Fi, volume, battery
 // (+ brightness), calendar. One popup window; what it shows depends on `Kind`.
 use super::*;
 use std::sync::Mutex;
@@ -347,12 +347,6 @@ pub fn any_open() -> bool {
     FLY.get().is_some()
 }
 
-/// The monitor of the open panel: a menu opened from it belongs on the same screen.
-pub(crate) fn open_rect() -> Option<RECT> {
-    let r = FLY_MON.get();
-    (FLY.get().is_some() && r.right > r.left).then_some(r)
-}
-
 /// Short status line shown at the bottom of the open panel (Start: "Added to Start: ...").
 pub fn note(s: &str) {
     NOTE.set(s.to_string());
@@ -517,12 +511,13 @@ fn filtered() -> Vec<usize> {
     }
     // typed in the wrong layout: those matches come after the direct ones
     let fq = flip_layout(&q);
+    let rank = winrust_common::look::start_ranked();
     let mut v: Vec<(u8, u32, usize)> = names
         .iter()
         .enumerate()
         .filter_map(|(i, n)| {
             let s = score(n, &q).or_else(|| score(n, &fq).map(|s| s + 4))?;
-            Some((s, u32::MAX - uses(n), i))
+            Some((s, if rank { u32::MAX - uses(n) } else { u32::MAX }, i))
         })
         .collect();
     v.sort_unstable(); // best match, then most launched, then alphabetical (the list is sorted by name)

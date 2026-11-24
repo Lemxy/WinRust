@@ -1,14 +1,21 @@
-//! The settings window: one real popup with a rail of categories on the left and the options of the chosen one on the
-//! right, instead of one long dropdown per page. Every option the bar owns (look, bar, Start, language) lives here, the
-//! apps' own settings are reached from the Apps category, and the values are still written to the files the other
-//! WinRust programs read (`look.txt`, `style.txt`, `lang.txt`), so a change applies while the user is still clicking.
+//! The settings window: one real popup with a rail of categories on the left (an icon and a name each) and the options of
+//! the chosen one on the right, in cards (`head` + rows). There are no second windows and no flyout pages: every option
+//! the bar owns lives here, the desktop markers `rust-explorer` reads are written here, and the apps' own settings are
+//! reached from the Apps category.
 //!
-//! Rows are toggles, choices and actions; `layout()` is used by both the painter and the hit test, so a click always lands
-//! where the row is drawn. Long categories scroll with the wheel; the window is double buffered.
-use std::{cell::Cell, mem::zeroed, ptr};
+//! The values still go to the files every WinRust program reads (`look.txt`, `style.txt`, `colors.txt`, `lang.txt`,
+//! `%APPDATA%\WinRust\*`), so a change applies while the user is still clicking. `layout()` is used by both the painter and
+//! the hit test, so a click always lands where the row is drawn. Long categories scroll with the wheel; the window is
+//! double buffered.
+use std::{
+    cell::{Cell, RefCell},
+    mem::zeroed,
+    path::PathBuf,
+    ptr,
+};
 
 use windows_sys::Win32::{
-    Foundation::{HWND, RECT},
+    Foundation::{GetLastError, SetLastError, HWND, RECT},
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::{Input::KeyboardAndMouse::VK_ESCAPE, WindowsAndMessaging::*},
@@ -16,30 +23,26 @@ use windows_sys::Win32::{
 
 use winrust_common::{look as lk, style as st};
 
-/// Window size. A fixed popup big enough for a rail and a full category without a second window.
-const W: i32 = 900;
-const H: i32 = 640;
-const RAIL: i32 = 210; // the category rail
-const PAD: i32 = 26; // padding of the content area
+/// Window size (a big popup, like Windows' own Settings): a rail, a page title and a couple of cards.
+const W: i32 = 960;
+const H: i32 = 680;
+const RAIL: i32 = 244;
+const PAD: i32 = 30;
 const ROW_H: i32 = 40;
-const HEAD_H: i32 = 30;
-const TOP: i32 = 86; // first row, under the category header
+const HEAD_H: i32 = 34;
+const TOP: i32 = 104; // first card, under the page header
+const CLASS: &str = "topbar_settings";
+const TITLE: &str = "WinRust settings";
 
 /// Categories of the rail, in order: this is the index `open_at()` takes.
 pub(crate) const LOOK: u8 = 0;
-pub(crate) const BAR: u8 = 1;
-pub(crate) const START: u8 = 2;
-pub(crate) const LANG: u8 = 3;
-pub(crate) const APPS: u8 = 4;
-pub(crate) const ABOUT: u8 = 5;
-const CATS: usize = 6;
-
-/// Pages inside a category (the look's own colours and templates, the reset confirmation).
-const ROOT: u8 = 0;
-const COLORS: u8 = 1;
-const TEMPLATES: u8 = 2;
-const DELETE: u8 = 3;
-const RESET: u8 = 4;
+pub(crate) const DESK: u8 = 1;
+pub(crate) const BAR: u8 = 2;
+pub(crate) const START: u8 = 3;
+pub(crate) const LANG: u8 = 4;
+pub(crate) const APPS: u8 = 5;
+pub(crate) const ADV: u8 = 6;
+const CATS: usize = 7;
 
 fn sc(v: i32) -> i32 {
     crate::startctx::sc(v)
@@ -49,17 +52,28 @@ fn sc(v: i32) -> i32 {
 enum Op {
     None,
     Cat(u8),
-    Page(u8),
     Theme(u8),
     Color(u8),
     Opacity(u8),
     ResetColors,
     ApplyTheme(u8),
-    SaveTheme,
     DeleteTheme(u8),
+    SaveTheme,
+    MenuBlur,
+    MenuAlpha(u8),
+    MenuRadius(i32),
+    WinBlur,
+    DeskIcons,
+    SmallIcons,
+    Wallpaper,
+    WallpaperReload,
+    Recycle,
+    DeskFolder,
     BarSide(u8),
     BarSize(u8),
     BarMonitor(i8),
+    BarBlur,
+    BarRadius(i32),
     Autohide,
     AlignLeft,
     AltTab,
@@ -67,18 +81,17 @@ enum Op {
     TaskView,
     Notify,
     NotifyTimeout,
-    BarBlur,
-    BarRadius(i32),
-    WinBlur,
-    MenuBlur,
-    MenuAlpha(u8),
-    MenuRadius(i32),
     StartPos(bool),
     StartStyle(u8),
     StartScale(u8),
+    StartRanked,
+    ClearHistory,
+    PinsFolder,
     Lang(u8),
     OpenApp(u8),
+    ResetAsk,
     ResetAll,
+    ResetCancel,
     Close,
 }
 
@@ -97,35 +110,43 @@ struct Row {
     hint: String,
     kind: Kind,
     op: Op,
+    del: Op,  // a second action on the right end of the row (the ✕ of a template), None = nothing
     dot: u32, // colour dot before the label (COLORREF), u32::MAX = none
 }
 
 fn head(label: &str) -> Row {
-    Row { label: label.into(), hint: String::new(), kind: Kind::Head, op: Op::None, dot: u32::MAX }
+    Row { label: label.into(), hint: String::new(), kind: Kind::Head, op: Op::None, del: Op::None, dot: u32::MAX }
 }
 fn check(label: &str, on: bool, op: Op) -> Row {
-    Row { label: label.into(), hint: String::new(), kind: Kind::Check(on), op, dot: u32::MAX }
+    Row { label: label.into(), hint: String::new(), kind: Kind::Check(on), op, del: Op::None, dot: u32::MAX }
 }
 fn choice(label: &str, on: bool, op: Op) -> Row {
-    Row { label: label.into(), hint: String::new(), kind: Kind::Choice(on), op, dot: u32::MAX }
+    Row { label: label.into(), hint: String::new(), kind: Kind::Choice(on), op, del: Op::None, dot: u32::MAX }
 }
 fn action(label: &str, hint: &str, op: Op) -> Row {
-    Row { label: label.into(), hint: hint.into(), kind: Kind::Action, op, dot: u32::MAX }
+    Row { label: label.into(), hint: hint.into(), kind: Kind::Action, op, del: Op::None, dot: u32::MAX }
 }
 fn danger(label: &str, op: Op) -> Row {
-    Row { label: label.into(), hint: String::new(), kind: Kind::Danger, op, dot: u32::MAX }
+    Row { label: label.into(), hint: String::new(), kind: Kind::Danger, op, del: Op::None, dot: u32::MAX }
 }
 fn info(label: &str) -> Row {
-    Row { label: label.into(), hint: String::new(), kind: Kind::Info, op: Op::None, dot: u32::MAX }
+    Row { label: label.into(), hint: String::new(), kind: Kind::Info, op: Op::None, del: Op::None, dot: u32::MAX }
 }
-fn swatch(label: &str, on: bool, dot: u32, op: Op) -> Row {
-    Row { dot, ..choice(label, on, op) }
+/// A choice with a colour dot before it (a theme, a colour of the palette, a template).
+fn with_dot(label: &str, hint: &str, dot: u32, on: bool, op: Op, del: Op) -> Row {
+    Row { label: label.into(), hint: hint.into(), kind: Kind::Choice(on), op, del, dot }
+}
+
+fn cat_icon(i: u8) -> &'static str {
+    // Segoe MDL2 Assets: colour, monitor, taskbar, Start, globe, apps, gear
+    ["\u{E790}", "\u{E7F4}", "\u{E8A1}", "\u{E700}", "\u{E774}", "\u{E71D}", "\u{E713}"][(i as usize).min(CATS - 1)]
 }
 
 fn cat_title(i: u8) -> String {
     match i {
         LOOK => t!("Внешний вид", "Appearance", ja: "外観", pt: "Aparência", zh: "外观"),
-        BAR => t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏"),
+        DESK => t!("Рабочий стол", "Desktop", ja: "デスクトップ", pt: "Área de trabalho", zh: "桌面"),
+        BAR => t!("Панель задач", "Taskbar", ja: "タスクバー", pt: "Barra de tarefas", zh: "任务栏"),
         START => t!("Меню «Пуск»", "Start menu", ja: "スタート メニュー", pt: "Menu Iniciar", zh: "开始菜单"),
         LANG => t!("Язык", "Language", ja: "言語", pt: "Idioma", zh: "语言"),
         APPS => t!("Приложения", "Apps", ja: "アプリ", pt: "Aplicativos", zh: "应用"),
@@ -136,39 +157,18 @@ fn cat_title(i: u8) -> String {
 
 fn cat_sub(i: u8) -> String {
     match i {
-        LOOK => t!("Тема, цвета, прозрачность и шаблоны", "Theme, colors, transparency and templates", ja: "テーマ、色、透明度、テンプレート", pt: "Tema, cores, transparência e modelos", zh: "主题、颜色、透明度与模板"),
-        BAR => t!("Где она, как выглядит и как себя ведёт", "Where it sits, how it looks and behaves", ja: "配置場所、外観、動作", pt: "Onde fica, como aparece e se comporta", zh: "位置、外观与行为"),
-        START => t!("Где открывается и как выглядит", "Where it opens and how it looks", ja: "開く位置と外観", pt: "Onde abre e como aparece", zh: "打开位置和外观"),
-        LANG => t!("Язык всех программ WinRust", "The language of every WinRust program", ja: "すべての WinRust プログラムの言語", pt: "O idioma de todos os programas da WinRust", zh: "所有 WinRust 程序的语言"),
-        APPS => t!("Свои страницы каждой программы", "Each app's own pages", ja: "各アプリの設定", pt: "As páginas de cada aplicativo", zh: "各应用自己的设置"),
-        _ => t!("Сброс, язык и сведения", "Reset, language and about", ja: "リセット、言語、情報", pt: "Restaurar, idioma e sobre", zh: "重置、语言与关于"),
+        LOOK => t!("Тема, цвета, шаблоны и эффекты", "Theme, colors, templates and effects", ja: "テーマ、色、テンプレート、効果", pt: "Tema, cores, modelos e efeitos", zh: "主题、颜色、模板与效果"),
+        DESK => t!("Значки, обои и ярлыки рабочего стола", "Desktop icons, background and shortcuts", ja: "デスクトップのアイコン、背景、ショートカット", pt: "Ícones, plano de fundo e atalhos", zh: "桌面图标、背景与快捷方式"),
+        BAR => t!("Где она, как выглядит и как себя ведёт", "Where it is, how it looks and behaves", ja: "配置、外観、動作", pt: "Onde fica, como aparece e se comporta", zh: "位置、外观与行为"),
+        START => t!("Положение, стиль, поиск и ярлыки", "Position, style, search and shortcuts", ja: "位置、スタイル、検索、ショートカット", pt: "Posição, estilo, pesquisa e atalhos", zh: "位置、样式、搜索与快捷方式"),
+        LANG => t!("Один выбор для всех программ", "One choice for every app", ja: "すべてのアプリで 1 つの設定", pt: "Uma escolha para todos os aplicativos", zh: "所有应用共用一个选择"),
+        APPS => t!("Свои окна настроек", "Each app's own settings window", ja: "各アプリの設定ウィンドウ", pt: "A janela de ajustes de cada aplicativo", zh: "各应用自己的设置窗口"),
+        _ => t!("Сброс, версия и файлы", "Reset, version and files", ja: "リセット、バージョン、ファイル", pt: "Restaurar, versão e arquivos", zh: "重置、版本与文件"),
     }
     .to_string()
 }
 
-fn page_title(p: u8) -> String {
-    match p {
-        COLORS => t!("Цвета и прозрачность", "Colors and transparency", ja: "色と透明度", pt: "Cores e transparência", zh: "颜色与透明度"),
-        TEMPLATES => t!("Шаблоны", "Templates", ja: "テンプレート", pt: "Modelos", zh: "模板"),
-        DELETE => t!("Удалить шаблон", "Delete a template", ja: "テンプレートを削除", pt: "Excluir um modelo", zh: "删除模板"),
-        RESET => t!("Сбросить всё?", "Reset everything?", ja: "すべてをリセットします?", pt: "Restaurar tudo?", zh: "全部重置？"),
-        _ => "",
-    }
-    .to_string()
-}
-
-fn page_sub(p: u8) -> String {
-    match p {
-        COLORS => t!("Поверх выбранной темы", "On top of the chosen theme", ja: "選択したテーマの上に適用", pt: "Sobre o tema escolhido", zh: "在所选主题之上"),
-        TEMPLATES => t!("Свои наборы на любое настроение", "Your own looks for any mood", ja: "気分に合わせたオリジナルの外観", pt: "Suas próprias aparências para qualquer humor", zh: "随心保存自己的外观"),
-        DELETE => t!("Нажмите на шаблон, чтобы удалить", "Click a template to delete it", ja: "削除するテンプレートをクリック", pt: "Clique em um modelo para excluí-lo", zh: "点击模板即可删除"),
-        RESET => t!("Тема, цвета, панель и язык. Шаблоны останутся", "Theme, colors, bar and language. Templates stay", ja: "テーマ、色、バー、言語。テンプレートは残ります", pt: "Tema, cores, barra e idioma. Os modelos permanecem", zh: "主题、颜色、任务栏和语言。模板保留"),
-        _ => "",
-    }
-    .to_string()
-}
-
-/// Colours the colours page edits, in `style::PAL` order (`bg line hover active accent text dim`).
+/// Colours the colours card edits, in `style::PAL` order (`bg line hover active accent text dim`).
 fn color_names() -> [&'static str; 7] {
     [
         t!("Фон", "Background", ja: "背景", pt: "Fundo", zh: "背景"),
@@ -182,8 +182,9 @@ fn color_names() -> [&'static str; 7] {
 }
 
 const PCT: [u8; 5] = [100, 85, 70, 55, 40];
+const MENU_ALPHA: [u8; 5] = [90, 75, 67, 50, 35];
 
-/// The WinRust programs whose own settings the Apps category opens, with where the installer puts them.
+/// The WinRust programs whose own settings the Apps category opens, with the name of their executable.
 const APPS_LIST: [(&str, &str); 5] = [
     ("rust-explorer", "rust-explorer.exe"),
     ("rtaskmgr", "rtaskmgr-win32.exe"),
@@ -192,70 +193,89 @@ const APPS_LIST: [(&str, &str); 5] = [
     ("rust-settings", "rust-settings.exe"),
 ];
 
-/// Finds an installed WinRust program: Program Files (the installer's place), then beside the bar, then the launcher's bin.
 fn installed(app: &str, exe: &str) -> bool {
     let mut v = Vec::new();
     if let Some(pf) = std::env::var_os("ProgramFiles") {
-        v.push(std::path::PathBuf::from(pf).join(app).join(exe));
+        v.push(PathBuf::from(pf).join(app).join(exe));
     }
     if let Ok(e) = std::env::current_exe() {
         v.push(e.with_file_name(exe));
     }
     if let Some(la) = std::env::var_os("LOCALAPPDATA") {
-        v.push(std::path::PathBuf::from(la).join(r"plugin-launcher\bin").join(exe));
+        v.push(PathBuf::from(la).join(r"plugin-launcher\bin").join(exe));
     }
     v.into_iter().any(|p| p.is_file())
 }
 
+/// A marker file the desktop of `rust-explorer` reads (`%APPDATA%\WinRust\...`).
+fn marker(name: &str) -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("WinRust").join(name))
+}
+
+fn marker_set(name: &str, on: bool) {
+    let Some(p) = marker(name) else { return };
+    if on {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(&p, "1");
+    } else {
+        let _ = std::fs::remove_file(&p);
+    }
+}
+
+fn icons_hidden() -> bool {
+    marker("desktop-icons-hidden.txt").is_some_and(|p| p.is_file())
+}
+
+fn small_icons() -> bool {
+    marker("small-icons").is_some_and(|p| p.is_file())
+}
+
 thread_local! {
     static CAT: Cell<u8> = const { Cell::new(LOOK) };
-    static PAGE: Cell<u8> = const { Cell::new(ROOT) };
     static SCROLL: Cell<i32> = const { Cell::new(0) };
-    static HOT: Cell<i32> = const { Cell::new(-1) }; // hovered row index of the current layout
+    static HOT: Cell<i32> = const { Cell::new(-1) }; // hovered row (flat index) of the current category
     static HOT_CAT: Cell<i32> = const { Cell::new(-1) };
     static HOTX: Cell<bool> = const { Cell::new(false) }; // the close button
-    static BITS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
-    static FONT: Cell<[usize; 4]> = const { Cell::new([0; 4]) };
+    static CONFIRM: Cell<bool> = const { Cell::new(false) }; // the reset is waiting for a second click
+    static BITS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    static FONT: Cell<[usize; 5]> = const { Cell::new([0; 5]) };
     static WND: Cell<HWND> = const { Cell::new(ptr::null_mut()) };
     /// The saved templates: read from disk when the window opens or one is saved, never on every repaint.
-    static THEMES: std::cell::RefCell<Vec<st::Theme>> = const { std::cell::RefCell::new(Vec::new()) };
-    /// How many monitors there were when the window opened (the monitor list is not re-read on every paint).
+    static THEMES: RefCell<Vec<st::Theme>> = const { RefCell::new(Vec::new()) };
+    /// How many monitors there were when the window opened (the list is not re-read on every repaint).
     static MONS: Cell<i32> = const { Cell::new(1) };
     /// Which of `APPS_LIST` are installed (checked when the window opens, not on every repaint).
     static HAVE: Cell<[bool; 5]> = const { Cell::new([false; 5]) };
+    /// True while `CreateWindowExW` runs, so the window procedure can trace the messages of a failed creation.
+    static CREATING: Cell<bool> = const { Cell::new(false) };
+    static MSGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 const EMPTY: [bool; 5] = [false; 5];
 
-fn rows(cat: u8, page: u8) -> Vec<Row> {
+fn rows(cat: u8) -> Vec<Row> {
     let mut v = Vec::new();
-    match (cat, page) {
-        (LOOK, COLORS) => {
-            v.push(action(t!("‹   Назад", "‹   Back", ja: "‹   戻る", pt: "‹   Voltar", zh: "‹   返回"), "", Op::Page(ROOT)));
-            v.push(head(t!("Цвета (точка: изменён вами)", "Colors (dot: changed by you)", ja: "色 (点: 変更済み)", pt: "Cores (ponto: alterada por você)", zh: "颜色（圆点：已更改）")));
-            let cur = st::custom_colors().unwrap_or([u32::MAX; 7]);
-            let p = st::pal();
-            let now = [p.bg, p.line, p.hover, p.active, p.accent, p.text, p.dim];
-            for (i, n) in color_names().iter().enumerate() {
-                v.push(swatch(n, cur[i] != u32::MAX, now[i], Op::Color(i as u8)));
+    match cat {
+        LOOK => {
+            v.push(head(t!("Тема", "Theme", ja: "テーマ", pt: "Tema", zh: "主题")));
+            for (i, s) in st::ALL.iter().enumerate() {
+                v.push(with_dot(crate::settings::style_name(*s), "", st::PALS[i].accent, st::style() == *s, Op::Theme(i as u8), Op::None));
             }
-            v.push(head(t!("Непрозрачность панели", "Bar opacity", ja: "バーの不透明度", pt: "Opacidade da barra", zh: "任务栏不透明度")));
-            for a in PCT {
-                let name = if a == 100 { t!("100 %, без прозрачности", "100 %, solid", ja: "100 %、不透明", pt: "100 %, sólida", zh: "100 %，不透明").to_string() } else { format!("{a} %") };
-                v.push(choice(&name, st::bar_opacity() == a, Op::Opacity(a)));
+            v.push(head(t!("Цвета", "Colors", ja: "色", pt: "Cores", zh: "颜色")));
+            let cur = st::custom_colors().unwrap_or([u32::MAX; 7]);
+            let pal = st::pal();
+            let shown = [pal.bg, pal.line, pal.hover, pal.active, pal.accent, pal.text, pal.dim];
+            for (i, n) in color_names().iter().enumerate() {
+                let c = shown[i];
+                let hex = format!("#{:02X}{:02X}{:02X}", c & 255, (c >> 8) & 255, (c >> 16) & 255);
+                v.push(with_dot(n, &hex, c, cur[i] != u32::MAX, Op::Color(i as u8), Op::None));
             }
             v.push(danger(t!("Вернуть цвета темы", "Back to the theme's colors", ja: "テーマの色に戻す", pt: "Voltar às cores do tema", zh: "恢复主题颜色"), Op::ResetColors));
-        }
-        (LOOK, TEMPLATES) | (LOOK, DELETE) => {
-            v.push(action(t!("‹   Назад", "‹   Back", ja: "‹   戻る", pt: "‹   Voltar", zh: "‹   返回"), "", Op::Page(TEMPLATES)));
-            let deleting = page == DELETE;
-            v.push(head(if deleting {
-                t!("Нажмите на шаблон, чтобы удалить", "Click a template to delete it", ja: "削除するテンプレートをクリック", pt: "Clique em um modelo para excluí-lo", zh: "点击模板即可删除")
-            } else {
-                t!("Мои шаблоны", "My templates", ja: "マイ テンプレート", pt: "Meus modelos", zh: "我的模板")
-            }));
-            let now = st::Theme::current("");
+            v.push(head(t!("Шаблоны", "Templates", ja: "テンプレート", pt: "Modelos", zh: "模板")));
             let n = THEMES.with_borrow(|t| t.len());
+            let now = st::Theme::current("");
             if n == 0 {
                 v.push(info(t!("Пока пусто: настройте вид и сохраните", "None yet: set up a look and save it", ja: "まだありません: 外観を設定して保存してください", pt: "Nenhum ainda: monte uma aparência e salve", zh: "暂无：设置好外观后保存")));
             }
@@ -269,45 +289,41 @@ fn rows(cat: u8, page: u8) -> Vec<Row> {
                     let th = &t[i];
                     (th.style, th.colors, th.opacity) == (now.style, now.colors, now.opacity)
                 });
-                if deleting {
-                    v.push(Row { dot, hint: style.into(), ..danger(&name, Op::DeleteTheme(i as u8)) });
-                } else {
-                    v.push(Row { dot, hint: style.into(), ..choice(&name, same, Op::ApplyTheme(i as u8)) });
-                }
+                v.push(with_dot(&name, style, dot, same, Op::ApplyTheme(i as u8), Op::DeleteTheme(i as u8)));
             }
-            if !deleting {
-                v.push(action(t!("Сохранить текущий вид как шаблон", "Save the current look as a template", ja: "現在の外観をテンプレートとして保存", pt: "Salvar a aparência atual como modelo", zh: "将当前外观保存为模板"), "", Op::SaveTheme));
-                if n > 0 {
-                    v.push(danger(t!("Удалить шаблон…", "Delete a template…", ja: "テンプレートを削除…", pt: "Excluir um modelo…", zh: "删除模板…"), Op::Page(DELETE)));
-                }
+            v.push(action(t!("Сохранить текущий вид как шаблон", "Save the current look as a template", ja: "現在の外観をテンプレートとして保存", pt: "Salvar a aparência atual como modelo", zh: "将当前外观保存为模板"), "", Op::SaveTheme));
+            v.push(head(t!("Эффекты", "Effects", ja: "効果", pt: "Efeitos", zh: "效果")));
+            v.push(check(t!("Размытие за меню", "Blur behind the menu", ja: "メニューの後ろをぼかす", pt: "Desfoque atrás do menu", zh: "菜单后模糊"), lk::menu_blur(), Op::MenuBlur));
+            for a in MENU_ALPHA {
+                v.push(choice(&format!("{} %", a), lk::menu_alpha() == a, Op::MenuAlpha(a)));
             }
-        }
-        (LOOK, _) => {
-            v.push(head(t!("Тема", "Theme", ja: "テーマ", pt: "Tema", zh: "主题")));
-            for (i, s) in st::ALL.iter().enumerate() {
-                v.push(swatch(crate::settings::style_name(*s), st::style() == *s, st::PALS[i].accent, Op::Theme(i as u8)));
+            for r in [12, 18, 26] {
+                v.push(choice(&format!("{r} px"), lk::menu_radius() == r, Op::MenuRadius(r)));
             }
-            v.push(head(t!("Цвета и прозрачность", "Colors and transparency", ja: "色と透明度", pt: "Cores e transparência", zh: "颜色与透明度")));
-            v.push(action(t!("Цвета и прозрачность…", "Colors and transparency…", ja: "色と透明度…", pt: "Cores e transparência…", zh: "颜色与透明度…"), "›", Op::Page(COLORS)));
-            v.push(action(t!("Шаблоны…", "Templates…", ja: "テンプレート…", pt: "Modelos…", zh: "模板…"), "›", Op::Page(TEMPLATES)));
-            v.push(head(t!("Непрозрачность панели", "Bar opacity", ja: "バーの不透明度", pt: "Opacidade da barra", zh: "任务栏不透明度")));
-            for a in PCT {
-                let name = if a == 100 { t!("100 %, без прозрачности", "100 %, solid", ja: "100 %、不透明", pt: "100 %, sólida", zh: "100 %，不透明").to_string() } else { format!("{a} %") };
-                v.push(choice(&name, st::bar_opacity() == a, Op::Opacity(a)));
-            }
-            v.push(head(t!("Окна WinRust", "WinRust windows", ja: "WinRust のウィンドウ", pt: "Janelas do WinRust", zh: "WinRust 窗口")));
             v.push(check(t!("Мороз в окнах WinRust", "Frost in WinRust windows", ja: "WinRust のウィンドウをぼかす", pt: "Desfoque nas janelas do WinRust", zh: "WinRust 窗口模糊"), lk::win_blur(), Op::WinBlur));
         }
-        (BAR, _) => {
+        DESK => {
+            v.push(head(t!("Значки", "Icons", ja: "アイコン", pt: "Ícones", zh: "图标")));
+            v.push(check(t!("Показывать значки рабочего стола", "Show desktop icons", ja: "デスクトップのアイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标"), !icons_hidden(), Op::DeskIcons));
+            v.push(check(t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标"), small_icons(), Op::SmallIcons));
+            v.push(info(t!("Размер значков применится после перезапуска рабочего стола", "The icon size applies when the desktop starts again", ja: "アイコンのサイズはデスクトップの再起動後に反映されます", pt: "O tamanho dos ícones vale quando a área de trabalho reiniciar", zh: "图标大小在桌面重新启动后生效")));
+            v.push(head(t!("Фон", "Background", ja: "背景", pt: "Plano de fundo", zh: "背景")));
+            v.push(action(t!("Выбрать изображение…", "Pick a picture…", ja: "画像を選ぶ…", pt: "Escolher uma imagem…", zh: "选择图片…"), "›", Op::Wallpaper));
+            v.push(action(t!("Обновить обои", "Reload the background", ja: "背景を再読み込み", pt: "Recarregar o plano de fundo", zh: "重新加载背景"), "", Op::WallpaperReload));
+            v.push(info(t!("rs-shell преобразует картинку при входе: для новой нужно выйти из системы", "rs-shell converts the picture at sign-in: a new one needs a sign-out", ja: "rs-shell はサインイン時に画像を変換します。新しい画像はサインアウトが必要です", pt: "O rs-shell converte a imagem ao entrar: uma nova precisa sair da conta", zh: "rs-shell 在登录时转换图片：新图片需要注销")));
+            v.push(head(t!("Ярлыки", "Shortcuts", ja: "ショートカット", pt: "Atalhos", zh: "快捷方式")));
+            v.push(action(t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira", zh: "回收站"), "›", Op::Recycle));
+            v.push(action(t!("Папка рабочего стола", "Desktop folder", ja: "デスクトップ フォルダー", pt: "Pasta da área de trabalho", zh: "桌面文件夹"), "›", Op::DeskFolder));
+        }
+        BAR => {
             v.push(head(t!("Положение", "Position", ja: "位置", pt: "Posição", zh: "位置")));
             for (i, (s, name)) in [(st::Side::Bottom, t!("Снизу", "Bottom", ja: "下", pt: "Embaixo", zh: "底部")), (st::Side::Left, t!("Слева", "Left", ja: "左", pt: "Esquerda", zh: "左侧")), (st::Side::Right, t!("Справа", "Right", ja: "右", pt: "Direita", zh: "右侧"))].into_iter().enumerate() {
                 v.push(choice(name, st::side() == s, Op::BarSide(i as u8)));
             }
             v.push(head(t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小")));
-            for (i, name) in [(0u8, t!("Мелкий", "Small", ja: "小", pt: "Pequeno", zh: "小")), (1, t!("Обычный", "Normal", ja: "通常", pt: "Normal", zh: "正常")), (2, t!("Крупный", "Large", ja: "大", pt: "Grande", zh: "大"))] {
+            for (i, name) in [(0u8, t!("Мелкая", "Small", ja: "小", pt: "Pequena", zh: "小")), (1, t!("Обычный", "Normal", ja: "通常", pt: "Normal", zh: "正常")), (2, t!("Крупный", "Large", ja: "大", pt: "Grande", zh: "大"))] {
                 v.push(choice(name, st::bar_size() == i, Op::BarSize(i)));
             }
-            // one bar on every monitor, or one on a chosen one
             let mons = MONS.with(|m| m.get());
             if mons > 1 {
                 v.push(head(t!("Монитор", "Monitor", ja: "モニター", pt: "Monitor", zh: "显示器")));
@@ -319,18 +335,13 @@ fn rows(cat: u8, page: u8) -> Vec<Row> {
             }
             v.push(head(t!("Размытие", "Blur", ja: "ぼかし", pt: "Desfoque", zh: "模糊")));
             v.push(check(t!("Размытие за панелью", "Blur behind the bar", ja: "バーの後ろをぼかす", pt: "Desfoque atrás da barra", zh: "任务栏后模糊"), lk::bar_blur(), Op::BarBlur));
-            for (r, name) in [(4, t!("Слабое", "Soft", ja: "弱い", pt: "Suave", zh: "弱")), (8, t!("Среднее", "Medium", ja: "中", pt: "Média", zh: "中")), (14, t!("Сильное", "Strong", ja: "強い", pt: "Forte", zh: "强"))] {
+            for (r, name) in [(4, t!("Слабое", "Soft", ja: "弱い", pt: "Suave", zh: "弱")), (8, t!("Среднее", "Medium", ja: "中", pt: "Médio", zh: "中")), (14, t!("Сильное", "Strong", ja: "強い", pt: "Forte", zh: "强"))] {
                 v.push(choice(name, lk::bar_radius() == r, Op::BarRadius(r)));
             }
-            v.push(head(t!("Контекстное меню", "Context menu", ja: "コンテキスト メニュー", pt: "Menu de contexto", zh: "上下文菜单")));
-            v.push(check(t!("Размытие за меню", "Blur behind the menu", ja: "メニューの後ろをぼかす", pt: "Desfoque atrás do menu", zh: "菜单后模糊"), lk::menu_blur(), Op::MenuBlur));
-            v.push(head(t!("Непрозрачность меню", "Menu opacity", ja: "メニューの不透明度", pt: "Opacidade do menu", zh: "菜单不透明度")));
-            for a in [90u8, 75, 67, 50, 35] {
-                v.push(choice(&format!("{a} %"), lk::menu_alpha() == a, Op::MenuAlpha(a)));
-            }
-            v.push(head(t!("Сила размытия", "Blur strength", ja: "ぼかしの強さ", pt: "Intensidade do desfoque", zh: "模糊强度")));
-            for r in [12, 18, 26] {
-                v.push(choice(&format!("{r} px"), lk::menu_radius() == r, Op::MenuRadius(r)));
+            v.push(head(t!("Непрозрачность панели", "Bar opacity", ja: "バーの不透明度", pt: "Opacidade da barra", zh: "任务栏不透明度")));
+            for a in PCT {
+                let name = if a == 100 { t!("100 %, без прозрачности", "100 %, solid", ja: "100 %、不透明", pt: "100 %, sólida", zh: "100 %，不透明").to_string() } else { format!("{a} %") };
+                v.push(choice(&name, st::bar_opacity() == a, Op::Opacity(a)));
             }
             v.push(head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为")));
             v.push(check(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏"), st::autohide(), Op::Autohide));
@@ -342,7 +353,7 @@ fn rows(cat: u8, page: u8) -> Vec<Row> {
             v.push(check(t!("Показывать уведомления", "Show notifications", ja: "通知を表示", pt: "Mostrar notificações", zh: "显示通知"), lk::notify(), Op::Notify));
             v.push(action(t!("Время на экране", "On screen for", ja: "表示時間", pt: "Tempo na tela", zh: "显示时长"), &format!("{} s ›", lk::notify_timeout()), Op::NotifyTimeout));
         }
-        (START, _) => {
+        START => {
             v.push(head(t!("Положение", "Position", ja: "位置", pt: "Posição", zh: "位置")));
             v.push(choice(t!("По центру", "Centered", ja: "中央", pt: "Centralizado", zh: "居中"), !lk::start_left(), Op::StartPos(false)));
             v.push(choice(t!("Слева", "On the left", ja: "左", pt: "À esquerda", zh: "靠左"), lk::start_left(), Op::StartPos(true)));
@@ -354,21 +365,26 @@ fn rows(cat: u8, page: u8) -> Vec<Row> {
             for (i, name) in [(0u8, t!("Мелкий", "Small", ja: "小", pt: "Pequeno", zh: "小")), (1, t!("Обычный", "Normal", ja: "通常", pt: "Normal", zh: "正常")), (2, t!("Крупный", "Large", ja: "大", pt: "Grande", zh: "大"))] {
                 v.push(choice(name, lk::start_scale() == (match i { 0 => 90, 2 => 115, _ => 100 }), Op::StartScale(i)));
             }
+            v.push(head(t!("Поиск", "Search", ja: "検索", pt: "Pesquisa", zh: "搜索")));
+            v.push(check(t!("Сортировать результаты по частоте", "Rank results by use", ja: "使用頻度順に並べる", pt: "Classificar os resultados pelo uso", zh: "按使用频率排序"), lk::start_ranked(), Op::StartRanked));
+            v.push(action(t!("Очистить историю приложений", "Clear the app history", ja: "アプリの履歴を消去", pt: "Limpar o histórico de aplicativos", zh: "清除应用历史记录"), "", Op::ClearHistory));
+            v.push(head(t!("Приложения", "Apps", ja: "アプリ", pt: "Aplicativos", zh: "应用")));
+            v.push(action(t!("Открыть папку закреплённых программ", "Open the pinned apps folder", ja: "ピン留めしたアプリのフォルダーを開く", pt: "Abrir a pasta de aplicativos fixados", zh: "打开固定应用文件夹"), "›", Op::PinsFolder));
         }
-        (LANG, _) => {
+        LANG => {
             v.push(head(t!("Язык всех программ WinRust", "The language of every WinRust program", ja: "すべての WinRust プログラムの言語", pt: "O idioma de todos os programas da WinRust", zh: "所有 WinRust 程序的语言")));
             for (i, l) in winrust_common::Lang::ALL.iter().enumerate() {
                 v.push(choice(l.name(), winrust_common::lang::get() == *l, Op::Lang(i as u8)));
             }
-            v.push(info(t!("Изменение сразу применяется ко всем программам WinRust.", "The change applies to every WinRust app at once.", ja: "変更はすべての WinRust アプリにすぐ適用されます。", pt: "A mudança vale para todos os programas da WinRust de uma vez.", zh: "更改会立即应用到所有 WinRust 程序。")));
+            v.push(info(t!("Изменение сразу применяется ко всем программам.", "The change applies to every app at once.", ja: "変更はすべてのアプリにすぐ適用されます。", pt: "A mudança vale para todos os aplicativos de uma vez.", zh: "更改会立即应用到所有应用。")));
         }
-        (APPS, _) => {
+        APPS => {
             let names = [
                 t!("Проводник", "File manager", ja: "ファイル マネージャー", pt: "Gerenciador de arquivos", zh: "文件管理器"),
                 t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器"),
                 t!("Панель управления", "Control Panel", ja: "コントロール パネル", pt: "Painel de Controle", zh: "控制面板"),
                 t!("Снимки и запись", "Screenshots and recording", ja: "スクリーンショットと録画", pt: "Capturas e gravação", zh: "截图与录制"),
-                t!("Параметры системы (экран, звук…)", "System settings (display, sound, …)", ja: "システム設定 (画面、サウンド…)", pt: "Configurações do sistema (tela, som…)", zh: "系统设置（显示、声音…）"),
+                t!("Параметры системы (экран, звук…)", "System settings (display, sound…)", ja: "システム設定 (画面、サウンド…)", pt: "Configurações do sistema (tela, som…)", zh: "系统设置（显示、声音…）"),
             ];
             let have = HAVE.with(|h| h.get());
             v.push(head(t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")));
@@ -379,71 +395,94 @@ fn rows(cat: u8, page: u8) -> Vec<Row> {
                     v.push(Row { hint: t!("Не установлено", "Not installed", ja: "インストールされていません", pt: "Não instalado", zh: "未安装").into(), ..info(names[i]) });
                 }
             }
-            v.push(head(t!("Настройки", "Settings", ja: "設定", pt: "Configurações", zh: "设置")));
-            v.push(info(t!("Каждая программа WinRust хранит свои настройки в своём окне.", "Every WinRust app keeps its own options in its own window.", ja: "各 WinRust アプリの設定はそのアプリのウィンドウにあります。", pt: "Cada programa da WinRust guarda suas opções na própria janela.", zh: "每个 WinRust 程序都在自己的窗口中保存设置。")));
+            v.push(head(t!("Свои настройки", "Own settings", ja: "独自の設定", pt: "Ajustes próprios", zh: "自己的设置")));
+            v.push(info(t!("Каждая программа хранит настройки в своём окне.", "Every app keeps its options in its own window.", ja: "各アプリの設定はそのアプリのウィンドウにあります。", pt: "Cada aplicativo guarda suas opções na própria janela.", zh: "每个应用都在自己的窗口中保存设置。")));
+            v.push(info(t!("У rs-shot нет файла настроек: он использует параметры командной строки.", "rs-shot has no settings file: it uses command-line options.", ja: "rs-shot には設定ファイルがなく、コマンド ライン オプションを使います。", pt: "O rs-shot não tem arquivo de ajustes: usa opções de linha de comando.", zh: "rs-shot 没有设置文件：它使用命令行选项。")));
         }
-        (ABOUT, RESET) => {
-            v.push(action(t!("‹   Назад", "‹   Back", ja: "‹   戻る", pt: "‹   Voltar", zh: "‹   返回"), "", Op::Page(ROOT)));
-            v.push(head(t!("Сбросить всё?", "Reset everything?", ja: "すべてをリセットします?", pt: "Restaurar tudo?", zh: "全部重置？")));
-            v.push(danger(t!("Да, сбросить", "Yes, reset", ja: "はい、リセットします", pt: "Sim, restaurar", zh: "是，重置"), Op::ResetAll));
-            v.push(action(t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消"), "", Op::Page(ROOT)));
-        }
-        _ => {
-            v.push(head(t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏")));
-            v.push(danger(t!("Сбросить всё по умолчанию…", "Reset everything to defaults…", ja: "すべてを既定に戻す…", pt: "Restaurar tudo para o padrão…", zh: "全部恢复默认…"), Op::Page(RESET)));
+        ADV => {
+            v.push(head(t!("Сброс", "Reset", ja: "リセット", pt: "Restaurar", zh: "重置")));
+            if CONFIRM.with(|c| c.get()) {
+                v.push(danger(t!("Да, сбросить всё", "Yes, reset everything", ja: "はい、すべてリセットします", pt: "Sim, restaurar tudo", zh: "是，全部重置"), Op::ResetAll));
+                v.push(action(t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消"), "", Op::ResetCancel));
+            } else {
+                v.push(danger(t!("Сбросить всё по умолчанию…", "Reset everything to defaults…", ja: "すべてを既定に戻す…", pt: "Restaurar tudo para o padrão…", zh: "全部恢复默认…"), Op::ResetAsk));
+                v.push(info(t!("Тема, цвета, панель, «Пуск», язык и эффекты. Шаблоны сохранятся.", "Theme, colors, bar, Start, language and effects. Templates stay.", ja: "テーマ、色、バー、スタート、言語、効果。テンプレートは残ります。", pt: "Tema, cores, barra, Iniciar, idioma e efeitos. Os modelos permanecem.", zh: "主题、颜色、任务栏、开始、语言与效果。模板保留。")));
+            }
             v.push(head(t!("Язык", "Language", ja: "言語", pt: "Idioma", zh: "语言")));
-            v.push(action(t!("Язык", "Language", ja: "言語", pt: "Idioma", zh: "语言"), &format!("{} ›", winrust_common::lang::get().name()), Op::Cat(LANG)));
+            v.push(action(t!("Язык программы", "Program language", ja: "プログラムの言語", pt: "Idioma do programa", zh: "程序语言"), &format!("{} ›", winrust_common::lang::get().name()), Op::Cat(LANG)));
             v.push(head(t!("О программе", "About", ja: "バージョン情報", pt: "Sobre", zh: "关于")));
             v.push(action(t!("Версия", "Version", ja: "バージョン", pt: "Versão", zh: "版本"), env!("CARGO_PKG_VERSION"), Op::None));
             v.push(info(r"%ProgramData%\WinRust\look.txt"));
+            v.push(info(r"%ProgramData%\WinRust\style.txt"));
             v.push(info(r"%ProgramData%\WinRust\lang.txt"));
-            v.push(info(r"%ProgramData%\WinRust\themes.txt"));
+            v.push(info(r"%APPDATA%\WinRust\desktop-icons-hidden.txt"));
             v.push(action(t!("Закрыть", "Close", ja: "閉じる", pt: "Fechar", zh: "关闭"), "Esc", Op::Close));
         }
+        _ => {}
     }
     v
 }
 
-/// Row geometry: the rect and the row of every visible item of the current page, already scrolled.
-fn layout(w: i32, cat: u8, page: u8, scroll: i32) -> Vec<(RECT, Row)> {
+/// One card: its title, the rect it fills and its rows (already scrolled).
+struct Card {
+    title: String,
+    rect: RECT,
+    rows: Vec<(RECT, Row)>,
+}
+
+/// Cards and row geometry of a category. The painter and the hit test both use this, so they cannot disagree.
+fn layout(w: i32, cat: u8, scroll: i32) -> Vec<Card> {
+    let left = sc(RAIL + PAD);
+    let right = w - sc(PAD);
     let mut y = sc(TOP) - scroll;
-    let mut v = Vec::new();
-    for r in rows(cat, page) {
-        let h = if r.kind == Kind::Head { sc(HEAD_H) } else { sc(ROW_H) };
-        v.push((RECT { left: sc(RAIL + PAD), top: y, right: w - sc(PAD), bottom: y + h }, r));
+    let mut out: Vec<Card> = Vec::new();
+    for r in rows(cat) {
+        if r.kind == Kind::Head {
+            out.push(Card { title: r.label, rect: RECT { left, top: y, right, bottom: y + sc(HEAD_H) }, rows: Vec::new() });
+            y += sc(HEAD_H);
+            continue;
+        }
+        let h = if r.kind == Kind::Info { sc(ROW_H) - sc(8) } else { sc(ROW_H) };
+        if out.is_empty() {
+            out.push(Card { title: String::new(), rect: RECT { left, top: y, right, bottom: y }, rows: Vec::new() });
+        }
+        let rect = RECT { left: left + sc(10), top: y, right: right - sc(10), bottom: y + h };
+        if let Some(c) = out.last_mut() {
+            c.rows.push((rect, r));
+            c.rect.bottom = y + h + sc(8);
+        }
         y += h;
     }
-    v
+    out
 }
 
 fn content_bottom(h: i32) -> i32 {
-    h - sc(10)
+    h - sc(12)
 }
 
-fn max_scroll(w: i32, h: i32, cat: u8, page: u8) -> i32 {
-    let last = layout(w, cat, page, 0).last().map_or(0, |(r, _)| r.bottom);
-    (last + sc(8) - content_bottom(h)).max(0)
+fn max_scroll(w: i32, h: i32, cat: u8) -> i32 {
+    let last = layout(w, cat, 0).last().map_or(0, |c| c.rect.bottom);
+    (last + sc(10) - content_bottom(h)).max(0)
 }
 
 fn clamp_scroll(w: i32, h: i32) {
-    let (cat, page) = (CAT.with(|c| c.get()), PAGE.with(|p| p.get()));
-    let s = SCROLL.with(|s| s.get()).clamp(0, max_scroll(w, h, cat, page));
+    let cat = CAT.with(|c| c.get());
+    let s = SCROLL.with(|s| s.get()).clamp(0, max_scroll(w, h, cat));
     SCROLL.with(|x| x.set(s));
 }
 
 fn tab_rect(i: usize) -> RECT {
-    let top = sc(96) + i as i32 * sc(46);
-    RECT { left: sc(10), top, right: sc(RAIL - 10), bottom: top + sc(38) }
+    let top = sc(104) + i as i32 * sc(48);
+    RECT { left: sc(12), top, right: sc(RAIL - 12), bottom: top + sc(40) }
 }
 
-/// The close button at the right end of the content header (Esc does the same).
 fn close_rect(w: i32) -> RECT {
-    RECT { left: w - sc(46), top: sc(18), right: w - sc(16), bottom: sc(48) }
+    RECT { left: w - sc(50), top: sc(22), right: w - sc(18), bottom: sc(54) }
 }
 
-unsafe fn font(px: i32, weight: i32) -> HFONT {
-    let face: Vec<u16> = winrust_common::style::ui_face().encode_utf16().chain([0]).collect();
-    CreateFontW(-sc(px), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr())
+unsafe fn font(px: i32, weight: i32, face: &str) -> HFONT {
+    let f: Vec<u16> = face.encode_utf16().chain([0]).collect();
+    CreateFontW(-sc(px), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr())
 }
 
 fn ensure_fonts() {
@@ -451,8 +490,14 @@ fn ensure_fonts() {
         return;
     }
     unsafe {
-        FONT.with(|f| f.set([font(13, 400) as usize, font(17, 600) as usize, font(11, 400) as usize, font(13, 600) as usize]));
+        let ui = winrust_common::style::ui_face();
+        let icon = winrust_common::style::icon_face();
+        FONT.with(|f| f.set([font(13, 400, ui) as usize, font(21, 600, ui) as usize, font(11, 400, ui) as usize, font(13, 600, ui) as usize, font(15, 400, icon) as usize]));
     }
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain([0]).collect()
 }
 
 unsafe fn paint(h: HWND) {
@@ -465,15 +510,13 @@ unsafe fn paint(h: HWND) {
         return;
     }
     ensure_fonts();
-    clamp_scroll(cr.right, cr.bottom); // a page that shrank (a template deleted) must not leave the rows off screen
-    // double buffer: the blurred backdrop is expensive, and painting it straight to the window flickers
+    clamp_scroll(cr.right, cr.bottom);
     let dc = CreateCompatibleDC(wdc);
     let bmp = CreateCompatibleBitmap(wdc, cr.right, cr.bottom);
     let obmp = SelectObject(dc, bmp);
     let p = st::pal();
-    let (cat, page, scroll) = (CAT.with(|c| c.get()), PAGE.with(|g| g.get()), SCROLL.with(|s| s.get()));
+    let (cat, scroll) = (CAT.with(|c| c.get()), SCROLL.with(|s| s.get()));
     let inner = RECT { left: 1, top: 1, right: cr.right - 1, bottom: cr.bottom - 1 };
-    // backdrop: the blurred screen captured when the window opened, then the theme colour with a floor of 62 %
     let drew = BITS.with(|b| {
         let b = b.borrow();
         if b.is_empty() {
@@ -494,20 +537,21 @@ unsafe fn paint(h: HWND) {
     let rail = CreateSolidBrush(st::mix(p.bg, p.text, 0.05));
     FillRect(dc, &RECT { left: sc(1), top: sc(1), right: sc(RAIL), bottom: cr.bottom - sc(1) }, rail);
     DeleteObject(rail);
-    let (f, f_head, f_small, f_tab) = FONT.with(|x| {
+    let (f, f_title, f_small, f_tab, f_icon) = FONT.with(|x| {
         let a = x.get();
-        (a[0] as HFONT, a[1] as HFONT, a[2] as HFONT, a[3] as HFONT)
+        (a[0] as HFONT, a[1] as HFONT, a[2] as HFONT, a[3] as HFONT, a[4] as HFONT)
     });
     SetBkMode(dc, TRANSPARENT as i32);
-    // "WinRust" over the rail, then the categories
+    // rail header
     SelectObject(dc, f_small);
     SetTextColor(dc, p.dim);
-    let mut rr = RECT { left: sc(20), top: sc(18), right: sc(RAIL - 10), bottom: sc(40) };
-    DrawTextW(dc, wide("WinRust").as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    SelectObject(dc, f_head);
+    let mut rh = RECT { left: sc(24), top: sc(20), right: sc(RAIL - 12), bottom: sc(42) };
+    DrawTextW(dc, wide("WinRust").as_ptr(), -1, &mut rh, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, f_title);
     SetTextColor(dc, p.text);
-    let mut rr = RECT { left: sc(20), top: sc(40), right: sc(RAIL - 10), bottom: sc(72) };
-    DrawTextW(dc, wide(t!("Настройки", "Settings", ja: "設定", pt: "Configurações", zh: "设置")).as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    let mut rh = RECT { left: sc(24), top: sc(42), right: sc(RAIL - 12), bottom: sc(82) };
+    DrawTextW(dc, wide(t!("Настройки", "Settings", ja: "設定", pt: "Configurações", zh: "设置")).as_ptr(), -1, &mut rh, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    // rail categories
     for i in 0..CATS {
         let r = tab_rect(i);
         let on = i as u8 == cat;
@@ -515,28 +559,30 @@ unsafe fn paint(h: HWND) {
         if on || hot {
             let br = CreateSolidBrush(if on { st::mix(p.bg, p.accent, 0.20) } else { p.hover });
             let (o1, o2) = (SelectObject(dc, br), SelectObject(dc, GetStockObject(NULL_PEN)));
-            RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, sc(9), sc(9));
+            RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, sc(10), sc(10));
             SelectObject(dc, o1);
             SelectObject(dc, o2);
             DeleteObject(br);
         }
+        SelectObject(dc, f_icon);
+        SetTextColor(dc, if on { p.accent } else { p.dim });
+        let mut ir = RECT { left: r.left + sc(14), top: r.top, right: r.left + sc(44), bottom: r.bottom };
+        DrawTextW(dc, wide(cat_icon(i as u8)).as_ptr(), -1, &mut ir, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         SelectObject(dc, f_tab);
         SetTextColor(dc, if on { p.text } else { p.dim });
-        let mut rr = RECT { left: r.left + sc(12), top: r.top, right: r.right - sc(8), bottom: r.bottom };
-        DrawTextW(dc, wide(&cat_title(i as u8)).as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        let mut tr = RECT { left: r.left + sc(46), top: r.top, right: r.right - sc(8), bottom: r.bottom };
+        DrawTextW(dc, wide(&cat_title(i as u8)).as_ptr(), -1, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
-    // the header of the content
-    SelectObject(dc, f_head);
+    // page header
+    SelectObject(dc, f_title);
     SetTextColor(dc, p.text);
-    let title = if page == ROOT { cat_title(cat) } else { page_title(page) };
-    let mut hr = RECT { left: sc(RAIL + PAD), top: sc(20), right: cr.right - sc(60), bottom: sc(50) };
-    DrawTextW(dc, wide(&title).as_ptr(), -1, &mut hr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    let mut hr = RECT { left: sc(RAIL + PAD), top: sc(24), right: cr.right - sc(64), bottom: sc(58) };
+    DrawTextW(dc, wide(&cat_title(cat)).as_ptr(), -1, &mut hr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(dc, f_small);
     SetTextColor(dc, p.dim);
-    let sub = if page == ROOT { cat_sub(cat) } else { page_sub(page) };
-    let mut sr = RECT { left: sc(RAIL + PAD), top: sc(50), right: cr.right - sc(60), bottom: sc(70) };
-    DrawTextW(dc, wide(&sub).as_ptr(), -1, &mut sr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-    // the close button (Esc does the same)
+    let mut sr = RECT { left: sc(RAIL + PAD), top: sc(58), right: cr.right - sc(64), bottom: sc(80) };
+    DrawTextW(dc, wide(&cat_sub(cat)).as_ptr(), -1, &mut sr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    // close
     let cx = close_rect(cr.right);
     if HOTX.with(|x| x.get()) {
         let br = CreateSolidBrush(p.hover);
@@ -550,86 +596,39 @@ unsafe fn paint(h: HWND) {
     SetTextColor(dc, p.text);
     let mut xr = cx;
     DrawTextW(dc, wide("\u{2715}").as_ptr(), -1, &mut xr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    let line = CreateSolidBrush(st::mix(p.bg, p.text, 0.10));
-    FillRect(dc, &RECT { left: sc(RAIL + PAD), top: sc(74), right: cr.right - sc(PAD), bottom: sc(75) }, line);
-    DeleteObject(line);
-    // the rows, clipped to the content area so a scrolled one does not run over the header
+    // the cards, clipped to the content area
     let saved = SaveDC(dc);
-    IntersectClipRect(dc, sc(RAIL + 1), sc(TOP) - sc(4), cr.right - sc(1), content_bottom(cr.bottom));
+    IntersectClipRect(dc, sc(RAIL + 1), sc(TOP) - sc(6), cr.right - sc(1), content_bottom(cr.bottom));
     let hot = HOT.with(|x| x.get());
-    for (i, (r, row)) in layout(cr.right, cat, page, scroll).into_iter().enumerate() {
-        if r.bottom < sc(TOP) - sc(4) || r.top > content_bottom(cr.bottom) {
+    let mut idx = 0;
+    for card in layout(cr.right, cat, scroll) {
+        if card.rect.bottom < sc(TOP) - sc(6) || card.rect.top > content_bottom(cr.bottom) {
+            idx += card.rows.len() as i32;
             continue;
         }
-        match row.kind {
-            Kind::Head => {
-                SelectObject(dc, f_small);
-                SetTextColor(dc, p.dim);
-                let mut rr = RECT { left: r.left + sc(4), top: r.top + sc(6), right: r.right, bottom: r.bottom };
-                DrawTextW(dc, wide(&row.label).as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        let bg = CreateSolidBrush(st::mix(p.bg, p.text, 0.045));
+        let (o1, o2) = (SelectObject(dc, bg), SelectObject(dc, GetStockObject(NULL_PEN)));
+        RoundRect(dc, card.rect.left, card.rect.top, card.rect.right + 1, card.rect.bottom + 1, sc(10), sc(10));
+        SelectObject(dc, o1);
+        SelectObject(dc, o2);
+        DeleteObject(bg);
+        SelectObject(dc, f_small);
+        SetTextColor(dc, p.dim);
+        let mut ch = RECT { left: card.rect.left + sc(16), top: card.rect.top + sc(8), right: card.rect.right - sc(16), bottom: card.rect.top + sc(30) };
+        DrawTextW(dc, wide(&card.title).as_ptr(), -1, &mut ch, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        for (ri, (r, row)) in card.rows.iter().enumerate() {
+            if ri > 0 {
+                let line = CreateSolidBrush(st::mix(p.bg, p.text, 0.06));
+                FillRect(dc, &RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + 1 }, line);
+                DeleteObject(line);
             }
-            Kind::Info => {
-                SelectObject(dc, f_small);
-                SetTextColor(dc, p.dim);
-                let mut rr = RECT { left: r.left + sc(6), top: r.top, right: if row.hint.is_empty() { r.right } else { r.right - sc(54) }, bottom: r.bottom };
-                DrawTextW(dc, wide(&row.label).as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-                if !row.hint.is_empty() {
-                    let mut hr = RECT { left: r.right - sc(60), top: r.top, right: r.right, bottom: r.bottom };
-                    DrawTextW(dc, wide(&row.hint).as_ptr(), -1, &mut hr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                }
-            }
-            _ => {
-                let hovered = hot == i as i32;
-                if hovered {
-                    let br = CreateSolidBrush(p.hover);
-                    let (o1, o2) = (SelectObject(dc, br), SelectObject(dc, GetStockObject(NULL_PEN)));
-                    RoundRect(dc, r.left - sc(6), r.top, r.right + 1, r.bottom, sc(6), sc(6));
-                    SelectObject(dc, o1);
-                    SelectObject(dc, o2);
-                    DeleteObject(br);
-                }
-                // the marker: a colour dot, a dot for the chosen choice, a tick for a toggle that is on
-                let mut left = r.left + sc(6);
-                if row.dot != u32::MAX {
-                    let br = CreateSolidBrush(row.dot);
-                    let (o1, o2) = (SelectObject(dc, br), SelectObject(dc, GetStockObject(NULL_PEN)));
-                    let (cx, cy) = (r.left + sc(12), (r.top + r.bottom) / 2);
-                    Ellipse(dc, cx - sc(6), cy - sc(6), cx + sc(6), cy + sc(6));
-                    SelectObject(dc, o1);
-                    SelectObject(dc, o2);
-                    DeleteObject(br);
-                    left = r.left + sc(30);
-                } else if let Kind::Choice(on) = row.kind {
-                    SelectObject(dc, f);
-                    SetTextColor(dc, p.text);
-                    let mut mr = RECT { left: r.left + sc(4), top: r.top, right: r.left + sc(28), bottom: r.bottom };
-                    DrawTextW(dc, wide(if on { "\u{25CF}" } else { "\u{25CB}" }).as_ptr(), -1, &mut mr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                    left = r.left + sc(32);
-                } else if let Kind::Check(on) = row.kind {
-                    if on {
-                        SelectObject(dc, f);
-                        SetTextColor(dc, p.accent);
-                        let mut mr = RECT { left: r.left + sc(4), top: r.top, right: r.left + sc(28), bottom: r.bottom };
-                        DrawTextW(dc, wide("\u{2713}").as_ptr(), -1, &mut mr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                    }
-                    left = r.left + sc(32);
-                }
-                SelectObject(dc, f);
-                SetTextColor(dc, if row.kind == Kind::Danger { st::rgb(232, 92, 92) } else { p.text });
-                let mut rr = RECT { left, top: r.top, right: if row.hint.is_empty() { r.right } else { r.right - sc(54) }, bottom: r.bottom };
-                DrawTextW(dc, wide(&row.label).as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-                if !row.hint.is_empty() {
-                    SelectObject(dc, f_small);
-                    SetTextColor(dc, p.dim);
-                    let mut hr = RECT { left: r.right - sc(70), top: r.top, right: r.right, bottom: r.bottom };
-                    DrawTextW(dc, wide(&row.hint).as_ptr(), -1, &mut hr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                }
-            }
+            draw_row(dc, r, row, hot == idx, p, &[f, f_small]);
+            idx += 1;
         }
     }
     RestoreDC(dc, saved);
     // a slim scroll indicator when the category is longer than the window
-    let max = max_scroll(cr.right, cr.bottom, cat, page);
+    let max = max_scroll(cr.right, cr.bottom, cat);
     if max > 0 {
         let track = RECT { left: cr.right - sc(9), top: sc(TOP), right: cr.right - sc(5), bottom: content_bottom(cr.bottom) };
         let br = CreateSolidBrush(st::mix(p.bg, p.text, 0.08));
@@ -653,25 +652,73 @@ unsafe fn paint(h: HWND) {
     EndPaint(h, &ps);
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain([0]).collect()
-}
-
-unsafe fn hit_row(h: HWND, x: i32, y: i32) -> Option<(usize, RECT, Row)> {
-    let mut cr: RECT = zeroed();
-    GetClientRect(h, &mut cr);
-    if y < sc(TOP) - sc(4) || y > content_bottom(cr.bottom) || x < sc(RAIL + PAD) - sc(6) {
-        return None;
+unsafe fn draw_row(dc: HDC, r: &RECT, row: &Row, hovered: bool, p: &st::Pal, fonts: &[HFONT; 2]) {
+    let (f, f_small) = (fonts[0], fonts[1]);
+    match row.kind {
+        Kind::Head => {}
+        Kind::Info => {
+            SelectObject(dc, f_small);
+            SetTextColor(dc, p.dim);
+            let mut rr = RECT { left: r.left + sc(6), top: r.top, right: r.right, bottom: r.bottom };
+            DrawTextW(dc, wide(&row.label).as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+        _ => {
+            if hovered {
+                let br = CreateSolidBrush(p.hover);
+                let (o1, o2) = (SelectObject(dc, br), SelectObject(dc, GetStockObject(NULL_PEN)));
+                RoundRect(dc, r.left - sc(6), r.top + sc(2), r.right + sc(1), r.bottom - sc(2), sc(6), sc(6));
+                SelectObject(dc, o1);
+                SelectObject(dc, o2);
+                DeleteObject(br);
+            }
+            let mut left = r.left + sc(6);
+            if row.dot != u32::MAX {
+                let br = CreateSolidBrush(row.dot);
+                let (o1, o2) = (SelectObject(dc, br), SelectObject(dc, GetStockObject(NULL_PEN)));
+                let (cx, cy) = (r.left + sc(12), (r.top + r.bottom) / 2);
+                Ellipse(dc, cx - sc(6), cy - sc(6), cx + sc(6), cy + sc(6));
+                SelectObject(dc, o1);
+                SelectObject(dc, o2);
+                DeleteObject(br);
+                left = r.left + sc(30);
+            } else if let Kind::Choice(on) = row.kind {
+                SelectObject(dc, f);
+                SetTextColor(dc, p.text);
+                let mut mr = RECT { left: r.left + sc(4), top: r.top, right: r.left + sc(28), bottom: r.bottom };
+                DrawTextW(dc, wide(if on { "\u{25CF}" } else { "\u{25CB}" }).as_ptr(), -1, &mut mr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                left = r.left + sc(32);
+            } else if let Kind::Check(on) = row.kind {
+                if on {
+                    SelectObject(dc, f);
+                    SetTextColor(dc, p.accent);
+                    let mut mr = RECT { left: r.left + sc(4), top: r.top, right: r.left + sc(28), bottom: r.bottom };
+                    DrawTextW(dc, wide("\u{2713}").as_ptr(), -1, &mut mr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                }
+                left = r.left + sc(32);
+            }
+            // the right end: the hint, then the ✕ of a deletable row
+            let del_w = if row.del == Op::None { 0 } else { sc(30) };
+            SelectObject(dc, f);
+            SetTextColor(dc, if row.kind == Kind::Danger { st::rgb(232, 92, 92) } else { p.text });
+            let mut rr = RECT { left, top: r.top, right: r.right - sc(60) - del_w, bottom: r.bottom };
+            DrawTextW(dc, wide(&row.label).as_ptr(), -1, &mut rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            if !row.hint.is_empty() {
+                SelectObject(dc, f_small);
+                SetTextColor(dc, p.dim);
+                let mut hr = RECT { left: r.right - sc(150) - del_w, top: r.top, right: r.right - sc(8) - del_w, bottom: r.bottom };
+                DrawTextW(dc, wide(&row.hint).as_ptr(), -1, &mut hr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            if del_w > 0 {
+                SelectObject(dc, f_small);
+                SetTextColor(dc, st::rgb(232, 92, 92));
+                let mut dr = RECT { left: r.right - sc(26), top: r.top, right: r.right - sc(6), bottom: r.bottom };
+                DrawTextW(dc, wide("\u{2715}").as_ptr(), -1, &mut dr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+        }
     }
-    let (cat, page, scroll) = (CAT.with(|c| c.get()), PAGE.with(|p| p.get()), SCROLL.with(|s| s.get()));
-    layout(cr.right, cat, page, scroll)
-        .into_iter()
-        .enumerate()
-        .find(|(_, (r, _))| x >= r.left - sc(6) && x < r.right && y >= r.top && y < r.bottom)
-        .map(|(i, (r, row))| (i, r, row))
 }
 
-fn hit_cat(x: i32, y: i32) -> Option<usize> {
+unsafe fn hit_cat(x: i32, y: i32) -> Option<usize> {
     if x >= sc(RAIL) {
         return None;
     }
@@ -681,16 +728,101 @@ fn hit_cat(x: i32, y: i32) -> Option<usize> {
     })
 }
 
+/// The row under the pointer: its flat index, its rect and the row itself.
+unsafe fn hit_row(h: HWND, x: i32, y: i32) -> Option<(i32, RECT, Row)> {
+    let mut cr: RECT = zeroed();
+    GetClientRect(h, &mut cr);
+    if y < sc(TOP) - sc(6) || y > content_bottom(cr.bottom) || x < sc(RAIL + PAD) - sc(6) {
+        return None;
+    }
+    let (cat, scroll) = (CAT.with(|c| c.get()), SCROLL.with(|s| s.get()));
+    let mut idx = 0;
+    for card in layout(cr.right, cat, scroll) {
+        for (r, row) in card.rows {
+            if x >= r.left - sc(6) && x < r.right && y >= r.top && y < r.bottom {
+                return Some((idx, r, row));
+            }
+            idx += 1;
+        }
+    }
+    None
+}
+
+/// The window of the desktop's icon list (`rust-explorer` runs a desktop whose class is "Progman", like Explorer's).
+fn desk_list() -> HWND {
+    unsafe {
+        let prog = FindWindowW(wide("Progman").as_ptr(), ptr::null());
+        if prog.is_null() {
+            return ptr::null_mut();
+        }
+        let dv = FindWindowExW(prog, ptr::null_mut(), wide("SHELLDLL_DefView").as_ptr(), ptr::null());
+        if dv.is_null() {
+            return ptr::null_mut();
+        }
+        FindWindowExW(dv, ptr::null_mut(), wide("SysListView32").as_ptr(), ptr::null())
+    }
+}
+
+fn set_icons_hidden(hide: bool) {
+    marker_set("desktop-icons-hidden.txt", hide);
+    // and at once on the running desktop: the list is a plain child window, hiding it is what its own menu does
+    unsafe {
+        let lv = desk_list();
+        if !lv.is_null() {
+            ShowWindow(lv, if hide { SW_HIDE } else { SW_SHOW });
+        }
+    }
+}
+
+fn wallpaper_reload() {
+    unsafe {
+        // hand Windows the picture it already knows: it re-reads it and tells every listener
+        let mut buf = [0u16; 600];
+        if SystemParametersInfoW(SPI_GETDESKWALLPAPER, buf.len() as u32, buf.as_mut_ptr() as *mut _, 0) != 0 && buf[0] != 0 {
+            SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, buf.as_mut_ptr() as *mut _, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+        }
+        let prog = FindWindowW(wide("Progman").as_ptr(), ptr::null());
+        if !prog.is_null() {
+            InvalidateRect(prog, ptr::null(), 1);
+        }
+    }
+}
+
+unsafe fn open_target(target: &str) {
+    // through the bar's own launcher: `ms-settings:` gets the Explorer hand-off, folders and `shell:` go to ShellExecute
+    crate::open(&crate::wide(target));
+}
+
+fn open_app(i: u8) {
+    if i as usize == 3 {
+        crate::shot::rs_shot_start(&[]); // the capture bar, rs-shot's own way in
+        return;
+    }
+    let Some(&(app, exe)) = APPS_LIST.get(i as usize) else { return };
+    let mut paths = Vec::new();
+    if let Some(pf) = std::env::var_os("ProgramFiles") {
+        paths.push(PathBuf::from(pf).join(app).join(exe));
+    }
+    if let Ok(e) = std::env::current_exe() {
+        paths.push(e.with_file_name(exe));
+    }
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        paths.push(PathBuf::from(la).join(r"plugin-launcher\bin").join(exe));
+    }
+    if let Some(p) = paths.into_iter().find(|p| p.is_file()) {
+        std::thread::spawn(move || {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new(p).creation_flags(0x0800_0000).spawn();
+        });
+    }
+}
+
 unsafe fn apply(op: Op, h: HWND) -> bool {
     match op {
         Op::Cat(c) => {
             CAT.with(|x| x.set(c.min(CATS as u8 - 1)));
-            PAGE.with(|x| x.set(ROOT));
             SCROLL.with(|x| x.set(0));
-        }
-        Op::Page(p) => {
-            PAGE.with(|x| x.set(p));
-            SCROLL.with(|x| x.set(0));
+            CONFIRM.with(|x| x.set(false));
         }
         Op::Theme(i) => {
             if let Some(s) = st::ALL.get(i as usize) {
@@ -700,8 +832,8 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         }
         Op::Color(i) => {
             use windows_sys::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
-            let p = st::pal();
-            let now = [p.bg, p.line, p.hover, p.active, p.accent, p.text, p.dim];
+            let pal = st::pal();
+            let now = [pal.bg, pal.line, pal.hover, pal.active, pal.accent, pal.text, pal.dim];
             static CUST: std::sync::Mutex<[u32; 16]> = std::sync::Mutex::new([0xFFFFFF; 16]);
             let mut cust = CUST.lock().unwrap_or_else(|e| e.into_inner());
             let mut cc: CHOOSECOLORW = zeroed();
@@ -730,6 +862,14 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
                 crate::relook(true);
             }
         }
+        Op::DeleteTheme(i) => {
+            let mut list = THEMES.with_borrow(|t| t.clone());
+            if (i as usize) < list.len() {
+                list.remove(i as usize);
+                st::save_themes(&list);
+            }
+            THEMES.with(|t| *t.borrow_mut() = list);
+        }
         Op::SaveTheme => {
             let name = |n: usize| tf!("Шаблон {}", "Template {}", ja: "テンプレート {}", pt: "Modelo {}", zh: "模板 {}", n);
             let mut list = THEMES.with_borrow(|t| t.clone());
@@ -738,15 +878,19 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             st::save_themes(&list);
             THEMES.with(|t| *t.borrow_mut() = list);
         }
-        Op::DeleteTheme(i) => {
-            let mut list = THEMES.with_borrow(|t| t.clone());
-            if (i as usize) < list.len() {
-                list.remove(i as usize);
-                st::save_themes(&list);
-            }
-            THEMES.with(|t| *t.borrow_mut() = list);
-            PAGE.with(|x| x.set(TEMPLATES));
+        Op::MenuBlur => lk::menu_blur_set(!lk::menu_blur()),
+        Op::MenuAlpha(a) => lk::menu_alpha_set(a),
+        Op::MenuRadius(r) => lk::menu_radius_set(r),
+        Op::WinBlur => {
+            lk::win_blur_set(!lk::win_blur());
+            crate::invalidate_bars();
         }
+        Op::DeskIcons => set_icons_hidden(!icons_hidden()),
+        Op::SmallIcons => marker_set("small-icons", !small_icons()),
+        Op::Wallpaper => open_target("ms-settings:personalization-background"),
+        Op::WallpaperReload => wallpaper_reload(),
+        Op::Recycle => open_target("shell:RecycleBinFolder"),
+        Op::DeskFolder => open_target(&format!(r"{}\Desktop", std::env::var("USERPROFILE").unwrap_or_default())),
         Op::BarSide(i) => {
             st::set_side([st::Side::Bottom, st::Side::Left, st::Side::Right][(i as usize).min(2)]);
             crate::relook(true);
@@ -759,7 +903,13 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             lk::bar_monitor_set(i as i32);
             crate::bars_sync(); // close the bars that are not wanted, create the missing ones, place them all
             crate::relook(true);
+            MONS.with(|m| m.set(winrust_common::monitors::all().len().max(1) as i32));
         }
+        Op::BarBlur => {
+            lk::bar_blur_set(!lk::bar_blur());
+            crate::relook(false); // every bar: place() applies the opacity that goes with the blur
+        }
+        Op::BarRadius(r) => lk::bar_radius_set(r),
         Op::Autohide => {
             st::set_autohide(!st::autohide());
             crate::relook(true);
@@ -790,22 +940,12 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             };
             lk::notify_timeout_set(next);
         }
-        Op::BarBlur => {
-            lk::bar_blur_set(!lk::bar_blur());
-            crate::relook(false); // every bar: place() applies the opacity that goes with the blur
-        }
-        Op::BarRadius(r) => lk::bar_radius_set(r),
-        Op::WinBlur => {
-            lk::win_blur_set(!lk::win_blur());
-            // the apps that draw their own frost read look.txt on their next paint; the bar only forwards the news
-            crate::invalidate_bars();
-        }
-        Op::MenuBlur => lk::menu_blur_set(!lk::menu_blur()),
-        Op::MenuAlpha(a) => lk::menu_alpha_set(a),
-        Op::MenuRadius(r) => lk::menu_radius_set(r),
         Op::StartPos(left) => lk::start_left_set(left),
         Op::StartStyle(i) => lk::start_style_set(i as i32),
         Op::StartScale(i) => lk::start_scale_set(i as i32),
+        Op::StartRanked => lk::start_ranked_set(!lk::start_ranked()),
+        Op::ClearHistory => crate::clear_usage(),
+        Op::PinsFolder => open_target("shell:Programs"),
         Op::Lang(i) => {
             if let Some(l) = winrust_common::Lang::ALL.get(i as usize) {
                 if !winrust_common::lang::set(*l) {
@@ -815,13 +955,16 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             }
         }
         Op::OpenApp(i) => open_app(i),
+        Op::ResetAsk => CONFIRM.with(|c| c.set(true)),
+        Op::ResetCancel => CONFIRM.with(|c| c.set(false)),
         Op::ResetAll => {
             st::reset_all();
             lk::reset_all();
             crate::bars_sync();
             crate::relook(true);
             crate::notify::refresh();
-            PAGE.with(|x| x.set(ROOT));
+            crate::clear_usage();
+            CONFIRM.with(|c| c.set(false));
         }
         Op::Close => return false,
         Op::None => {}
@@ -830,33 +973,10 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
     true
 }
 
-/// Starts one of the programs in `APPS_LIST` (rs-shot through the helper that knows where it is installed).
-fn open_app(i: u8) {
-    if i as usize == 3 {
-        crate::shot::rs_shot_start(&[]); // the capture bar, which is rs-shot's own way in
-        return;
-    }
-    let Some(&(app, exe)) = APPS_LIST.get(i as usize) else { return };
-    let mut paths = Vec::new();
-    if let Some(pf) = std::env::var_os("ProgramFiles") {
-        paths.push(std::path::PathBuf::from(pf).join(app).join(exe));
-    }
-    if let Ok(e) = std::env::current_exe() {
-        paths.push(e.with_file_name(exe));
-    }
-    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
-        paths.push(std::path::PathBuf::from(la).join(r"plugin-launcher\bin").join(exe));
-    }
-    if let Some(p) = paths.into_iter().find(|p| p.is_file()) {
-        // off the bar's thread: a slow launch must not freeze the window
-        std::thread::spawn(move || {
-            use std::os::windows::process::CommandExt;
-            let _ = std::process::Command::new(p).creation_flags(0x0800_0000).spawn();
-        });
-    }
-}
-
 unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize {
+    if CREATING.with(|c| c.get()) {
+        MSGS.with(|m| m.borrow_mut().push(format!("{msg:#06x}")));
+    }
     let (x, y) = ((lp & 0xffff) as i16 as i32, ((lp >> 16) & 0xffff) as i16 as i32);
     match msg {
         WM_ERASEBKGND => 1,
@@ -866,7 +986,7 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
         }
         WM_MOUSEMOVE => {
             let cat = hit_cat(x, y);
-            let row = hit_row(h, x, y).map(|(i, _, _)| i as i32).unwrap_or(-1);
+            let row = hit_row(h, x, y).map_or(-1, |(i, _, _)| i);
             let (old_cat, old_row) = (HOT_CAT.with(|c| c.replace(cat.map_or(-1, |i| i as i32))), HOT.with(|c| c.replace(row)));
             let mut cr: RECT = zeroed();
             GetClientRect(h, &mut cr);
@@ -876,7 +996,6 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             if old_cat != cat.map_or(-1, |i| i as i32) || old_row != row || was_x != on_x {
                 InvalidateRect(h, ptr::null(), 0);
             }
-            // and ask to be told when the pointer leaves, so the last row does not stay lit
             let mut tme: windows_sys::Win32::UI::Input::KeyboardAndMouse::TRACKMOUSEEVENT = zeroed();
             tme.cbSize = std::mem::size_of_val(&tme) as u32;
             tme.dwFlags = windows_sys::Win32::UI::Input::KeyboardAndMouse::TME_LEAVE;
@@ -894,11 +1013,11 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
         WM_MOUSEWHEEL => {
             let mut cr: RECT = zeroed();
             GetClientRect(h, &mut cr);
-            let (cat, page) = (CAT.with(|c| c.get()), PAGE.with(|p| p.get()));
+            let cat = CAT.with(|c| c.get());
             let step = sc(ROW_H * 3);
             let up = (wp >> 16) as i16 > 0;
             let s = SCROLL.with(|v| v.get());
-            SCROLL.with(|v| v.set((if up { s - step } else { s + step }).clamp(0, max_scroll(cr.right, cr.bottom, cat, page))));
+            SCROLL.with(|v| v.set((if up { s - step } else { s + step }).clamp(0, max_scroll(cr.right, cr.bottom, cat))));
             InvalidateRect(h, ptr::null(), 0);
             0
         }
@@ -912,14 +1031,15 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             }
             if let Some(i) = hit_cat(x, y) {
                 CAT.with(|c| c.set(i as u8));
-                PAGE.with(|p| p.set(ROOT));
                 SCROLL.with(|s| s.set(0));
+                CONFIRM.with(|c| c.set(false));
                 InvalidateRect(h, ptr::null(), 0);
                 return 0;
             }
-            if let Some((_, _, row)) = hit_row(h, x, y) {
-                if row.op != Op::None {
-                    if !apply(row.op, h) {
+            if let Some((_, r, row)) = hit_row(h, x, y) {
+                let op = if row.del != Op::None && x >= r.right - sc(30) { row.del } else { row.op };
+                if op != Op::None {
+                    if !apply(op, h) {
                         ShowWindow(h, SW_HIDE);
                         return 0;
                     }
@@ -930,7 +1050,7 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
         }
         WM_KEYDOWN => {
             if wp as u16 == VK_ESCAPE {
-                ShowWindow(h, SW_HIDE); // the window is kept: the next open is one ShowWindow, not a rebuild
+                ShowWindow(h, SW_HIDE); // kept alive: the next open is one ShowWindow, not a rebuild
             }
             0
         }
@@ -939,7 +1059,7 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             0
         }
         WM_DESTROY => {
-            for f in FONT.with(|x| x.replace([0; 4])) {
+            for f in FONT.with(|x| x.replace([0; 5])) {
                 if f != 0 {
                     DeleteObject(f as HFONT);
                 }
@@ -952,37 +1072,68 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
     }
 }
 
-/// Registers the window class and creates the window (hidden). Called once at startup with the bar's `hInstance`: the
-/// class and the window then exist before the first click, which is the same order every other popup of the bar uses.
-pub(crate) unsafe fn init(hi: windows_sys::Win32::Foundation::HINSTANCE) {
-    let class = wide("topbar_settings");
-    let wc = WNDCLASSW {
-        style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(proc),
-        hInstance: hi,
-        hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
-        lpszClassName: class.as_ptr(),
-        ..zeroed()
-    };
-    if GetClassInfoW(hi, class.as_ptr(), &mut zeroed()) == 0 {
-        let atom = RegisterClassW(&wc);
-        if atom == 0 {
-            // A class with this name that GetClassInfoW cannot describe (registered by another module, or left behind
-            // half-made): drop it and put ours in its place instead of creating a window of a class nobody can use.
-            let first = windows_sys::Win32::Foundation::GetLastError();
-            UnregisterClassW(class.as_ptr(), hi);
-            let atom = RegisterClassW(&wc);
-            crate::tlog(&format!("settings: RegisterClassW failed ({first}), after UnregisterClassW atom {atom} (last error {})", windows_sys::Win32::Foundation::GetLastError()));
-        } else {
-            crate::tlog(&format!("settings: RegisterClassW -> atom {atom}"));
+/// Registers the class and makes the window, trying the recipes that are known to work in this process. Returns a null
+/// handle (and says why in the log) when even a system class cannot be made, which would mean the whole process cannot
+/// create windows any more.
+unsafe fn create(hi: windows_sys::Win32::Foundation::HINSTANCE) -> HWND {
+    let class = wide(CLASS);
+    let title = wide(TITLE);
+    let (w, h) = (sc(W).max(400), sc(H).max(400));
+    for (label, ex, inst) in [
+        ("class+layered", WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, hi),
+        ("class+layered, no instance", WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, ptr::null_mut()),
+        ("class, plain", WS_EX_TOOLWINDOW | WS_EX_TOPMOST, ptr::null_mut()),
+    ] {
+        CREATING.with(|c| c.set(true));
+        MSGS.with(|m| m.borrow_mut().clear());
+        SetLastError(0);
+        let hw = CreateWindowExW(ex, class.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), inst, ptr::null());
+        CREATING.with(|c| c.set(false));
+        if !hw.is_null() {
+            if ex & WS_EX_LAYERED != 0 {
+                SetLayeredWindowAttributes(hw, 0, 255, LWA_ALPHA);
+            }
+            crate::tlog(&format!("settings: window created ({label}) at {hw:?}"));
+            return hw;
         }
+        let trace = MSGS.with(|m| m.borrow().join(" "));
+        crate::tlog(&format!("settings: CreateWindowExW ({label}) failed: last error {}, hinstance {inst:?}, size {w}x{h}, messages [{trace}]", GetLastError()));
     }
-    let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, class.as_ptr(), class.as_ptr(), WS_POPUP, 0, 0, sc(W), sc(H), ptr::null_mut(), ptr::null_mut(), hi, ptr::null());
-    if h.is_null() {
-        crate::tlog(&format!("settings: CreateWindowExW failed (last error {})", windows_sys::Win32::Foundation::GetLastError()));
+    // last resort: a class Windows itself registers in every process, with our procedure as a subclass. Creating one of
+    // those cannot fail because of our class, and the window looks and behaves the same.
+    let stat = wide("STATIC");
+    SetLastError(0);
+    let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, stat.as_ptr(), title.as_ptr(), WS_POPUP, 0, 0, w, h, ptr::null_mut(), ptr::null_mut(), hi, ptr::null());
+    if hw.is_null() {
+        crate::tlog(&format!("settings: even a STATIC window failed: last error {}", GetLastError()));
+        return hw;
+    }
+    SetWindowLongPtrW(hw, GWLP_WNDPROC, proc as isize);
+    SetLayeredWindowAttributes(hw, 0, 255, LWA_ALPHA);
+    crate::tlog(&format!("settings: window created as a subclassed STATIC at {hw:?}"));
+    hw
+}
+
+/// Registers the class and creates the window (hidden). Called once at startup with the bar's `hInstance`, like every
+/// other popup of the bar; `open_at` recreates it when this failed, so the hub never depends on the startup call.
+pub(crate) unsafe fn init(hi: windows_sys::Win32::Foundation::HINSTANCE) {
+    let current = WND.with(|w| w.get());
+    if !current.is_null() && IsWindow(current) != 0 {
+        refresh_cache();
+        return;
+    }
+    let class = wide(CLASS);
+    let mut info: WNDCLASSW = zeroed();
+    if GetClassInfoW(hi, class.as_ptr(), &mut info) == 0 {
+        // no CS_HREDRAW/CS_VREDRAW: this window paints itself, and the plain style is one less thing to go wrong
+        let wc = WNDCLASSW { lpfnWndProc: Some(proc), hInstance: hi, hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..zeroed() };
+        SetLastError(0);
+        let atom = RegisterClassW(&wc);
+        crate::tlog(&format!("settings: class {:?} registered atom {atom}, hinstance {hi:?}, last error {}", CLASS, GetLastError()));
     } else {
-        crate::tlog(&format!("settings: window ready at {h:?}"));
+        crate::tlog(&format!("settings: class {:?} already registered, hinstance {:?}, procedure {:?}", CLASS, info.hInstance, info.lpfnWndProc));
     }
+    let h = create(hi);
     WND.with(|w| w.set(h));
     refresh_cache();
 }
@@ -999,13 +1150,19 @@ fn refresh_cache() {
 }
 
 unsafe fn existing() -> Option<HWND> {
-    let class = wide("topbar_settings");
-    let h = FindWindowW(class.as_ptr(), ptr::null());
+    let own = WND.with(|w| w.get());
+    if !own.is_null() && IsWindow(own) != 0 {
+        return Some(own);
+    }
+    let h = FindWindowW(wide(CLASS).as_ptr(), ptr::null());
+    if !h.is_null() {
+        return Some(h);
+    }
+    let h = FindWindowW(ptr::null(), wide(TITLE).as_ptr());
     (!h.is_null()).then_some(h)
 }
 
-/// Where the window goes and how big it is: centered on the monitor of the bar that asked for it, never taller or wider
-/// than that monitor allows (a 640 px template at 125 % would otherwise run off a 768 px screen).
+/// Where the window goes: centered on the monitor of the bar that asked for it, never bigger than that monitor allows.
 fn place() -> (i32, i32, i32, i32) {
     let m = winrust_common::monitors::of(unsafe { crate::cur_bar() }).rc;
     let (mw, mh) = (m.right - m.left, m.bottom - m.top);
@@ -1018,37 +1175,37 @@ fn place() -> (i32, i32, i32, i32) {
 
 unsafe fn show(h: HWND, cat: u8, r: (i32, i32, i32, i32)) {
     CAT.with(|c| c.set(cat.min(CATS as u8 - 1)));
-    PAGE.with(|p| p.set(ROOT));
     SCROLL.with(|s| s.set(0));
+    CONFIRM.with(|c| c.set(false));
     HOT.with(|v| v.set(-1));
     HOT_CAT.with(|v| v.set(-1));
     HOTX.with(|v| v.set(false));
     let (x, y, w, hh) = r;
     // above every other topmost window (the bar is one) and visible even when it was only hidden
     SetWindowPos(h, HWND_TOPMOST, x, y, w, hh, SWP_SHOWWINDOW);
+    ShowWindow(h, SW_SHOW);
     SetForegroundWindow(h);
     InvalidateRect(h, ptr::null(), 0);
 }
 
-/// Opens the settings window on `cat` (one of `LOOK`, `BAR`, `START`, `LANG`, `APPS`, `ABOUT`). False when the window
-/// cannot be created at all: the caller then keeps a shorter flyout page instead of leaving the click doing nothing.
+/// Opens the settings window on `cat` (one of `LOOK`, `DESK`, `BAR`, `START`, `LANG`, `APPS`, `ADV`). False only when the
+/// process cannot create a window at all: the caller then says so instead of leaving the click doing nothing.
 pub(crate) unsafe fn open_at(cat: u8) -> bool {
     refresh_cache();
-    let mut h = existing().or_else(|| { let w = WND.with(|x| x.get()); (!w.is_null()).then_some(w) }).unwrap_or(ptr::null_mut());
+    let mut h = existing().unwrap_or(ptr::null_mut());
     if h.is_null() || IsWindow(h) == 0 {
         crate::tlog("settings: no window yet, creating one now");
         init(GetModuleHandleW(ptr::null()));
-        h = WND.with(|w| w.get());
+        h = existing().unwrap_or(ptr::null_mut());
         if h.is_null() || IsWindow(h) == 0 {
             let msg = t!("Не удалось открыть настройки WinRust.", "WinRust settings could not be opened.", ja: "WinRust の設定を開けませんでした。", pt: "Não foi possível abrir as Configurações do WinRust.", zh: "无法打开 WinRust 设置。");
-            crate::tlog(&format!("settings: the window could not be created (last error {}): {msg}", windows_sys::Win32::Foundation::GetLastError()));
+            crate::tlog(&format!("settings: the window could not be created (last error {}): {msg}", GetLastError()));
             MessageBoxW(ptr::null_mut(), wide(msg).as_ptr(), wide("WinRust").as_ptr(), MB_OK | MB_ICONERROR);
             return false;
         }
     }
     // the fading ghost of the menu that opened this window would sit on top and eat the clicks (and end up in the blur)
     crate::fly::kill_ghost();
-    // the blurred screen behind it, captured while it is still hidden (its own pixels would end up in the blur otherwise)
     let (x, y, w, ht) = place();
     SetWindowRgn(h, CreateRoundRectRgn(0, 0, w + 1, ht + 1, sc(24), sc(24)), 1);
     if IsWindowVisible(h) == 0 {
@@ -1058,7 +1215,6 @@ pub(crate) unsafe fn open_at(cat: u8) -> bool {
     }
     ensure_fonts();
     show(h, cat, (x, y, w, ht));
-    crate::tlog(&format!("settings: opened on category {cat} at {x},{y} {w}x{ht} (visible {})", IsWindowVisible(h)));
+    crate::tlog(&format!("settings: opened on category {cat} at {x},{y} {w}x{ht}, visible {}", IsWindowVisible(h)));
     true
 }
-

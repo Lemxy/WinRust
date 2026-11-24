@@ -1,4 +1,4 @@
-﻿//! The look settings the bar and the explorer share: the blur behind the bar and behind the context menu.
+//! The look settings the bar and the explorer share: the blur behind the bar and behind the context menu.
 //!
 //! One file, `%ProgramData%\WinRust\look.txt`, `key=value` per line, so either program can change a value and the other
 //! picks it up (the bar re-reads on its next paint, the menu when it opens).
@@ -191,6 +191,16 @@ pub fn start_scale() -> i32 {
 pub fn start_scale_set(v: i32) {
     set("start-scale", v.clamp(0, 2));
 }
+
+/// Rank the Start menu's search results by how often each app was launched (`%APPDATA%\topbar-usage.txt`). Off: the
+/// matches come out in the list's own order, A to Z.
+pub fn start_ranked() -> bool {
+    flag("start-ranked", true)
+}
+
+pub fn start_ranked_set(on: bool) {
+    set("start-ranked", i32::from(on));
+}
 /// Frost behind the windows of the apps (Explorer, Settings, Task Manager). Off by default: the tint needed to keep
 /// text readable on a bright wallpaper makes it look washed out; turn it on to try it.
 pub fn win_blur() -> bool {
@@ -234,6 +244,7 @@ pub fn reset_all() {
         ("start-left", 0),
         ("start-style", 0),
         ("start-scale", 1),
+        ("start-ranked", 1),
         ("win-blur", 0),
         ("notify", 1),
         ("notify-timeout", 5),

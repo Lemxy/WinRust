@@ -342,6 +342,14 @@ fn bump_name(name: &str) {
     *m.entry(name).or_insert(0) += 1;
     let _ = std::fs::write(appdata_file("topbar-usage.txt"), m.iter().map(|(k, n)| format!("{k}\t{n}\n")).collect::<String>());
 }
+/// Forgets how often each app was launched and removes the file: the settings window's "clear the app history".
+pub(crate) fn clear_usage() {
+    if let Ok(mut g) = USAGE.lock() {
+        *g = Some(HashMap::new());
+    }
+    let _ = std::fs::remove_file(appdata_file("topbar-usage.txt"));
+    crate::tlog("settings: app history cleared");
+}
 fn lnk_uses(lnk: &std::path::Path) -> u32 {
     uses(&lnk.file_stem().unwrap_or_default().to_string_lossy().to_lowercase())
 }

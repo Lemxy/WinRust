@@ -1,143 +1,147 @@
-# Revisión de ajustes de WinRust (24-11-2026)
+# Revisión de ajustes de WinRust (24-11-2026, 2.ª pasada)
 
-Alcance: todo lo que un usuario puede cambiar y dónde se guarda, quién lo lee y si está en la ventana única de
-Ajustes (`plugins/topbar/src/settingswin.rs`). Solo se ha leído el código de las demás apps (`rs-shot` y
-`rs-notify-bridge` están en manos de otro agente y no se han tocado).
+Alcance: todo lo que un usuario puede cambiar, dónde se guarda, quién lo lee y si está en la ventana única de Ajustes
+(`plugins/topbar/src/settingswin.rs`). Solo se ha leído el código de las demás apps; `rs-shot` y `rs-notify-bridge` no se
+han tocado.
 
-## 1. Ajustes de la barra y del look (los comparten varias apps)
+## 1. Ajustes de WinRust (los comparten varias apps)
 
-Todos viven en `%ProgramData%\WinRust\`. La barra es quien los escribe; el resto los relee (cada valor tiene caché de
-~1 s), así que no hace falta reiniciar nada.
+Todos en `%ProgramData%\WinRust\` salvo donde se diga. Los escribe la barra; el resto los relee (caché de ~1 s), así que
+no hace falta reiniciar.
 
-| Ajuste | Fichero / clave | Lo escribe | Lo lee | ¿En el hub? |
+| Ajuste | Fichero / clave | Lo escribe | Lo lee | En el hub |
 |---|---|---|---|---|
-| Tema/estilo (8) | `style.txt` (nombre) | hub (Aspecto), installer | todas (`style::style()`) | sí (Aspecto) |
-| Colores propios (7) | `colors.txt` (`bg=RRGGBB;...`) | hub (Aspecto → Colores) | todas (`style::pal()`) | sí (Aspecto → Colores) |
-| Transparencia de la barra | `bar-opacity.txt` | hub (Aspecto) | topbar (`apply_opacity`) | sí (Aspecto, 5 valores) |
-| Plantillas de look | `themes.txt` | hub (Aspecto → Plantillas) | hub | sí (Aspecto → Plantillas) |
-| Lado de la barra | `side.txt` | hub (Barra), flyout de emergencia | topbar | sí (Barra) |
-| Tamaño de la barra | `bar-size.txt` | hub (Barra), flyout | topbar | sí (Barra) |
-| Auto-ocultar | `autohide.txt` | hub (Barra), flyout | topbar | sí (Barra) |
-| Botones a la izquierda | `align-left.txt` | hub (Barra), flyout | topbar | sí (Barra) |
-| Alt+Tab por monitor | `alttab-monitor.txt` | hub (Barra), flyout | topbar | sí (Barra) |
-| Monitor de la barra | `look.txt` → `bar-monitor` | hub (Barra) | topbar (`bars_sync`) | sí (solo si hay >1 monitor) |
-| Blur de la barra | `look.txt` → `bar-blur` | hub (Barra), flyout antiguo | topbar (`blur::on`) | sí (Barra) |
-| Radio del blur de la barra | `look.txt` → `bar-radius` (4/8/14) | hub (Barra) | topbar | sí (Barra) |
-| Blur del menú | `look.txt` → `menu-blur` | hub (Barra) | topbar, menús de rust-explorer, frost de rust-settings | sí (Barra) |
-| Opacidad del menú | `look.txt` → `menu-alpha` (35–100) | hub (Barra) | topbar (menús y esta ventana) | sí (Barra) |
-| Fuerza del blur del menú | `look.txt` → `menu-radius` (12/18/26) | hub (Barra) | topbar | sí (Barra) |
-| Botón buscar | `look.txt` → `bar-search` | hub (Barra), flyout | topbar | sí (Barra) |
-| Botón Vista de tareas | `look.txt` → `bar-taskview` | hub (Barra), flyout | topbar | sí (Barra) |
-| Notificaciones | `look.txt` → `notify` | hub (Barra) | topbar (`notify`) | sí (Barra) |
-| Duración de notificación | `look.txt` → `notify-timeout` (3/5/8/10 al pulsar) | hub (Barra) | topbar, rs-notify | sí (Barra) |
-| Frost en ventanas WinRust | `look.txt` → `win-blur` (off por defecto) | hub (Aspecto) | `common::frost` en explorer, settings, rtaskmgr | sí (Aspecto) **nuevo** |
-| Inicio: posición | `look.txt` → `start-left` | hub (Inicio) | topbar | sí (Inicio) |
-| Inicio: estilo 7/10/11 | `look.txt` → `start-style` | hub (Inicio) | topbar (`start7/10/11`) | sí (Inicio) |
-| Inicio: escala | `look.txt` → `start-scale` (0/1/2 → 90/100/115 %) | hub (Inicio) | topbar | sí (Inicio) |
-| Idioma | `lang.txt` (`en/ru/ja/pt/zh/es`) | hub, rust-settings, installer `--lang`, botón de idioma de la barra | **todas** (`t!` → `lang()`) | sí (Idioma) |
-| Blur de la barra (heredado) | `blur.txt` (`0`/`1`) | nadie (legado) | `look::bar_blur` como respaldo | no (solo compatibilidad) |
+| Tema/estilo (8) | `style.txt` | hub (Apariencia) | todas (`style::style()`) | sí |
+| Colores propios (7) | `colors.txt` | hub (Apariencia → Colores) | todas (`style::pal()`) | sí, en línea |
+| Plantillas | `themes.txt` | hub (Apariencia → Plantillas) | hub | sí, en línea |
+| Opacidad de la barra | `bar-opacity.txt` | hub (Barra → Opacidad) | topbar (`apply_opacity`) | sí |
+| Lado de la barra | `side.txt` | hub (Barra) | topbar | sí |
+| Tamaño de la barra | `bar-size.txt` | hub (Barra) | topbar | sí |
+| Auto-ocultar | `autohide.txt` | hub (Barra) | topbar | sí |
+| Botones a la izquierda | `align-left.txt` | hub (Barra) | topbar | sí |
+| Alt+Tab por monitor | `alttab-monitor.txt` | hub (Barra) | topbar | sí |
+| Monitor de la barra | `look.txt` → `bar-monitor` | hub (Barra) | topbar (`bars_sync`) | sí (si hay >1) |
+| Blur de la barra + radio | `look.txt` → `bar-blur`, `bar-radius` | hub (Barra) | topbar | sí |
+| Blur/opacidad/fuerza del menú | `look.txt` → `menu-blur`, `menu-alpha`, `menu-radius` | hub (Apariencia → Efectos) | topbar (menús y esta ventana) | sí |
+| Frost en ventanas WinRust | `look.txt` → `win-blur` | hub (Apariencia → Efectos) | `common::frost` | sí |
+| Botón buscar / vista de tareas | `look.txt` → `bar-search`, `bar-taskview` | hub (Barra) | topbar | sí |
+| Notificaciones | `look.txt` → `notify`, `notify-timeout` | hub (Barra) | topbar, rs-notify | sí |
+| Inicio: posición / estilo / escala | `look.txt` → `start-left`, `start-style`, `start-scale` | hub (Inicio) | topbar | sí |
+| Inicio: ordenar búsqueda por uso | `look.txt` → `start-ranked` | hub (Inicio → Buscador) | topbar (`fly::filtered`) | sí **nuevo** |
+| Historial de apps | `%APPDATA%\topbar-usage.txt` (se borra) | hub (Inicio → Buscador) | `fly::uses()` | sí **nuevo** |
+| Idioma | `lang.txt` | hub, rust-settings, installer `--lang` | **todas** (`t!`) | sí |
+| Blur heredado | `blur.txt` | nadie (legado) | respaldo de `look::bar_blur` | no (compatibilidad) |
 
-Ficheros propios de la barra en `%APPDATA%\` (no son ajustes de usuario, no tienen página): `topbar-pin-order.txt`,
-`topbar-tray.txt`, `topbar-usage.txt`, `topbar-start.txt`, `topbar-taskbar-state.txt`, `topbar-taskband\unpinned.txt`,
-`topbar-explorer-pin.txt`.
+## 2. Escritorio (`rust-explorer` corre el escritorio)
 
-## 2. Ajustes de cada aplicación
+| Ajuste | Fichero / marcador | Lo lee | En el hub | Efecto |
+|---|---|---|---|---|
+| Ocultar iconos | `%APPDATA%\WinRust\desktop-icons-hidden.txt` (existe = ocultos) | `rust-explorer` (desktop) | sí | **inmediato**: el hub además oculta/muestra el `SysListView32` del escritorio (lo mismo que hace su menú) y escribe el marcador para el próximo arranque |
+| Iconos pequeños | `%APPDATA%\WinRust\small-icons` (existe = pequeños) | `rust-explorer` (`apply_icon_size`, al crear el escritorio) | sí | **necesita reiniciar el escritorio** (el hub solo escribe el marcador; cambiar la lista de imágenes y la rejilla en caliente desde aquí dejaría el escritorio a medias) |
+| Fondo | `HKCU\Control Panel\Desktop\WallPaper` → `%LOCALAPPDATA%\rs-shell\wallpaper.bmp` (lo genera rs-shell al iniciar sesión) | `rust-explorer` (lo pinta una vez al arrancar) | "Elegir una imagen…" abre la página de Windows; "Recargar el fondo" reenvía la imagen a Windows (`SPI_SETDESKWALLPAPER`) y repinta el escritorio | **una imagen nueva necesita cerrar sesión** (quien convierte el JPG/PNG al BMP es rs-shell) |
+| Papelera / carpeta del escritorio | — | — | accesos (`shell:RecycleBinFolder`, `%USERPROFILE%\Desktop`) | inmediato |
+| Doble clic para abrir | **no existe** en `rust-explorer` (abre con doble clic fijo) | — | no | requeriría tocar `rust-explorer`; no se inventa un marcador que nadie lee |
 
-| App | Dónde guarda | Quién lo lee | En el hub |
-|---|---|---|---|
-| **topbar** (barra) | ver tabla 1 + `%APPDATA%\topbar-*.txt` | topbar | sí (todo menos el orden de pines/tray) |
-| **rust-explorer** | `%APPDATA%\WinRust\quick-access.txt`, `rust-explorer-pins.txt`, `desktop-icons-hidden.txt`; `%APPDATA%\rust-explorer\window.txt` (tamaño/posición de ventana) | rust-explorer | **no**: botón "Abrir" (sus opciones se cambian dentro: Ctrl+M, Ctrl+H, menú de la barra lateral) |
-| **rtaskmgr-win32** | `%APPDATA%\rtaskmgr\settings.ini` (vista, orden, tamaño, bandeja, tema, ETW, temperatura GPU, reglas) + `history.csv`; `%ProgramData%\WinRust\profile.txt` (perfil de rendimiento); `%ProgramData%\winrust-debloat\undo-*.txt` | rtaskmgr | **no**: botón "Abrir" (no tiene `--settings`) |
-| **rust-control** | nada propio (lee el sistema) | — | **no es necesario**: botón "Abrir" |
-| **rust-settings** | `lang.txt`, `look.txt` (frost), `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (`AppsUseLightTheme`, `SystemUsesLightTheme`, `EnableTransparency`), páginas de pantalla/sonido/red/energía | rust-settings | **no**: botón "Abrir" (es la app de sistema; el hub no duplica sus 15 páginas) |
-| **rs-shot** | **ningún fichero**: todo son valores por defecto (audio ON, `Videos\Screen Records`) y flags de línea de comandos (`--out`, `--audio/--no-audio`, `--fps`, `--clipboard`...) | rs-shot | **no se puede sin tocar su crate**: el hub muestra "Abrir" (barra de captura) y lo dice en la página Apps |
-| **rust-search / rs-launcher** | `%LOCALAPPDATA%\WinRust\run-history.txt` (historial, no es un ajuste) | rs-launcher | no |
-| **rs-shell** | `%LOCALAPPDATA%\rs-shell\log.txt` (log) | rs-shell | no (no tiene ajustes de usuario) |
-| **installer** | `lang.txt`, registro de plugins/atajos | installer | idioma: misma clave que el hub |
+## 3. Ajustes de cada aplicación
 
-## 3. Duplicados e incoherencias encontrados
+| App | Dónde guarda | En el hub |
+|---|---|---|
+| **topbar** | tabla 1 + `%APPDATA%\topbar-*.txt` (orden de pines, bandeja, uso, estado de la barra) | todo menos el orden de pines/tray |
+| **rust-explorer** | `%APPDATA%\WinRust\quick-access.txt`, `rust-explorer-pins.txt`, `desktop-icons-hidden.txt`, `small-icons`; `%APPDATA%\rust-explorer\window.txt` | marcadores del escritorio (tabla 2) + botón "Abrir" |
+| **rtaskmgr-win32** | `%APPDATA%\rtaskmgr\settings.ini` + `history.csv`; `%ProgramData%\WinRust\profile.txt`; `%ProgramData%\winrust-debloat\undo-*.txt` | botón "Abrir" (no tiene `--settings`) |
+| **rust-control** | nada propio | botón "Abrir" |
+| **rust-settings** | `lang.txt`, `look.txt`, `HKCU\...\Themes\Personalize` (`AppsUseLightTheme`, `SystemUsesLightTheme`, `EnableTransparency`) y sus páginas de sistema | botón "Abrir" |
+| **rs-shot** | **ninguno**: valores por defecto + flags (`--out`, `--audio/--no-audio`, `--fps`, `--clipboard`…) | botón "Abrir"; se dice en el hub que no tiene fichero de ajustes |
+| **rust-search / rs-launcher** | `%LOCALAPPDATA%\WinRust\run-history.txt` (historial) | no |
+| **rs-shell** | `%LOCALAPPDATA%\rs-shell\log.txt`, `wallpaper.bmp` | no (no tiene ajustes de usuario) |
 
-1. **Lista de idiomas en 4 sitios**: `common::lib.rs` (origen), `settings.rs` (`[En, Ru, ...]`), `settingswin.rs`
-   (`Lang::ALL` ya), `rust-settings` (`LANGS`), installer (`src/ui.rs::LANGS`). → **corregido**: el origen es
-   `common/src/lang.rs` (`Lang::ALL`) y el hub, el instalador y el botón de idioma lo usan; `rust-settings` conserva
-   su copia (fuera de alcance: es un cambio de una línea, `LANGS = winrust_common::Lang::ALL`).
-2. **Dos páginas de idioma**: el hub y `rust-settings`. El hub es el canónico; la de `rust-settings` sigue existiendo y
-   su texto dice "reinicia los programas" (ya no hace falta: `lang.txt` se relee cada 0,5 s).
-3. **Los ajustes de la barra están repartidos en 10 ficheros** (`style.txt`, `side.txt`, `bar-size.txt`,
-   `autohide.txt`, `align-left.txt`, `alttab-monitor.txt`, `colors.txt`, `bar-opacity.txt`, `themes.txt`, `look.txt`).
-   Funciona, pero unificar todo en `look.txt` obligaría a tocar todas las apps: queda anotado, no se ha hecho.
-4. **`bar-monitor` frente al monitor de cada app**: solo la barra tiene "monitor" propio; el explorador, rtaskmgr,
-   etc. se colocan con `MonitorFromWindow`. No es un bug, pero "Todas/1/2…" solo afecta a la barra.
-5. **`start-scale`**: se guarda como índice 0/1/2 pero el getter devuelve 90/100/115. El hub escribe el índice y
-   compara con el porcentaje; documentado aquí para que no se "arregle" a medias.
-6. **`notify-timeout`**: el hub solo cicla 3/5/8/10 s aunque `look.txt` acepta 1..60 (`rs-notify --timeout`). A
-   propósito: nada de listas largas; el valor libre sigue funcionando por fichero.
-7. **`menu-alpha`**: el hub ofrece 90/75/67/50/35 %, pero el fondo de esta ventana usa un mínimo de 60 % para que el
-   texto se lea. Es una decisión de diseño, no un valor duplicado.
-8. **`win-blur` no tenía interruptor en ningún sitio** (solo se podía editar el fichero). → **corregido**: fila en
-   Aspecto.
-9. **"Ajustes de la barra" (primer elemento del menú contextual) no abría nada**: ver §5.
-10. **El engranaje del menú Inicio y la fila "Start menu" abrían una página de flyout distinta** de la ventana de
-    Ajustes; el reloj de la bandeja no tenía entrada a los ajustes. → **corregido**: los tres abren el hub (Inicio y
-    Barra respectivamente).
-11. **La transparencia solo se aplicaba a la barra líder**: `apply_opacity` se llamaba con `leader_bar()`, así que con
-    `bar-monitor=all` la otra barra se quedaba opaca. → **corregido**: el hub pasa por `relook()`, que coloca y repinta
-    cada barra (`place()` aplica la opacidad a todas).
+## 4. La ventana única
 
-## 4. La ventana única (`settingswin`)
+Rail de 7 categorías con **icono Segoe MDL2 + nombre**, título grande de la página, tarjetas (`head` + filas con
+separadores finos), 960×680 (se encoge en monitores bajos, mínimo 720×560), doble buffer, `Esc`/✕, rueda por categoría.
+Nada de páginas aparte ni flyouts intermedios: un clic → hub.
 
-Rail de categorías + contenido, 900×640 (mínimo exigido 720×560; se encoge si el monitor es más bajo), sin marcos,
-doble buffer, `Esc`/✕ cierran, rueda para desplazar la categoría, hover con el acento del proyecto y todo se aplica
-en vivo (escribe los mismos ficheros de siempre).
+| Categoría | Contenido |
+|---|---|
+| **Apariencia** | 8 temas con muestra · 7 colores (fila + muestra + `#RRGGBB`; un clic abre el diálogo de color) · plantillas en línea (aplicar con la fila, borrar con la ✕) · guardar plantilla · efectos: blur del menú, 5 opacidades, 3 fuerzas, frost de ventanas |
+| **Escritorio** | mostrar iconos, iconos pequeños, aviso de reinicio · fondo: elegir imagen, recargar · accesos: papelera, carpeta del escritorio |
+| **Barra de tareas** | posición, tamaño, monitor, blur + radio, opacidad, auto-ocultar, botones a la izquierda, Alt+Tab por monitor, buscar, vista de tareas, notificaciones y duración |
+| **Menú Inicio** | posición, estilo (11/10/7), escala, ordenar búsqueda por uso, borrar historial, carpeta de apps fijadas |
+| **Idioma** | 6 idiomas + nota de aplicación inmediata |
+| **Aplicaciones** | Explorador, Task Manager, Panel de control, rs-shot, rust-settings (con "No instalado") |
+| **Avanzado** | restablecer (con confirmación en línea), idioma, versión y rutas, cerrar |
 
-- **Aspecto**: 8 temas con muestra de color, colores propios (diálogo de color del sistema), plantillas (aplicar,
-  guardar, borrar), transparencia de la barra, frost en ventanas WinRust.
-- **Barra**: posición, tamaño, monitor (Todas/1/2…), blur de barra, blur/opacidad/fuerza del menú, auto-ocultar,
-  botones a la izquierda, Alt+Tab por monitor, botones buscar/vista de tareas, notificaciones (on/off y duración).
-- **Inicio**: posición, estilo (11/10/7), escala.
-- **Idioma**: selector único de 6 idiomas, un solo origen (`lang.txt`), aplicado a todas las apps al instante.
-- **Aplicaciones**: Explorador, Task Manager, Panel de control, rs-shot y rust-settings; se abre la app (y se marca
-  "No instalado" si no está). Las opciones propias de cada una siguen en su ventana: el hub no las duplica.
-- **Avanzado**: reset total (estilo + colores + `look.txt` + barras; las plantillas se conservan), atajo a Idioma,
-  versión y las rutas de los ficheros, cerrar.
+Puntos de entrada (todos al hub): menú de la barra → Apariencia; engranaje del Inicio y fila "Start menu" → Inicio; menú
+del reloj de la bandeja → Barra.
 
-## 5. El bug de "Ajustes de la barra"
+## 5. El bug de `CreateWindowExW` (NULL con `GetLastError()=0`)
 
-Comprobado sobre el binario instalado (`C:\Program Files\topbar\topbar.exe`, mismo SHA-256 que `target\release`):
+Lo que se sabe con seguridad (binario en marcha, hook global `EVENT_OBJECT_CREATE`):
 
-- El menú y el mapeo de índices están bien: la fila 2 ("Personalización") lanza `ms-settings` y lo escribe en
-  `topbar.log`; la fila 0 sí ejecuta su callback (el "fantasma" del menú desaparece en ~3 ms, frente a los ~150 ms
-  del cierre normal, que es exactamente lo que hace `settingswin::open()` al entrar).
-- La ventana **no llega a crearse**: un hook `EVENT_OBJECT_CREATE/DESTROY` de todo el sistema no ve ningún
-  `topbar_settings` en ningún momento, y el proceso no gasta CPU (no llega ni a capturar el fondo).
-- `open()` se comía el fallo: `RegisterClassW` y `CreateWindowExW` no se comprobaban y un `HWND` nulo solo hacía
-  `return`.
+- El callback corre, `settingswin::open()` entra (el fantasma del menú desaparece en ~3 ms) y **la ventana nunca llega a
+  existir**.
+- La clase **sí** se registra: `RegisterClassW -> atom 49705`, y en el segundo intento `GetClassInfoW` ya la encuentra (no
+  vuelve a registrar).
+- `CreateWindowExW` devuelve `NULL` con `GetLastError()=0`. Ese par es el de un fallo **antes** de crear la ventana de
+  verdad: o la clase no se puede usar desde ese proceso, o algo (un hook `WH_CBT` del sistema) aborta la creación. Ni el
+  tamaño (`0x0` también crea) ni el `hInstance` ni el estilo lo explican: un proceso nuevo crea esa misma clase y ese
+  mismo estilo sin problema, y en el proceso de la barra los menús y los toasts se crean bien.
 
-Arreglo: la clase y la ventana se crean **al arrancar la barra** (`settingswin::init(hi)`, el mismo patrón que los
-otros cinco popups de la barra, con el mismo `hInstance`), el fallo se registra con `GetLastError`, se reintenta una
-vez y, si aun así no hay ventana, se avisa con un mensaje y se cae al flyout corto de la barra en vez de no hacer
-nada. Trazas nuevas en `%LOCALAPPDATA%\rs-shell\topbar.log`:
+Por eso el arreglo no apuesta a una sola receta: **se prueban tres, en orden, y se registra cada resultado**. La pista que
+ordena la lista: en ese proceso **todas** las ventanas que sí se crean son `WS_EX_LAYERED` (menús, toasts, bandeja) o
+`WS_EX_NOACTIVATE` (tips, Alt+Tab, host de la bandeja); la de ajustes era la única "normal" y activable:
+
+1. nuestra clase, `WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_LAYERED` (la receta exacta de los menús, que sí se crean),
+2. la misma con `hInstance = NULL`,
+3. la misma sin `WS_EX_LAYERED` y con `hInstance = NULL`,
+4. **último recurso**: una ventana de la clase de sistema `STATIC` (que Windows registra en todo proceso) y
+   `SetWindowLongPtrW(GWLP_WNDPROC, proc)` para quedarnos con el procedimiento. La ventana es idéntica por dentro y
+   `existing()` la encuentra por el título (`WinRust settings`), no por la clase.
+
+Además: `init` ya no es imprescindible (si falló, `open_at` vuelve a intentarlo), el tamaño se fuerza a ≥400 px, se
+registra el `hInstance`, el átomo, el `GetClassInfoW` (instancia y procedimiento) y **la traza de mensajes** que recibe el
+procedimiento durante el intento fallido (si está vacía, el procedimiento no llegó a llamarse), y al final
+`ShowWindow(SW_SHOW)` explícito además de `SetWindowPos(SWP_SHOWWINDOW)`.
+
+Trazas en `%LOCALAPPDATA%\rs-shell\topbar.log`:
 
 ```
-settings: RegisterClassW -> atom N
-settings: RegisterClassW failed (E), after UnregisterClassW atom N (last error E)
-settings: window ready at 0x...
-settings: CreateWindowExW failed (last error E)
-settings: no window yet, creating one now
-settings: the window could not be created (last error E): ...
-settings: opened on category C at X,Y WxH (visible 1)
-settings: the settings window is not available, showing the short bar page instead
-settings: lang.txt could not be written (run the installer as administrator to apply it everywhere)
+settings: class "topbar_settings" registered atom N, hinstance 0x..., last error E
+settings: class "topbar_settings" already registered, hinstance 0x..., procedure Some(0x...)
+settings: window created (class+layered) at 0x...
+settings: CreateWindowExW (class+layered) failed: last error E, hinstance 0x..., size WxH, messages [0x0081 0x0083 ...]
+settings: window created as a subclassed STATIC at 0x...
+settings: even a STATIC window failed: last error E
+settings: opened on category C at X,Y WxH, visible 1
 ```
 
-## 6. Qué revisar al compilar
+## 6. Duplicados e incoherencias
 
-1. `cargo build -p topbar` → sin errores; warnings nuevos solo de imports si alguno sobra.
-2. `%LOCALAPPDATA%\rs-shell\topbar.log`: al arrancar deben aparecer las dos primeras líneas de §5 con `atom` distinto
-   de 0 y un `HWND` distinto de 0.
-3. Clic derecho en la barra → "Ajustes de la barra": la ventana sale centrada en el monitor de esa barra.
-4. Engranaje del menú Inicio y fila "Start menu" → misma ventana, categoría Inicio. Reloj de la bandeja → "WinRust
-   settings" → misma ventana, categoría Barra.
-5. Cambiar idioma en el hub: los textos de la ventana cambian solos y la barra también en ~1 s (sin reiniciar).
-6. `Esc` cierra; volver a abrir no recrea la ventana (un `ShowWindow`).
-7. "Restablecer todo" deja `look.txt` y los `*.txt` de estilo en sus valores por defecto y la barra sigue en pie.
+1. Lista de idiomas: el origen es `common/src/lang.rs` (`Lang::ALL`); el hub y el instalador lo usan, `rust-settings`
+   conserva una copia local (fuera de alcance, cambio de una línea).
+2. Dos páginas de idioma (hub y `rust-settings`); el texto de `rust-settings` aún pide reiniciar, ya no hace falta
+   (`lang.txt` se relee cada 0,5 s).
+3. Los ajustes de la barra viven en 10 ficheros (`style.txt`, `side.txt`, `bar-size.txt`, `autohide.txt`,
+   `align-left.txt`, `alttab-monitor.txt`, `colors.txt`, `bar-opacity.txt`, `themes.txt`, `look.txt`).
+4. `apply_opacity` solo se aplicaba a la barra líder: corregido (el hub pasa por `relook()` → `place()` por barra).
+5. `start-scale` se guarda como índice 0/1/2 pero se lee como 90/100/115.
+6. `notify-timeout` cicla 3/5/8/10 aunque el fichero admite 1..60 (`rs-notify --timeout`).
+7. `menu-alpha` ofrece 90..35 % pero el fondo del hub usa un mínimo de 60 % para que el texto se lea.
+8. `win-blur` no tenía interruptor: ahora en Apariencia → Efectos.
+9. "Ajustes de la barra" no abría nada: §5.
+10. Engranaje del Inicio y fila "Start menu" abrían un flyout distinto; el reloj de la bandeja no tenía entrada: los tres
+    van al hub.
+11. "Doble clic para abrir" y el tamaño de iconos en caliente no tienen API en `rust-explorer`: documentado arriba.
+
+## 7. Qué revisar al compilar
+
+1. `cargo build -p topbar` y mirar el arranque en `topbar.log`: debe salir `window created (...) at 0x...`. Si sale
+   `subclassed STATIC`, el hub abre igual y la traza dice qué receta falló y por qué.
+2. Clic derecho en la barra → "Ajustes de la barra": la ventana aparece centrada en ese monitor.
+3. Engranaje del Inicio → Inicio; reloj de la bandeja → "WinRust settings" → Barra.
+4. Apariencia: cambiar de tema, abrir el diálogo de un color, aplicar y borrar una plantilla, mover la opacidad del menú.
+5. Escritorio: ocultar/mostrar iconos (debe verse al instante); "iconos pequeños" cambia la marca y avisa del reinicio.
+6. Barra: mover la barra a la izquierda y volver, cambiar de monitor con dos pantallas, apagar el blur.
+7. Inicio: apagar "ordenar por uso" y buscar una app; "borrar historial" deja el fichero fuera.
+8. Idioma: cambia la ventana y la barra en ~1 s, sin reiniciar.
+9. `Esc` cierra; reabrir es instantáneo (no se recrea).
