@@ -3463,8 +3463,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let _ = std::fs::remove_file(&stop);
             } else {
                 let exe = std::env::current_exe().unwrap_or_default();
-                let line = format!("ping -n 2 127.0.0.1 >nul & start \"\" \"{}\"", exe.display());
-                let _ = std::process::Command::new("cmd").args(["/c", &line]).creation_flags(0x0800_0000).spawn();
+                // raw_arg: Command would escape the inner quotes and cmd would read `start "" "C:\..."` as a path
+                let mut c = std::process::Command::new("cmd");
+                c.raw_arg(format!("/c ping -n 2 127.0.0.1 >nul & start \"\" \"{}\"", exe.display()));
+                let _ = c.creation_flags(0x0800_0000).spawn();
             }
             if !lead.is_null() {
                 DestroyWindow(lead);

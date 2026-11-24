@@ -113,6 +113,15 @@ fn hits(r: RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
+/// Client coordinates from the real screen cursor: WM_MOUSE lparam can be DPI-scaled differently per monitor when one
+/// window spans screens at different scale factors, while GetCursorPos is always the physical desktop position.
+unsafe fn mouse_client() -> (i32, i32) {
+    let mut p = POINT { x: 0, y: 0 };
+    GetCursorPos(&mut p);
+    let (vx, vy) = ST.with_borrow(|s| s.as_ref().map(|s| (s.vx, s.vy)).unwrap_or((0, 0)));
+    (p.x - vx, p.y - vy)
+}
+
 fn inval(hw: HWND, r: RECT) {
     unsafe { InvalidateRect(hw, &r, 0) };
 }
@@ -153,7 +162,6 @@ unsafe fn run(opt: Options) -> Option<Pick> {
     let back = CreateCompatibleBitmap(scr, w, h);
     let bdc = CreateCompatibleDC(scr);
     SelectObject(bdc, back as HGDIOBJ);
-    ovlog(&format!("back={back:?} bdc={bdc:?}"));
     ReleaseDC(null_mut(), scr);
     let cur = cap::cursor_pos();
     ST.set(Some(St {
@@ -206,9 +214,7 @@ unsafe fn run(opt: Options) -> Option<Pick> {
     }
     // The WS_VISIBLE style plus the virtual-screen rect is enough; a later SetWindowPos was observed to leave the
     // popup unpainted on some desktops, so the original creation geometry is authoritative.
-    ovlog(&format!("created hw={hw:?} rect={vx},{vy},{w},{h}"));
     winrust_common::fg::force(hw);
-    ovlog("foreground forced");
     let mut m: MSG = zeroed();
     while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
         TranslateMessage(&m);
@@ -335,7 +341,6 @@ fn buttons(hw: HWND, bar: RECT) -> Vec<(RECT, Act)> {
 unsafe fn paint(hw: HWND) {
     let mut ps: PAINTSTRUCT = zeroed();
     let hdc = BeginPaint(hw, &mut ps);
-    ovlog(&format!("paint rc={},{},{},{}", ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right, ps.rcPaint.bottom));
     let fresh = ST.with_borrow_mut(|s| {
         if let Some(s) = s {
             if s.fresh {
@@ -355,18 +360,15 @@ unsafe fn paint(hw: HWND) {
         s.as_ref().map(|s| (s.dim, s.orig, s.bdc, s.w, s.h)).unwrap_or((null_mut(), null_mut(), null_mut(), 0, 0))
     });
     if p.right <= p.left || p.bottom <= p.top || bdc.is_null() {
-        ovlog(&format!("paint early p={},{},{},{} bdc={bdc:?}", p.left, p.top, p.right, p.bottom));
         EndPaint(hw, &ps);
         return;
     }
-    ovlog("paint have back");
     let clip = CreateRectRgn(p.left, p.top, p.right, p.bottom);
     SelectClipRgn(bdc, clip);
     // frozen desktop, dimmed
     let tmp = CreateCompatibleDC(bdc);
     let old = SelectObject(tmp, dim as HGDIOBJ);
     BitBlt(bdc, p.left, p.top, p.right - p.left, p.bottom - p.top, tmp, p.left, p.top, SRCCOPY);
-    ovlog("paint dim");
     let sel = selection();
     if let Some(r) = sel {
         SelectObject(tmp, orig as HGDIOBJ);
@@ -405,11 +407,9 @@ unsafe fn paint(hw: HWND) {
     }
 
     draw_bar(bdc, hw, hover);
-    ovlog("paint bar");
     SelectClipRgn(bdc, null_mut());
     DeleteObject(clip as HGDIOBJ);
-    let ok = BitBlt(hdc, p.left, p.top, p.right - p.left, p.bottom - p.top, bdc, p.left, p.top, SRCCOPY);
-    ovlog(&format!("blit={ok} px={:x}", GetPixel(hdc, 10, 10)));
+    BitBlt(hdc, p.left, p.top, p.right - p.left, p.bottom - p.top, bdc, p.left, p.top, SRCCOPY);
     EndPaint(hw, &ps);
 }
 
@@ -517,13 +517,6 @@ unsafe fn draw_bar(dc: HDC, hw: HWND, hover: Option<usize>) {
 
 fn bar_color() -> u32 {
     rgb(28, 28, 31)
-}
-
-fn ovlog(s: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(std::env::temp_dir().join("rs-shot-overlay.log")) {
-        let _ = writeln!(f, "{s}");
-    }
 }
 
 /// Width of the window that would be picked, in client coordinates (for the hover outline).
@@ -669,8 +662,7 @@ fn same_opt_rect(a: Option<RECT>, b: Option<RECT>) -> bool {
 }
 
 unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let x = (lp & 0xffff) as i16 as i32;
-    let y = ((lp >> 16) & 0xffff) as i16 as i32;
+    let (x, y) = mouse_client();
     match msg {
         WM_ERASEBKGND => 1,
         WM_PAINT => {
@@ -809,3 +801,5 @@ unsafe extern "system" fn proc_(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
         _ => DefWindowProcW(hw, msg, wp, lp),
     }
 }
+
+

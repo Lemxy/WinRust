@@ -606,15 +606,48 @@ fn elapsed_text(ms: u64) -> String {
 
 unsafe fn bar_paint(hw: HWND) {
     let mut ps: PAINTSTRUCT = zeroed();
-    let hdc = BeginPaint(hw, &mut ps);
+    let screen = BeginPaint(hw, &mut ps);
     let mut c: RECT = zeroed();
     GetClientRect(hw, &mut c);
+    let (back_dc, made) = REC.with_borrow_mut(|r| {
+        let Some(r) = r else { return (null_mut(), false) };
+        if r.bdc.is_null() || r.bw != c.right || r.bh != c.bottom {
+            if !r.back.is_null() {
+                DeleteObject(r.back as HGDIOBJ);
+            }
+            if !r.bdc.is_null() {
+                DeleteDC(r.bdc);
+            }
+            let g = GetDC(null_mut());
+            let bmp = CreateCompatibleBitmap(g, c.right.max(1), c.bottom.max(1));
+            let dc = CreateCompatibleDC(g);
+            if !bmp.is_null() && !dc.is_null() {
+                SelectObject(dc, bmp as HGDIOBJ);
+            }
+            ReleaseDC(null_mut(), g);
+            r.back = bmp;
+            r.bdc = dc;
+            r.bw = c.right;
+            r.bh = c.bottom;
+            (dc, true)
+        } else {
+            (r.bdc, false)
+        }
+    });
+    let mut p = ps.rcPaint;
+    if made {
+        p = c;
+    }
+    let hdc = if back_dc.is_null() { screen } else { back_dc };
     ui::fill(hdc, c, pal().bg);
     ui::outline(hdc, c, pal().line, 1);
     let (start, duration, fps, source, hover, stopped) = REC.with_borrow(|r| {
         r.as_ref().map(|r| (r.start, r.duration, r.fps, r.source, r.hover, r.stopped)).unwrap_or((0, 0, 30, RECT { left: 0, top: 0, right: 0, bottom: 0 }, false, false))
     });
     if stopped {
+        if !back_dc.is_null() {
+            BitBlt(screen, p.left, p.top, p.right - p.left, p.bottom - p.top, back_dc, p.left, p.top, SRCCOPY);
+        }
         EndPaint(hw, &ps);
         return;
     }
@@ -642,6 +675,9 @@ unsafe fn bar_paint(hw: HWND) {
     DeleteObject(sf as HGDIOBJ);
     DeleteObject(f as HGDIOBJ);
     DeleteObject(f2 as HGDIOBJ);
+    if !back_dc.is_null() {
+        BitBlt(screen, p.left, p.top, p.right - p.left, p.bottom - p.top, back_dc, p.left, p.top, SRCCOPY);
+    }
     EndPaint(hw, &ps);
 }
 
@@ -659,14 +695,21 @@ unsafe extern "system" fn bar_proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             GetClientRect(hw, &mut c);
             let br = RECT { left: c.right - ui::sc(hw, 96), top: ui::sc(hw, 15), right: c.right - ui::sc(hw, 12), bottom: c.bottom - ui::sc(hw, 15) };
             let hover = x >= br.left && x < br.right && y >= br.top && y < br.bottom;
-            REC.with_borrow_mut(|r| {
+            let changed = REC.with_borrow_mut(|r| {
                 if let Some(r) = r {
                     if r.hover != hover {
                         r.hover = hover;
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
                 }
             });
-            InvalidateRect(hw, null(), 0);
+            if changed {
+                InvalidateRect(hw, &br, 0);
+            }
             0
         }
         WM_LBUTTONUP => {
@@ -674,7 +717,10 @@ unsafe extern "system" fn bar_proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             0
         }
         WM_TIMER if wp == 1 => {
-            InvalidateRect(hw, null(), 0);
+            let mut c: RECT = zeroed();
+            GetClientRect(hw, &mut c);
+            // Only the dot and the time/size block change; the Stop button is not repainted by the timer.
+            InvalidateRect(hw, &RECT { left: 0, top: 0, right: (c.right - ui::sc(hw, 100)).max(1), bottom: c.bottom }, 0);
             let (start, duration) = REC.with_borrow(|r| r.as_ref().map(|r| (r.start, r.duration)).unwrap_or((0, 0)));
             let el = Ui::now().saturating_sub(start) / 1000;
             if ESC_STOP.swap(false, Relaxed) || (duration > 0 && el >= duration as u64) {

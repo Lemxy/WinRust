@@ -438,21 +438,19 @@ unsafe fn paint(hwnd: HWND) {
             (null_mut(), false)
         }
     });
-    let mut p = ps.rcPaint;
-    if made {
-        p = c;
-    }
+    let mut dirty = ps.rcPaint;
+    if made { dirty = c; }
     let hdc = if back_dc.is_null() { screen } else { back_dc };
     let toolbar = RECT { left: 0, top: 0, right: c.right, bottom: toolbar_h(hwnd) };
     let status = RECT { left: 0, top: c.bottom - status_h(hwnd), right: c.right, bottom: c.bottom };
-    ui::fill(hdc, c, BG);
+    ui::fill(hdc, dirty, BG);
     ui::fill(hdc, toolbar, p.bg);
     ui::fill(hdc, RECT { left: 0, top: toolbar.bottom - 1, right: c.right, bottom: toolbar.bottom }, p.line);
     ui::fill(hdc, status, p.bg);
     ui::fill(hdc, RECT { left: 0, top: status.top, right: c.right, bottom: status.top + 1 }, p.line);
 
     let canvas_area = RECT { left: 0, top: toolbar_h(hwnd), right: c.right, bottom: (c.bottom - status_h(hwnd)).max(toolbar_h(hwnd) + 1) };
-    if made || rects_intersect(canvas_area, p) {
+    if made || rects_intersect(canvas_area, dirty) {
         ED.with_borrow_mut(|slot| {
             if let Some(e) = slot {
                 ensure_canvas(e);
@@ -565,7 +563,7 @@ unsafe fn paint(hwnd: HWND) {
     ui::text(hdc, msg.as_deref().unwrap_or(&hint), right, small, if msg.is_some() { p.accent } else { p.dim }, DT_RIGHT as u32);
     DeleteObject(small as HGDIOBJ);
     if !back_dc.is_null() {
-        BitBlt(screen, p.left, p.top, p.right - p.left, p.bottom - p.top, back_dc, p.left, p.top, SRCCOPY);
+        BitBlt(screen, dirty.left, dirty.top, dirty.right - dirty.left, dirty.bottom - dirty.top, back_dc, dirty.left, dirty.top, SRCCOPY);
     }
     EndPaint(hwnd, &ps);
 }
@@ -992,5 +990,6 @@ unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
 }
+
 
 
