@@ -804,7 +804,12 @@ unsafe fn ensure_class() {
 unsafe fn dialog(owner: HWND, file: &Path, mut apps: Vec<App>) -> Pick {
     ensure_class();
     // centred on the monitor of the window that asked, inside its work area (never the primary's, on a second screen)
-    let mon = winrust_common::monitors::of(owner);
+    // centre on the monitor the user is working on: the owner may be the desktop window (it spans every monitor, so
+    // MonitorFromWindow picks one arbitrarily) and the point is that the dialog shows where the click happened
+    let mut cur: windows_sys::Win32::Foundation::POINT = std::mem::zeroed();
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut cur) };
+    let _ = owner;
+    let mon = winrust_common::monitors::at(cur.x, cur.y);
     let area = if mon.work.right > mon.work.left && mon.work.bottom > mon.work.top { mon.work } else { mon.rc };
     // a short screen (or a big DPI scale) shows fewer rows: the buttons must stay reachable
     let fixed = sc(HEAD) + sc(48) + sc(56);
