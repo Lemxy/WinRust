@@ -301,6 +301,24 @@ static USAGE: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None); // launche
 fn appdata_file(name: &str) -> PathBuf {
     PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join(name)
 }
+
+/// Appends one line to `%LOCALAPPDATA%\rs-shell\topbar.log`. A shell has no console, and the launch path is where the bar
+/// used to look frozen from the outside: these marks say what the worker was doing and for how long. Rotated at 1 MB so a
+/// long session does not grow it without bound.
+pub(crate) fn tlog(msg: &str) {
+    use std::io::Write;
+    let Some(base) = std::env::var_os("LOCALAPPDATA") else { return };
+    let dir = PathBuf::from(base).join("rs-shell");
+    let _ = std::fs::create_dir_all(&dir);
+    let p = dir.join("topbar.log");
+    if std::fs::metadata(&p).is_ok_and(|m| m.len() > 1 << 20) {
+        let _ = std::fs::remove_file(&p);
+    }
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) else { return };
+    let mut t: SYSTEMTIME = unsafe { zeroed() };
+    unsafe { GetLocalTime(&mut t) };
+    let _ = writeln!(f, "[{:02}:{:02}:{:02}.{:03}] {msg}", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+}
 fn uses(name: &str) -> u32 {
     USAGE
         .lock()
@@ -2408,42 +2426,125 @@ unsafe fn close_window(w: HWND) {
     }
 }
 
-/// App id of the Store app a .lnk of a pin points into (its package folder), None for anything else.
-unsafe fn msix_app_id(lnk: &str) -> Option<String> {
-    let (family, _) = msix_family(&lnk_target(&wide(lnk)))?;
+/// App id of the Store app a shortcut target inside a package folder stands for, None for anything else.
+fn aumid_for_target(target: &str) -> Option<String> {
+    let (family, _) = msix_family(target)?;
     let prefix = format!("{family}!").to_lowercase();
     fly::apps_folder().into_iter().map(|a| a.1).find(|id| id.to_lowercase().starts_with(&prefix))
 }
 
-/// Starts a Store app by its app id. false = it did not start (the caller falls back to explorer).
-unsafe fn activate_app(aumid: &str) -> bool {
-    use windows::Win32::UI::Shell::{ACTIVATEOPTIONS, ApplicationActivationManager, IApplicationActivationManager};
-    CoCreateInstance::<_, IApplicationActivationManager>(&ApplicationActivationManager, None, CLSCTX_ALL)
-        .and_then(|m| m.ActivateApplication(PCWSTR(wide(aumid).as_ptr()), PCWSTR::null(), ACTIVATEOPTIONS(0)))
-        .is_ok()
+/// Starts a Store app by its app id and returns the HRESULT. `AO_NOERRORUI` is what keeps Windows from putting its modal
+/// "Class not registered" box in front of the bar when the package is broken; we report the result ourselves instead.
+unsafe fn activate_app(aumid: &str) -> windows::core::Result<()> {
+    use windows::Win32::UI::Shell::{AO_NOERRORUI, AO_NONE, ApplicationActivationManager, IApplicationActivationManager};
+    let m = CoCreateInstance::<_, IApplicationActivationManager>(&ApplicationActivationManager, None, CLSCTX_ALL)?;
+    m.ActivateApplication(PCWSTR(wide(aumid).as_ptr()), PCWSTR::null(), AO_NONE | AO_NOERRORUI)?;
+    Ok(())
+}
+
+/// Our own notice for a Store app that did not start: a toast, never a modal box the bar would wait on.
+fn launch_failed() {
+    // `common/es.tsv` is maintained elsewhere (not ours to edit): keep the exact Spanish line here.
+    let body = match lang!() {
+        i18n::Lang::Es => "No se pudo abrir la aplicación".to_string(),
+        _ => t!("Не удалось открыть приложение", "Could not open the app", ja: "アプリを開けませんでした", pt: "Não foi possível abrir o aplicativo", zh: "无法打开应用").to_string(),
+    };
+    tlog("notify: app launch failed");
+    crate::notify::post(crate::notify::Notification {
+        id: String::new(),
+        app: "WinRust".to_string(),
+        title: "WinRust".to_string(),
+        body,
+        icon: String::new(),
+        timeout_ms: 0,
+        progress: -1.0,
+        action_label: String::new(),
+        action_cmd: String::new(),
+    });
 }
 
 /// Opens a file, shortcut, URI or program with the desktop user's normal token: the bar itself may run elevated (see the
 /// launcher), and everything started from it must not inherit that.
+///
+/// Always queued to a worker: AppsFolder enumeration, ShellLink COM and the activation manager block for seconds when the
+/// target package is broken, and running them on the bar thread is exactly the frozen bar + Start panel this fixes.
 unsafe fn open(path: &[u16]) {
     let n = path.iter().position(|&c| c == 0).unwrap_or(path.len());
     let p = String::from_utf16_lossy(&path[..n]);
+    tlog(&format!("open: queued {p:?}"));
+    std::thread::spawn(move || unsafe {
+        let t0 = std::time::Instant::now();
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // its own apartment for the shell COM below
+        tlog(&format!("open: begin {p:?}"));
+        open_now(&p);
+        tlog(&format!("open: end {p:?} in {} ms", t0.elapsed().as_millis()));
+    });
+}
+
+/// The launch itself, on the worker `open` starts.
+unsafe fn open_now(p: &str) {
     if p.to_lowercase().ends_with(".lnk") {
-        bump(&p);
+        bump(p);
     }
     if p.to_lowercase().starts_with("ms-settings:") {
-        return winrust_common::settings::open(&p); // needs Explorer as shell: it is started for the time Settings is open
+        winrust_common::settings::open(p); // it spawns its own waiter: never on the bar thread
+        return;
     }
-    // Store (MSIX) apps: by app id through the activation manager. A path into the protected package folder ("no app
-    // associated") and shell:AppsFolder via explorer ("class not registered" when Explorer is not the shell) both fail.
-    let aumid = if p.to_lowercase().starts_with(r"shell:appsfolder\") { Some(p[r"shell:appsfolder\".len()..].to_string()) } else { msix_app_id(&p) };
-    if aumid.is_some_and(|id| activate_app(&id)) {
+    let lower = p.to_lowercase();
+    let (aumid, store) = if lower.starts_with(r"shell:appsfolder\") {
+        (Some(p[r"shell:appsfolder\".len()..].to_string()), true)
+    } else {
+        // A pinned Store shortcut points into the versioned package folder, which goes away with every update: repair it
+        // here (package APIs + rewriting the .lnk), never in the click handler where it ran with PINS borrowed.
+        let mut target = lnk_target(&wide(p));
+        let store = target.contains(r"\windowsapps\");
+        if !target.is_empty() && store && !std::path::Path::new(&target).exists() {
+            tlog(&format!("open: repairing Store shortcut {p:?} (target gone: {target})"));
+            if let Some(new) = fix_msix_pin(&wide(p), &target) {
+                tlog(&format!("open: shortcut now points at {new}"));
+                target = new;
+            }
+        }
+        (aumid_for_target(&target), store)
+    };
+    if let Some(id) = aumid {
+        let t0 = std::time::Instant::now();
+        // A watchdog only traces it: ActivateApplication cannot be cancelled, but the bar is no longer waiting for it.
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        {
+            let (done, id) = (done.clone(), id.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                if !done.load(Relaxed) {
+                    tlog(&format!("activate: still inside ActivateApplication for {id} after 10 s (the bar is not waiting)"));
+                }
+            });
+        }
+        tlog(&format!("activate: begin {id}"));
+        let r = activate_app(&id);
+        done.store(true, Relaxed);
+        match r {
+            Ok(()) => tlog(&format!("activate: ok {id} in {} ms", t0.elapsed().as_millis())),
+            Err(e) => {
+                tlog(&format!("activate: FAILED {id} hresult=0x{:08X} after {} ms", e.code().0 as u32, t0.elapsed().as_millis()));
+                // No explorer.exe fallback for a Store app: Explorer is not the shell here, and for a shell:AppsFolder
+                // target it answers with the modal "Class not registered" box we are avoiding.
+                launch_failed();
+            }
+        }
+        return;
+    }
+    // A Store target without an app id (the package is gone or its manifest is broken): do not hand it to Explorer,
+    // which is not the shell here and answers with the modal "class not registered" box.
+    if store {
+        tlog(&format!("open: no app id for Store target {p:?}"));
+        launch_failed();
         return;
     }
     // A program is a path to Explorer, and Explorer is not the shell on a WinRust machine: `explorer.exe wt.exe` only
     // opens a folder window, so the Win+X "Terminal" item showed the file manager and a task manager never started.
-    if winrust_common::launch::is_program(&p) {
-        winrust_common::launch::program(&p);
+    if winrust_common::launch::is_program(p) {
+        winrust_common::launch::program(p);
         return;
     }
     // Everything else through explorer.exe: it hands paths, shortcuts, shell addresses and URIs to the shell with the
@@ -2451,8 +2552,8 @@ unsafe fn open(path: &[u16]) {
     // cannot receive files dragged in from normal windows (UIPI), and PrtSc / Win+Shift+S (ms-screenclip:) do not work
     // when started elevated. With an argument and no explorer shell running, explorer.exe hands the target to its COM
     // host and does not become a shell or raise a taskbar.
-    if Command::new("explorer.exe").arg(&p).spawn().is_err() {
-        ShellExecuteW(null_mut(), wide("open").as_ptr(), wide(&p).as_ptr(), null(), null(), SW_SHOWNORMAL);
+    if Command::new("explorer.exe").arg(p).spawn().is_err() {
+        ShellExecuteW(null_mut(), wide("open").as_ptr(), wide(p).as_ptr(), null(), null(), SW_SHOWNORMAL);
     }
 }
 
@@ -2996,7 +3097,8 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
             match (wins.first(), left) {
                 // not running: launch the pinned app (a Store app may have updated since the pins were loaded)
                 (None, true) => lnk.iter().for_each(|l| {
-                    PINS.with_borrow_mut(|p| p.iter_mut().filter(|x| x.lnk == *l).for_each(|x| x.target = fix_msix_pin(l, &x.target).unwrap_or(std::mem::take(&mut x.target))));
+                    // The MSIX re-pointer lives in `open`'s worker now: package COM here would freeze the bar, and PINS
+                    // is borrowed at this point anyway.
                     open(l)
                 }),
                 (Some(&w), false) => close_window(w), // right / middle click

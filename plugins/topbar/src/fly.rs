@@ -94,6 +94,17 @@ fn phy_name(t: i32) -> &'static str {
 }
 
 static APPS: Mutex<Vec<(String, Vec<u16>)>> = Mutex::new(Vec::new()); // Start menu shortcuts: (name, .lnk path)
+
+/// `APPS.lock()` with a trace when it is already busy: every paint and launch takes this lock, so contention shows as a
+/// frozen panel. Nothing shell-related or otherwise slow may run while it is held (a broken Store package can make those
+/// calls take seconds), and this lock is the only one shared with the `load_apps` worker.
+fn apps_lock(what: &str) -> std::sync::MutexGuard<'static, Vec<(String, Vec<u16>)>> {
+    let busy = APPS.try_lock().is_err(); // its guard is dropped at the end of this statement
+    if busy {
+        crate::tlog(&format!("APPS lock busy: {what} waits"));
+    }
+    APPS.lock().unwrap_or_else(|e| e.into_inner())
+}
 pub static PREVIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false); // `--preview`: stays open without focus
 static BRIGHT: AtomicI32 = AtomicI32::new(-1); // -1 = no controllable display (desktop PC)
 const ROWS: usize = 11;
@@ -180,6 +191,8 @@ pub fn load_apps() {
             }
         }
     }
+    let t0 = std::time::Instant::now();
+    crate::tlog("apps: load start");
     let mut v = Vec::new();
     for (var, sub) in [("ProgramData", r"Microsoft\Windows\Start Menu\Programs"), ("APPDATA", r"Microsoft\Windows\Start Menu\Programs")] {
         if let Some(b) = std::env::var_os(var) {
@@ -188,7 +201,12 @@ pub fn load_apps() {
     }
     // Store apps (Settings, Calculator, Terminal, Photos...) have no .lnk: the shell's Apps folder lists them
     let have: std::collections::HashSet<String> = v.iter().map(|a| a.0.to_lowercase()).collect();
-    for (name, id) in apps_folder() {
+    crate::tlog(&format!("apps: {} shortcuts walked in {} ms", v.len(), t0.elapsed().as_millis()));
+    // This is the call that can hang for seconds on a broken package: it is already on a worker, never on the bar thread.
+    let t1 = std::time::Instant::now();
+    let folder = apps_folder();
+    crate::tlog(&format!("apps: AppsFolder {} items in {} ms", folder.len(), t1.elapsed().as_millis()));
+    for (name, id) in folder {
         let ok = id.contains('!') || id.to_lowercase().ends_with(".exe") || id.starts_with("Microsoft.Windows."); // apps, not docs / web links
         if ok && !have.contains(&name.to_lowercase()) && !name.to_lowercase().contains("uninstall") {
             v.push((name, wide(&format!(r"shell:AppsFolder\{id}"))));
@@ -196,7 +214,9 @@ pub fn load_apps() {
     }
     v.sort_by_key(|a| a.0.to_lowercase());
     v.dedup_by(|a, b| a.0.eq_ignore_ascii_case(&b.0));
-    *APPS.lock().unwrap() = v;
+    let n = v.len();
+    *apps_lock("load_apps") = v;
+    crate::tlog(&format!("apps: list ready ({n} apps) in {} ms", t0.elapsed().as_millis()));
 }
 
 /// (display name, app id) of everything in the shell's Apps folder (what the Windows Start menu lists).
@@ -205,9 +225,11 @@ pub fn apps_folder() -> Vec<(String, String)> {
         System::Com::CoTaskMemFree,
         UI::Shell::{BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING},
     };
+    let t0 = std::time::Instant::now();
+    crate::tlog("apps_folder: begin");
     let mut out = vec![];
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // this runs on its own thread
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); // this runs on a worker, never the bar thread
         let Ok(folder) = SHGetKnownFolderItem::<IShellItem>(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None) else { return out };
         let Ok(en) = folder.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems) else { return out };
         loop {
@@ -229,6 +251,7 @@ pub fn apps_folder() -> Vec<(String, String)> {
             }
         }
     }
+    crate::tlog(&format!("apps_folder: {} items in {} ms", out.len(), t0.elapsed().as_millis()));
     out
 }
 
@@ -364,7 +387,7 @@ fn find_loose_exes(hw: HWND) {
         }
         // straight to the service's pipe: no rs.exe process per query (and no full disk scan when the service is down)
         let found = winrust_common::search::ask_all(&q);
-        let mut apps = APPS.lock().unwrap();
+        let mut apps = apps_lock("find_loose_exes"); // only a few pushes: no shell work under the lock
         let mut added = false;
         for line in found.iter().filter(|l| l.to_lowercase().ends_with(".exe")).take(12) {
             let w = wide(line);
@@ -446,47 +469,60 @@ unsafe fn row_icon(name: &str, path: &[u16], px: i32) -> HICON {
 /// The app rows with their icons loaded, for the style modules.
 unsafe fn start_rows() -> Vec<crate::startctx::Row> {
     let f = filtered();
-    let apps = APPS.lock().unwrap();
-    f.iter()
+    // Icons are shell/COM work: take a copy under the lock, release it, and only then load them. A broken Store package
+    // can make that lookup wait for seconds, and with APPS held every paint and every launch would wait as well.
+    let items: Vec<(String, Vec<u16>)> = {
+        let apps = apps_lock("start_rows");
+        f.iter().filter_map(|&ai| apps.get(ai).cloned()).collect()
+    };
+    items
+        .into_iter()
         .enumerate()
-        .filter_map(|(i, &ai)| {
-            let (name, path) = apps.get(ai)?;
-            Some(crate::startctx::Row { label: name.clone(), icon: row_icon(name, path, icon_px()), act: Act::App(i) })
-        })
+        .map(|(i, (name, path))| crate::startctx::Row { label: name.clone(), icon: row_icon(&name, &path, icon_px()), act: Act::App(i) })
         .collect()
 }
 
 /// What the user pinned: the right-hand tiles of the styles. They stay in the list on the left as well.
 unsafe fn start_pins() -> Vec<crate::startctx::Row> {
     let f = filtered();
-    let pinned = PINNED.lock().unwrap().clone();
-    let apps = APPS.lock().unwrap();
-    let mut v = Vec::new();
-    for p in pinned {
-        let w: Vec<u16> = wide(&p);
-        let Some(pos) = f.iter().position(|&ai| apps.get(ai).is_some_and(|a| a.1 == w)) else { continue };
-        let Some((name, path)) = f.get(pos).and_then(|&ai| apps.get(ai)) else { continue };
-        v.push(crate::startctx::Row { label: name.clone(), icon: row_icon(name, path, tile_px()), act: Act::App(pos) });
-    }
-    v
+    // Same rule as `start_rows`: copy what the icons need, release PINNED and APPS, then do the shell work.
+    let items: Vec<(String, Vec<u16>, usize)> = {
+        let pinned = PINNED.lock().unwrap().clone();
+        let apps = apps_lock("start_pins");
+        let mut v = Vec::new();
+        for p in pinned {
+            let w: Vec<u16> = wide(&p);
+            let Some(pos) = f.iter().position(|&ai| apps.get(ai).is_some_and(|a| a.1 == w)) else { continue };
+            let Some((name, path)) = f.get(pos).and_then(|&ai| apps.get(ai)) else { continue };
+            v.push((name.clone(), path.clone(), pos));
+        }
+        v
+    };
+    items
+        .into_iter()
+        .map(|(name, path, pos)| crate::startctx::Row { label: name.clone(), icon: row_icon(&name, &path, tile_px()), act: Act::App(pos) })
+        .collect()
 }
 
 fn filtered() -> Vec<usize> {
     let q = QUERY.with_borrow(|q| q.to_lowercase());
-    let mut apps = APPS.lock().unwrap();
+    // Snapshot the names under the lock: scoring reads the usage file on first use, which must not happen with APPS held.
+    let names: Vec<String> = {
+        let apps = apps_lock("filtered");
+        apps.iter().map(|a| a.0.to_lowercase()).collect()
+    };
     if q.is_empty() {
         // every app, A to Z, like Windows' "All apps": pinning one must not take it out of the list
-        return (0..apps.len()).collect();
+        return (0..names.len()).collect();
     }
     // typed in the wrong layout: those matches come after the direct ones
     let fq = flip_layout(&q);
-    let mut v: Vec<(u8, u32, usize)> = apps
+    let mut v: Vec<(u8, u32, usize)> = names
         .iter()
         .enumerate()
-        .filter_map(|(i, a)| {
-            let n = a.0.to_lowercase();
-            let s = score(&n, &q).or_else(|| score(&n, &fq).map(|s| s + 4))?;
-            Some((s, u32::MAX - uses(&n), i))
+        .filter_map(|(i, n)| {
+            let s = score(n, &q).or_else(|| score(n, &fq).map(|s| s + 4))?;
+            Some((s, u32::MAX - uses(n), i))
         })
         .collect();
     v.sort_unstable(); // best match, then most launched, then alphabetical (the list is sorted by name)
@@ -1114,6 +1150,7 @@ pub fn toggle(k: Kind) {
             }
             Kind::Start => {
                 pinned_load(); // the search card (rs-launcher) can add to this list from another process
+                crate::tlog("apps: refresh queued by panel open");
                 std::thread::spawn(load_apps); // apps installed since the last open show up (the panel repaints every second)
             }
             _ => {}
@@ -1189,17 +1226,20 @@ unsafe fn wifi_radio_wlan(on: bool) {
 
 /// Starts the i-th app of the filtered Start list and counts the launch (search ranks by it). false = no such row.
 unsafe fn launch(i: usize) -> bool {
-    let Some(app) = filtered().get(i).and_then(|&ai| APPS.lock().unwrap().get(ai).cloned()) else { return false };
-    if wstr(&app.1).starts_with("shell:") {
-        bump_name(&app.0); // open() counts only .lnk files
+    let Some(ai) = filtered().get(i).copied() else { return false };
+    let Some((name, path)) = apps_lock("launch").get(ai).cloned() else { return false };
+    if wstr(&path).starts_with("shell:") {
+        // open() counts only .lnk files; the usage file is written on a worker, not in the click handler
+        let name = name.clone();
+        std::thread::spawn(move || bump_name(&name));
     }
-    open(&app.1);
+    open(&path); // queued to a worker: the shell/COM work never runs in this click handler
     true
 }
 
 /// Right-click menu of a Start app: open, open as administrator, show the shortcut's folder.
 unsafe fn app_menu(hw: HWND, i: usize, x: i32, y: i32) {
-    let Some(lnk) = filtered().get(i).and_then(|&ai| APPS.lock().unwrap().get(ai).map(|a| a.1.clone())) else { return };
+    let Some(lnk) = filtered().get(i).and_then(|&ai| apps_lock("app_menu").get(ai).map(|a| a.1.clone())) else { return };
     let m = CreatePopupMenu();
     let path = wstr(&lnk);
     let file = !path.starts_with("shell:"); // Store apps have no file to run elevated or to show in a folder
@@ -1981,16 +2021,20 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 }
             }
             let rs = rects(k);
-            let apps = APPS.lock().unwrap();
+            // Snapshot the visible apps first: the loop below looks up icons (ShellLink / shell image lists), and no shell
+            // call may run while APPS is held. An index from a moment ago may be gone (the list reloads in the background).
+            let rows: Vec<Option<(String, Vec<u16>)>> = {
+                let apps = apps_lock("paint.start");
+                f.iter().map(|&ai| apps.get(ai).cloned()).collect()
+            };
             for (rc, a) in &rs {
                 match *a {
                     Act::App(i) => {
-                        // the list is reloaded on a background thread: an index from a moment ago may be gone
-                        let Some(app) = f.get(i).and_then(|&ai| apps.get(ai)) else { continue };
+                        let Some((name, path)) = rows.get(i).and_then(|r| r.as_ref()) else { continue };
                         // the row that was just pinned pulses in the accent colour for a moment
                         let pulse = JUST.with_borrow(|j| {
                             let age = now_ms().saturating_sub(j.1) as f32 / 1200.0;
-                            if age < 1.0 && !j.0.is_empty() && app.1 == wide(&j.0) { (1.0 - age) * (1.0 - age) } else { 0.0 }
+                            if age < 1.0 && !j.0.is_empty() && *path == wide(&j.0) { (1.0 - age) * (1.0 - age) } else { 0.0 }
                         });
                         let sel = i == SEL.get(); // what Enter opens
                         if pulse > 0.0 || sel {
@@ -2002,16 +2046,16 @@ unsafe fn paint(hw: HWND, k: Kind) {
                             fill(dc, RECT { left: rc.left, top: rc.top + sc(10), right: rc.left + sc(3), bottom: rc.bottom - sc(10) }, pal().accent, sc(3));
                         }
                         let ic = ICONS.with_borrow_mut(|m| {
-                            *m.entry((app.1.clone(), icon_px())).or_insert_with(|| {
-                                let t = lnk_target(&app.1);
-                                lnk_icon_px(&app.1, &t, icon_px()) // this row draws at exactly this size
+                            *m.entry((path.clone(), icon_px())).or_insert_with(|| {
+                                let t = lnk_target(path);
+                                lnk_icon_px(path, &t, icon_px()) // this row draws at exactly this size
                             })
                         });
                         if !ic.is_null() {
                             i18n::icon::draw(dc, ic, rc.left + sc(13), (rc.top + rc.bottom - icon_px()) / 2, icon_px());
                         }
-                        let store = wstr(&app.1).starts_with("shell:");
-                        text(dc, &app.0, RECT { left: rc.left + sc(52), top: rc.top, right: rc.right - sc(110), bottom: rc.bottom }, pal().text, DT_LEFT);
+                        let store = wstr(path).starts_with("shell:");
+                        text(dc, name, RECT { left: rc.left + sc(52), top: rc.top, right: rc.right - sc(110), bottom: rc.bottom }, pal().text, DT_LEFT);
                         SelectObject(dc, f_small);
                         let kind = if sel && !q.is_empty() { "Enter ↵" } else if store { t!("Приложение", "App", ja: "アプリ", pt: "App", zh: "应用") } else { "" };
                         text(dc, kind, RECT { left: rc.right - sc(110), top: rc.top, right: rc.right - sc(14), bottom: rc.bottom }, pal().dim, DT_RIGHT);
