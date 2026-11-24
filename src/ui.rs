@@ -87,7 +87,7 @@ impl Ui {
 // layout, logical px: a setup wizard. A dark header with the accent line under it, the steps on the left, one page at a
 // time on the right, the buttons at the bottom right.
 pub(crate) const WIN_W: f32 = 800.0;
-pub(crate) const WIN_H: f32 = 650.0;
+pub(crate) const WIN_H: f32 = 688.0;
 const HEAD_H: f32 = 64.0;
 const SIDE_W: f32 = 210.0;
 const PAD: f32 = 32.0;
@@ -344,6 +344,7 @@ fn tile_color(name: &str) -> u32 {
         "rust-explorer" => rgb(255, 159, 10),
         "wiztree" => rgb(191, 90, 242),
         "photoview" => rgb(255, 55, 95),
+        "rs-shot" => rgb(120, 200, 255),
         "debloat" => rgb(100, 210, 255),
         "purge" => rgb(255, 69, 58),
         _ => rgb(142, 142, 147),

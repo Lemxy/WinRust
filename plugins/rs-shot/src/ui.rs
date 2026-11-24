@@ -2,9 +2,9 @@
 use std::ptr::null_mut;
 
 use windows_sys::Win32::{
-    Foundation::RECT,
+    Foundation::{HWND, RECT},
     Graphics::Gdi::*,
-    UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::HWND},
+    UI::HiDpi::GetDpiForWindow,
 };
 
 use winrust_common::style::pal;
@@ -80,13 +80,6 @@ pub unsafe fn text_w(dc: HDC, s: &str, font: HFONT) -> i32 {
     size.cx
 }
 
-/// A Segoe MDL2 icon centred in `r`.
-pub unsafe fn glyph(dc: HDC, ch: &str, r: RECT, size: i32, color: u32) {
-    let f = make_font(size, 400, winrust_common::style::icon_face());
-    text(dc, ch, r, f, color, DT_CENTER as u32);
-    DeleteObject(f as HGDIOBJ);
-}
-
 /// Colour of a toolbar button: hover / checked / normal.
 pub fn button_bg(hover: bool, active: bool) -> u32 {
     let p = pal();
@@ -97,15 +90,6 @@ pub fn button_bg(hover: bool, active: bool) -> u32 {
     } else {
         p.bg
     }
-}
-
-pub unsafe fn line(dc: HDC, a: (i32, i32), b: (i32, i32), color: u32, thick: i32) {
-    let p = CreatePen(PS_SOLID, thick.max(1), color);
-    let old = SelectObject(dc, p as HGDIOBJ);
-    MoveToEx(dc, a.0, a.1, null_mut());
-    LineTo(dc, b.0, b.1);
-    SelectObject(dc, old);
-    DeleteObject(p as HGDIOBJ);
 }
 
 /// Dashed 1 px rectangle ("marching ants" without the animation).
@@ -139,3 +123,4 @@ pub unsafe fn dashed(dc: HDC, r: RECT, color: u32) {
     SelectObject(dc, old);
     DeleteObject(p as HGDIOBJ);
 }
+

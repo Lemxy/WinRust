@@ -71,3 +71,29 @@ pub(crate) unsafe fn screenshot_notice(bar: HWND) {
     show_tip(msg, GetSystemMetrics(SM_CXSCREEN) / 2);
     SetTimer(bar, 6, 2500, None); // timer 6 hides the tip
 }
+
+/// The installed rs-shot, if any: Program Files (the installer's place), then beside the bar, then the launcher's bin.
+pub(crate) fn rs_shot() -> Option<PathBuf> {
+    let mut v: Vec<PathBuf> = Vec::new();
+    if let Some(pf) = std::env::var_os("ProgramFiles") {
+        v.push(PathBuf::from(pf).join(r"rs-shot\rs-shot.exe"));
+    }
+    if let Ok(e) = std::env::current_exe() {
+        v.push(e.with_file_name("rs-shot.exe"));
+    }
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        v.push(PathBuf::from(la).join(r"plugin-launcher\bin\rs-shot.exe"));
+    }
+    v.into_iter().find(|p| p.is_file())
+}
+
+/// Starts rs-shot with these arguments (no console window). False when it is not installed: the caller then keeps the
+/// old behaviour, so a missing rs-shot never breaks the shell's capture shortcut.
+pub(crate) fn rs_shot_start(args: &[&str]) -> bool {
+    let Some(exe) = rs_shot() else { return false };
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    std::thread::spawn(move || {
+        let _ = Command::new(exe).args(args).creation_flags(0x0800_0000).spawn(); // CREATE_NO_WINDOW
+    });
+    true
+}

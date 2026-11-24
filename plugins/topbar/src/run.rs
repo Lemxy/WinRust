@@ -50,10 +50,10 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
             }
         }
         if k.flags & LLKHF_INJECTED == 0 {
-            // Win+Shift+S is our own region clipper (also under Explorer); without explorer nobody opens the screen
-            // capture either: PrtSc (when Windows is set to snip with it; otherwise it copies the screen by itself) does it here
+            // Win+Shift+S is our own region clipper. PrtSc is taken too when rs-shot is installed (even under Explorer,
+            // where Windows' own snip may own the key); without rs-shot PrtSc is taken only when nobody else handles it.
             let held = |vk: u16| GetAsyncKeyState(vk as i32) < 0;
-            let snip_key = !EXPLORER_UP.load(Relaxed) && k.vkCode == VK_SNAPSHOT as u32;
+            let snip_key = k.vkCode == VK_SNAPSHOT as u32 && (!EXPLORER_UP.load(Relaxed) || super::shot::rs_shot().is_some());
             let win_shift_s = k.vkCode == b'S' as u32 && down0 && (held(VK_LWIN) || held(VK_RWIN)) && held(VK_SHIFT);
             if snip_key || win_shift_s {
                 if down0 {
@@ -63,8 +63,18 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
                         keybd_event(0xE8, 0, 0, 0);
                         keybd_event(0xE8, 0, KEYEVENTF_KEYUP, 0);
                     }
-                    PostMessageW(BAR.load(Relaxed) as HWND, SNIP, snip_key as usize, 0); // wp 1: PrtSc, 0: Win+Shift+S
+                    // rs-shot when installed (region + editor); otherwise the bar's own clipper/screenshot, as before
+                    if !rs_shot_start(&["--region"]) {
+                        PostMessageW(BAR.load(Relaxed) as HWND, SNIP, snip_key as usize, 0); // wp 1: PrtSc, 0: Win+Shift+S
+                    }
                 }
+                return 1;
+            }
+            // Win+Alt+R: rs-shot records the region (the Game Bar shortcut is only taken when rs-shot exists)
+            if k.vkCode == b'R' as u32 && down0 && (held(VK_LWIN) || held(VK_RWIN)) && held(VK_MENU) && !held(VK_SHIFT) && !held(VK_CONTROL) && rs_shot_start(&["--record"]) {
+                WIN_ALONE.store(false, Relaxed);
+                keybd_event(0xE8, 0, 0, 0);
+                keybd_event(0xE8, 0, KEYEVENTF_KEYUP, 0);
                 return 1;
             }
             // Win+1..9: the n-th app button of the bar (Windows 11 taskbar behaviour)

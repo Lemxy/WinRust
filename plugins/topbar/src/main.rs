@@ -262,6 +262,7 @@ const WIN_X: u32 = WM_APP + 17; // posted by the keyboard hook: Win+X = our powe
 const NEXT_LANG: u32 = WM_APP + 16; // posted by the keyboard hook: Win+Space with no explorer (wp 1 = Shift held: previous layout)
 const VOLKEY: u32 = WM_APP + 14; // posted by the keyboard hook: a volume key (wp 0 up, 1 down, 2 mute)
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
+const HOTKEY_SHOT: i32 = 0x5253; // RegisterHotKey id for PrintScreen -> rs-shot (WM_HOTKEY reaches the main loop)
 static EXPLORER_UP: AtomicBool = AtomicBool::new(true); // explorer's taskbar exists (it handles PrtSc itself then); refreshed by the bar
 
 struct Pin {
@@ -3615,8 +3616,17 @@ fn main() {
                 }
             }
         });
+        // PrintScreen -> rs-shot when installed. Windows' own screen-capture setting may already own the key; then
+        // RegisterHotKey fails and Win+Shift+S (handled by the keyboard hook) is still the way in. No rs-shot: no change.
+        if shot::rs_shot().is_some() {
+            RegisterHotKey(null_mut(), HOTKEY_SHOT, MOD_NOREPEAT, VK_SNAPSHOT as u32);
+        }
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
+            if m.message == WM_HOTKEY && m.wParam == HOTKEY_SHOT as usize {
+                shot::rs_shot_start(&["--region"]);
+                continue;
+            }
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }

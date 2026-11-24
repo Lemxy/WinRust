@@ -10,10 +10,10 @@ use std::{
 
 use windows_sys::{
     Win32::{
-        Foundation::{HANDLE, HBITMAP, RECT},
+        Foundation::{HANDLE, GlobalFree},
         Graphics::{
             Gdi::{
-                BITMAP, BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetObjectW, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+                BITMAP, BitBlt, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetObjectW, HBITMAP, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
             },
             GdiPlus::{GdipCreateBitmapFromHBITMAP, GdipDisposeImage, GdipSaveImageToFile, GpBitmap, GpImage, GdiplusStartup, GdiplusStartupInput},
         },
@@ -217,15 +217,15 @@ pub unsafe fn copy_to_clipboard(img: &Image) -> bool {
     }
     GlobalUnlock(mem);
     if OpenClipboard(null_mut()) == 0 {
+        GlobalFree(mem);
         return false;
     }
     EmptyClipboard();
     let ok = !SetClipboardData(8, mem as HANDLE).is_null(); // CF_DIB; the system owns the block from here
+    if !ok {
+        GlobalFree(mem);
+    }
     CloseClipboard();
     ok
 }
 
-/// Kept for the editor's status line: the size in the "W × H" form the overlay also shows.
-pub fn dims(r: RECT) -> String {
-    format!("{} × {}", r.right - r.left, r.bottom - r.top)
-}

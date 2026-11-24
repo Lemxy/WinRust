@@ -557,6 +557,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-shot"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows",
+ "windows-sys",
+ "winrust-common",
+]
+
+[[package]]
 name = "rtaskmgr-win32"
 version = "0.1.0"
 dependencies = [

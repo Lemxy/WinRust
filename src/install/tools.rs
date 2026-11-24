@@ -23,6 +23,20 @@ pub(crate) fn db_dir() -> PathBuf {
     program_files().join("debloat")
 }
 
+pub(crate) fn rs_dir() -> PathBuf {
+    program_files().join("rs-shot")
+}
+
+/// rs-shot: one exe, no registry changes. topbar looks for exactly this path for the capture shortcuts.
+pub(crate) fn rs_install() -> Result<(), String> {
+    tool_install("rs-shot.exe", &rs_dir(), None)
+}
+
+pub(crate) fn rs_uninstall() -> Result<(), String> {
+    tool_remove("rs-shot.exe", &rs_dir(), None);
+    Ok(())
+}
+
 /// Copies `exe` out of the payload into `dir` (an update: the running copy is killed first) and adds the Start Menu shortcut `lnk`.
 pub(crate) fn tool_install(exe: &str, dir: &Path, lnk: Option<&str>) -> Result<(), String> {
     with_payload(&[exe], |d| {

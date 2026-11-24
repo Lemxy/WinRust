@@ -3,9 +3,8 @@
 use std::ptr::null_mut;
 
 use windows_sys::Win32::{
-    Foundation::{HBITMAP, RECT},
     Graphics::Gdi::{
-        BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC,
+        BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HBITMAP,
         GetDIBits, GetObjectW, HDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
     },
 };
@@ -25,11 +24,6 @@ impl Image {
 
     pub fn valid(&self) -> bool {
         self.w > 0 && self.h > 0 && self.px.len() >= (self.w * self.h * 4) as usize
-    }
-
-    pub fn at(&self, x: i32, y: i32) -> [u8; 4] {
-        let i = ((y * self.w + x) * 4) as usize;
-        [self.px[i], self.px[i + 1], self.px[i + 2], self.px[i + 3]]
     }
 
     /// Copies an HBITMAP (any depth) into a top-down BGRA buffer.
@@ -56,26 +50,15 @@ impl Image {
         (ok != 0).then_some(img)
     }
 
-    pub fn crop(&self, r: RECT) -> Image {
-        let l = r.left.max(0).min(self.w);
-        let t = r.top.max(0).min(self.h);
-        let rr = r.right.max(l).min(self.w);
-        let b = r.bottom.max(t).min(self.h);
-        let (w, h) = (rr - l, b - t);
-        let mut out = Image::new(w, h);
-        for y in 0..h {
-            let src = ((t + y) * self.w + l) as usize * 4;
-            let dst = (y * w) as usize * 4;
-            out.px[dst..dst + (w as usize) * 4].copy_from_slice(&self.px[src..src + (w as usize) * 4]);
-        }
-        out
-    }
-
     /// A 24-bit top-down DIB section, the shape GDI+ and CF_DIB both like. The caller deletes the bitmap.
     pub unsafe fn to_dib24(&self) -> Option<HBITMAP> {
         let dc = GetDC(null_mut());
         let (src, src_bits) = make_dib(dc, self.w, self.h, 32)?;
-        let (dst, _) = make_dib(dc, self.w, self.h, 24)?;
+        let Some((dst, _)) = make_dib(dc, self.w, self.h, 24) else {
+            DeleteObject(src as HGDIOBJ);
+            ReleaseDC(null_mut(), dc);
+            return None;
+        };
         std::ptr::copy_nonoverlapping(self.px.as_ptr(), src_bits, self.px.len());
         let sdc = CreateCompatibleDC(dc);
         let ddc = CreateCompatibleDC(dc);
@@ -109,3 +92,4 @@ pub unsafe fn make_dib(dc: HDC, w: i32, h: i32, bits: u16) -> Option<(HBITMAP, *
     let hbm = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut p, null_mut(), 0);
     (!hbm.is_null() && !p.is_null()).then_some((hbm, p as *mut u8))
 }
+
