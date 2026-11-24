@@ -319,6 +319,17 @@ unsafe fn tf_progress(n: i32) -> f32 {
     ease(((age - 25.0 * n as f32) / 200.0).clamp(0.0, 1.0))
 }
 
+thread_local! {
+    // when an icon of the tray flyout was right-clicked: its app is opening a menu, the flyout stays up meanwhile
+    static TF_MENU_AT: Cell<u64> = const { Cell::new(0) };
+}
+
+/// A popup menu is on screen (the one an app opens from its tray icon).
+unsafe fn menu_up() -> bool {
+    let m = FindWindowW(wide("#32768").as_ptr(), null());
+    !m.is_null() && IsWindowVisible(m) != 0
+}
+
 unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let cell_at = |lp: LPARAM| -> i32 {
         let (x, y) = ((lp & 0xffff) as i16 as i32 - sc(8), ((lp >> 16) & 0xffff) as i16 as i32 - sc(8));
@@ -331,11 +342,17 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         if i < n { i } else { -1 }
     };
     match msg {
+        WM_ERASEBKGND => 1,
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
-            let dc = BeginPaint(hwnd, &mut ps);
+            let wdc = BeginPaint(hwnd, &mut ps);
             let mut r: RECT = zeroed();
             GetClientRect(hwnd, &mut r);
+            // drawn off screen, then copied in one go: the fade repaints every 15 ms, and drawn straight onto the window each
+            // frame showed the empty panel for a moment before the icons came back (the flicker)
+            let dc = CreateCompatibleDC(wdc);
+            let bmp = CreateCompatibleBitmap(wdc, r.right, r.bottom);
+            let ob = SelectObject(dc, bmp);
             fill(dc, r, pal().line, sc(12));
             fill(dc, RECT { left: 1, top: 1, right: r.right - 1, bottom: r.bottom - 1 }, pal().bg, sc(12));
             let (cols, _, _) = fly_size();
@@ -365,6 +382,10 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             DrawTextW(dc, wide(&tip).as_ptr(), -1, &mut tr, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
             SelectObject(dc, of);
             DeleteObject(f);
+            BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, ob);
+            DeleteObject(bmp);
+            DeleteDC(dc);
             EndPaint(hwnd, &ps);
             0
         }
@@ -388,6 +409,11 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 if msg == WM_MBUTTONDOWN {
                     toggle_shown(&key);
                     InvalidateRect(hwnd, null(), 0);
+                } else if msg == WM_RBUTTONDOWN {
+                    // the app's menu opens over the flyout, which stays (as in Windows) until that menu and the focus are gone
+                    TF_MENU_AT.set(now_ms());
+                    tray_click(t, false);
+                    SetTimer(hwnd, 2, 150, None);
                 } else {
                     ShowWindow(hwnd, SW_HIDE);
                     InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0); // the bar's chevron turns with it
@@ -397,8 +423,21 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             0
         }
         WM_ACTIVATE if wp & 0xffff == 0 => {
-            ShowWindow(hwnd, SW_HIDE);
-            InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0); // the bar's chevron turns with it
+            if now_ms().saturating_sub(TF_MENU_AT.get()) > 2000 {
+                ShowWindow(hwnd, SW_HIDE);
+                InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0); // the bar's chevron turns with it
+            }
+            0
+        }
+        WM_TIMER if wp == 2 => {
+            // after a right click: hide once the app's menu is closed and the focus went somewhere else
+            let settling = now_ms().saturating_sub(TF_MENU_AT.get()) < 600; // the app takes a moment to open its menu
+            if !settling && !menu_up() && GetForegroundWindow() != hwnd {
+                KillTimer(hwnd, 2);
+                TF_MENU_AT.set(0);
+                ShowWindow(hwnd, SW_HIDE);
+                InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0);
+            }
             0
         }
         WM_TIMER => {
