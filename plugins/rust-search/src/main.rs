@@ -27,11 +27,14 @@ use windows_sys::Win32::{
 /// number is dropped), so lookup is a plain Vec index. Names live in one byte arena instead of one
 /// String each. ~12 bytes per slot + the name bytes, about a third of a HashMap<u64, (u64, String)>.
 #[derive(Clone, Copy, Default)]
+#[repr(C, packed(2))] // 10 bytes, not 12: ~3 MB less per 1.6 M slots (the snapshot file keeps its 12-byte slots)
 struct Ent {
     parent: u32, // parent's record number
     off: u32,    // name offset in the arena
     len: u16,    // name length in bytes; 0 = slot unused
 }
+
+const _: () = assert!(size_of::<Ent>() == 10);
 
 #[derive(Default)]
 struct Index {
@@ -78,7 +81,8 @@ impl Index {
         let off = self.arena.len() as u32;
         self.arena.extend_from_slice(name.as_bytes());
         self.ents[rec] = Ent { parent: (parent & REC_MASK) as u32, off, len: name.len() as u16 };
-        if self.garbage > (8 << 20) && self.garbage * 3 > self.arena.len() {
+        // a dead name is kept until it is an eighth of the arena (was a third: ~4 MB held for nothing on a busy disk)
+        if self.garbage > (2 << 20) && self.garbage * 8 > self.arena.len() {
             self.compact();
         }
     }

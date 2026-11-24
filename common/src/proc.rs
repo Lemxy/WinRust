@@ -39,6 +39,22 @@ pub fn list() -> Vec<(u32, String)> {
     v
 }
 
+/// Exe file name of one process (`SearchHost.exe`), without a snapshot of all of them. None when it cannot be opened.
+pub fn exe_name(pid: u32) -> Option<String> {
+    use windows_sys::Win32::System::Threading::{PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let (mut b, mut n) = ([0u16; 520], 520u32);
+        let ok = QueryFullProcessImageNameW(h, 0, b.as_mut_ptr(), &mut n) != 0;
+        CloseHandle(h);
+        let path = String::from_utf16_lossy(&b[..n as usize]);
+        ok.then(|| path.rsplit('\\').next().unwrap_or("").to_string())
+    }
+}
+
 /// Pids of the processes with this exe name (case-insensitive, e.g. `explorer.exe`).
 pub fn pids(name: &str) -> Vec<u32> {
     list().into_iter().filter(|(_, n)| n.eq_ignore_ascii_case(name)).map(|p| p.0).collect()
@@ -110,6 +126,32 @@ pub fn kill_shell_explorers() {
     shell_explorers().into_iter().for_each(kill);
 }
 
+/// Whether this process runs with an elevated (administrator) token.
+pub fn elevated() -> bool {
+    use windows_sys::Win32::{Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation}, System::Threading::{GetCurrentProcess, OpenProcessToken}};
+    let (mut t, mut e, mut n) = (null_mut(), TOKEN_ELEVATION { TokenIsElevated: 0 }, 0u32);
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut t) == 0 {
+            return false;
+        }
+        let ok = GetTokenInformation(t, TokenElevation, &mut e as *mut _ as _, size_of::<TOKEN_ELEVATION>() as u32, &mut n);
+        CloseHandle(t);
+        ok != 0 && e.TokenIsElevated != 0
+    }
+}
+
+/// Starts Explorer as the shell with the user's normal token. Started straight from an unelevated process: under the
+/// `runas /trustlevel` token it is a shell that never shows a Store app (Settings stays a blue splash, its window cloaked).
+/// That token is only for an elevated caller, which must not hand Explorer its admin rights.
+pub fn start_shell_explorer() -> std::io::Result<()> {
+    use std::{os::windows::process::CommandExt, process::Command};
+    if elevated() {
+        Command::new("runas.exe").args(["/trustlevel:0x20000", r"C:\Windows\explorer.exe"]).creation_flags(0x0800_0000).status().map(|_| ())
+    } else {
+        Command::new(r"C:\Windows\explorer.exe").spawn().map(|_| ())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_shell_cmdline;
@@ -129,5 +171,8 @@ mod tests {
         let me = std::process::id();
         assert!(super::list().iter().any(|(p, _)| *p == me));
         assert!(super::cmdline(me).is_some_and(|c| !c.is_empty()));
+        let name = super::exe_name(me).unwrap();
+        assert!(name.to_lowercase().ends_with(".exe") && !name.contains('\\'), "{name}");
+        assert!(super::list().iter().any(|(p, n)| *p == me && n.eq_ignore_ascii_case(&name)));
     }
 }
