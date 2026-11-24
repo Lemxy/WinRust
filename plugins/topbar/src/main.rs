@@ -1399,12 +1399,35 @@ fn layout(w: i32) -> Layout {
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
     let n = BTNS.with_borrow(|b| b.len()) as i32 + lead(); // + the search and Task View slots
     let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
-    // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + lead() + 1).min(n);
-    // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
+    // the whole group centred, like Windows 11: every button counts, the open windows too, and the row glides to its new
+    // place when one comes or goes (it never runs into the tray: then it shifts left)
     let right_limit = w - margin - (n * (bw + gap) - gap);
-    let centered = (w - (fixed * (bw + gap) - gap)) / 2;
-    Layout { x0: if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, apps, sys, clock } // clear of the gear
+    let centered = (w - (n * (bw + gap) - gap)) / 2;
+    let x0 = if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)); // clear of the gear
+    Layout { x0: glide_x0(x0), bw, gap, apps, sys, clock }
+}
+
+thread_local! { static X0: Cell<(i32, i32, u64)> = const { Cell::new((i32::MIN, 0, 0)) }; } // the row's glide: from, to, since
+
+/// The row's start on its way to `target` (eased over 220 ms); asks for the next frame while it moves.
+fn glide_x0(target: i32) -> i32 {
+    let (from, to, t0) = X0.get();
+    let now = unsafe { now_ms() };
+    if from == i32::MIN {
+        X0.set((target, target, now));
+        return target;
+    }
+    let t = (now.saturating_sub(t0) as f32 / 220.0).min(1.0);
+    let cur = from + ((to - from) as f32 * (1.0 - (1.0 - t).powi(3))).round() as i32;
+    if target != to {
+        X0.set((cur, target, now));
+        BUSY.set(true);
+        return cur;
+    }
+    if cur != to {
+        BUSY.set(true);
+    }
+    cur
 }
 
 unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
