@@ -1,36 +1,19 @@
-//! topbar: settings (split out of main.rs; shares its items through `super::*`).
+﻿//! topbar: settings (split out of main.rs; shares its items through `super::*`).
 use super::*;
 
 /// The gear's menu: a short main page that leads to pages for the theme, the colours, the templates and the bar itself
 /// (the look is saved for the other WinRust programs too). Picking on a page keeps it open, so choices can be tried in a row.
 pub(crate) unsafe fn style_menu() {
-    let items = vec![
-        fly::MItem::head(t!("Внешний вид", "Look", ja: "外観", pt: "Aparência", zh: "外观")),
-        fly::MItem::new(t!("Тема", "Theme", ja: "テーマ", pt: "Tema", zh: "主题")).hint(style_name(style())).swatch(i18n::style::pal().accent),
-        fly::MItem::new(t!("Цвета и прозрачность", "Colors and transparency", ja: "色と透明度", pt: "Cores e transparência", zh: "颜色与透明度")).hint("›"),
-        fly::MItem::new(t!("Шаблоны", "Templates", ja: "テンプレート", pt: "Modelos", zh: "模板")).hint("›"),
-        fly::MItem::new(t!("Язык", "Language", ja: "言語", pt: "Idioma", zh: "语言")).hint(i18n::lang().name()),
-        fly::MItem::head(t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏")).sep(),
-        fly::MItem::new(t!("Положение, размер, поведение", "Position, size, behavior", ja: "位置、サイズ、動作", pt: "Posição, tamanho, comportamento", zh: "位置、大小、行为")).hint("›"),
-        fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows", ja: "ウィンドウを並べて表示", pt: "Lado a lado", zh: "平铺窗口")),
-        fly::MItem::new(t!("Сбросить всё по умолчанию…", "Reset everything to defaults…", ja: "すべて初期設定に戻す…", pt: "Restaurar tudo ao padrão…", zh: "将所有设置恢复默认…")).danger().sep(),
-    ];
-    gear_page("\u{E713}", t!("Настройки панели", "Bar settings", ja: "バーの設定", pt: "Configurações da barra", zh: "任务栏设置"), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs", ja: "バーと WinRust プログラムの外観", pt: "Aparência da barra e dos programas da WinRust", zh: "任务栏与 WinRust 程序的外观"), items, |i| match i {
-        1 => theme_page(),
-        2 => colors_page(),
-        3 => templates_page(),
-        4 => language_page(),
-        6 => bar_page(),
-        7 => tile_windows(),
-        8 => reset_page(),
-        _ => {}
-    });
+    crate::settingswin::open();
 }
 
-/// One page of the gear's menu, opened at the gear.
+/// One page of the gear's menu, opened at the gear of the bar the menu belongs to. A page opened from a panel keeps that
+/// panel's monitor (the bar's one-second timer may have moved `CURRENT` to another bar meanwhile).
 pub(crate) unsafe fn gear_page(glyph: &'static str, title: &str, sub: &str, items: Vec<fly::MItem>, pick: impl FnOnce(usize) + 'static) {
-    let bar = BAR.load(Relaxed) as HWND;
-    fly::menu(tip_cx(&bar_layout(bar), GEAR), Some((null_mut(), glyph, title.to_string(), sub.to_string())), items, pick);
+    let from_panel = fly::open_rect().map(bar_on).filter(|h| !h.is_null());
+    let bar = from_panel.unwrap_or_else(|| cur_bar());
+    CURRENT.set(bar);
+    fly::menu(tip_cx(&bar_layout(bar), 0), Some((null_mut(), glyph, title.to_string(), sub.to_string())), items, pick);
 }
 
 pub(crate) fn back() -> fly::MItem {
@@ -51,30 +34,122 @@ pub(crate) fn style_name(s: i18n::style::Style) -> &'static str {
     }
 }
 
-/// Repaints the bar in the new look; `moved` = its place or size may have changed too.
+/// Repaints the bars in the new look; `moved` = their place or size may have changed too.
 pub(crate) unsafe fn relook(moved: bool) {
-    let bar = BAR.load(Relaxed) as HWND;
-    place(bar);
+    let bar = leader_bar();
+    place_all();
     if moved {
         bar_anim(bar);
     }
-    apply_opacity(bar);
-    InvalidateRect(bar, null(), 0);
+    invalidate_bars(); // place() already did, but keep a style change visible even if a place was a no-op
 }
 
 /// The language of every WinRust program (written to lang.txt; the others pick it up when they start).
 pub(crate) unsafe fn language_page() {
     use i18n::Lang::*;
     let mut items = vec![back()];
-    for (k, l) in [En, Ru, Ja, Pt, Zh].into_iter().enumerate() {
+    for (k, l) in [En, Ru, Ja, Pt, Zh, Es].into_iter().enumerate() {
         let it = fly::MItem::new(l.name()).on(l == i18n::lang());
         items.push(if k == 0 { it.sep() } else { it });
     }
     gear_page("\u{E774}", t!("Язык", "Language", ja: "言語", pt: "Idioma", zh: "语言"), t!("Язык всех программ WinRust", "The language of every WinRust program", ja: "すべての WinRust プログラムの言語", pt: "O idioma de todos os programas da WinRust", zh: "所有 WinRust 程序的语言"), items, move |i| {
-        let Some(&l) = i.checked_sub(1).and_then(|k| [En, Ru, Ja, Pt, Zh].get(k)) else { return style_menu() };
+        let Some(&l) = i.checked_sub(1).and_then(|k| [En, Ru, Ja, Pt, Zh, Es].get(k)) else { return style_menu() };
         i18n::set_lang(l);
-        InvalidateRect(BAR.load(Relaxed) as HWND, null(), 0);
+        invalidate_bars();
         language_page();
+    });
+}
+
+#[derive(Clone, Copy)]
+enum BlurOp {
+    BarToggle,
+    BarR(i32),
+    MenuToggle,
+    MenuA(u8),
+    MenuR(i32),
+}
+
+/// The frost editor: the blur behind the bar and behind the context menu, and how solid the menu looks.
+pub(crate) unsafe fn blur_page() {
+    use winrust_common::look as lk;
+    let mut items = vec![back()];
+    let mut ops: Vec<Option<BlurOp>> = vec![None];
+    items.push(fly::MItem::head(t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏")).sep());
+    ops.push(None);
+    items.push(fly::MItem::new(t!("Размытие за панелью", "Blur behind the bar", ja: "バーの後ろをぼかす", pt: "Desfoque atrás da barra", zh: "任务栏后模糊")).on(lk::bar_blur()));
+    ops.push(Some(BlurOp::BarToggle));
+    items.push(fly::MItem::new(t!("Слабое", "Soft", ja: "弱い", pt: "Suave", zh: "弱")).hint("4 px").on(lk::bar_radius() == 4));
+    ops.push(Some(BlurOp::BarR(4)));
+    items.push(fly::MItem::new(t!("Среднее", "Medium", ja: "中", pt: "Médio", zh: "中")).hint("8 px").on(lk::bar_radius() == 8));
+    ops.push(Some(BlurOp::BarR(8)));
+    items.push(fly::MItem::new(t!("Сильное", "Strong", ja: "強い", pt: "Forte", zh: "强")).hint("14 px").on(lk::bar_radius() == 14));
+    ops.push(Some(BlurOp::BarR(14)));
+    items.push(fly::MItem::head(t!("Контекстное меню", "Context menu", ja: "コンテキスト メニュー", pt: "Menu de contexto", zh: "上下文菜单")).sep());
+    ops.push(None);
+    items.push(fly::MItem::new(t!("Размытие за меню", "Blur behind the menu", ja: "メニューの後ろをぼかす", pt: "Desfoque atrás do menu", zh: "菜单后模糊")).on(lk::menu_blur()));
+    ops.push(Some(BlurOp::MenuToggle));
+    items.push(fly::MItem::head(t!("Непрозрачность меню", "Menu opacity", ja: "メニューの不透明度", pt: "Opacidade do menu", zh: "菜单不透明度")));
+    ops.push(None);
+    for (a, hint) in [(90u8, "90 %"), (75, "75 %"), (67, "67 %"), (50, "50 %"), (35, "35 %")] {
+        items.push(fly::MItem::new(hint).on(lk::menu_alpha() == a));
+        ops.push(Some(BlurOp::MenuA(a)));
+    }
+    items.push(fly::MItem::head(t!("Сила размытия", "Blur strength", ja: "ぼかしの強さ", pt: "Intensidade do desfoque", zh: "模糊强度")));
+    ops.push(None);
+    for (r, hint) in [(12, "12 px"), (18, "18 px"), (26, "26 px")] {
+        items.push(fly::MItem::new(hint).on(lk::menu_radius() == r));
+        ops.push(Some(BlurOp::MenuR(r)));
+    }
+    gear_page("\u{E7C4}", t!("Размытие и меню", "Blur and menus", ja: "ぼかしとメニュー", pt: "Desfoque e menus", zh: "模糊与菜单"), t!("Мороз за панелью и контекстным меню", "Frost behind the bar and the context menu", ja: "バーとコンテキスト メニューのぼかし", pt: "Desfoque atrás da barra e do menu", zh: "任务栏和上下文菜单后的模糊"), items, move |i| {
+        let bar = cur_bar();
+        if i == 0 {
+            return style_menu();
+        }
+        match ops.get(i).copied().flatten() {
+            Some(BlurOp::BarToggle) => lk::bar_blur_set(!lk::bar_blur()),
+            Some(BlurOp::BarR(r)) => lk::bar_radius_set(r),
+            Some(BlurOp::MenuToggle) => lk::menu_blur_set(!lk::menu_blur()),
+            Some(BlurOp::MenuA(a)) => lk::menu_alpha_set(a),
+            Some(BlurOp::MenuR(r)) => lk::menu_radius_set(r),
+            None => {}
+        }
+        apply_opacity(bar);
+        invalidate_bars();
+        blur_page();
+    });
+}
+
+/// The Start menu: where it opens and which of the three classic looks it wears.
+pub(crate) unsafe fn start_page() {
+    use winrust_common::look as lk;
+    let (left, st) = (lk::start_left(), lk::start_style());
+    let items = vec![
+        back(),
+        fly::MItem::head(t!("Положение", "Position", ja: "位置", pt: "Posição", zh: "位置")).sep(),
+        fly::MItem::new(t!("По центру", "Centered", ja: "中央", pt: "Centralizado", zh: "居中")).on(!left),
+        fly::MItem::new(t!("Слева", "On the left", ja: "左", pt: "À esquerda", zh: "靠左")).on(left),
+        fly::MItem::head(t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式")),
+        fly::MItem::new("Windows 11").on(st == 0),
+        fly::MItem::new("Windows 10").on(st == 1),
+        fly::MItem::new("Windows 7").on(st == 2),
+        fly::MItem::head(t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小")),
+        fly::MItem::new(t!("Мелкий", "Small", ja: "小", pt: "Pequeno", zh: "小")).on(lk::start_scale() == 90),
+        fly::MItem::new(t!("Обычный", "Normal", ja: "標準", pt: "Normal", zh: "标准")).on(lk::start_scale() == 100),
+        fly::MItem::new(t!("Крупный", "Large", ja: "大", pt: "Grande", zh: "大")).on(lk::start_scale() == 115),
+    ];
+    gear_page("\u{E700}", t!("Меню «Пуск»", "Start menu", ja: "スタート メニュー", pt: "Menu Iniciar", zh: "开始菜单"), t!("Где открывается и как выглядит", "Where it opens and how it looks", ja: "開く位置と外観", pt: "Onde abre e como aparece", zh: "打开位置和外观"), items, move |i| {
+        match i {
+            2 => lk::start_left_set(false),
+            3 => lk::start_left_set(true),
+            5 => lk::start_style_set(0),
+            6 => lk::start_style_set(1),
+            7 => lk::start_style_set(2),
+            9 => lk::start_scale_set(0),
+            10 => lk::start_scale_set(1),
+            11 => lk::start_scale_set(2),
+            _ => return style_menu(),
+        }
+        start_page();
     });
 }
 
@@ -109,6 +184,8 @@ pub(crate) unsafe fn bar_page() {
         fly::MItem::new(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏")).on(st::autohide()),
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10")).on(st::align_left()),
         fly::MItem::new(t!("Alt+Tab: только этот монитор", "Alt+Tab: this monitor only", ja: "Alt+Tab: このモニターのみ", pt: "Alt+Tab: somente este monitor", zh: "Alt+Tab：仅限此显示器")).on(st::alttab_per_monitor()),
+        fly::MItem::new(t!("Кнопка поиска", "Search button", ja: "検索ボタン", pt: "Botão de pesquisa", zh: "搜索按钮")).on(winrust_common::look::bar_search()),
+        fly::MItem::new(t!("Кнопка задач", "Task View button", ja: "タスク ビュー ボタン", pt: "Botão de exibição de tarefas", zh: "任务视图按钮")).on(winrust_common::look::bar_taskview()),
     ];
     gear_page("\u{E8A1}", t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏"), t!("Где она, какого размера и как себя ведёт", "Where it sits, its size and behavior", ja: "配置場所、サイズ、動作", pt: "Onde fica, seu tamanho e comportamento", zh: "其位置、大小和行为"), items, move |i| {
         match i {
@@ -117,6 +194,8 @@ pub(crate) unsafe fn bar_page() {
             10 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
             11 => st::set_align_left(!st::align_left()),
             12 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            13 => winrust_common::look::bar_search_set(!winrust_common::look::bar_search()),
+            14 => winrust_common::look::bar_taskview_set(!winrust_common::look::bar_taskview()),
             _ => return style_menu(),
         }
         relook(i != 12);
@@ -126,7 +205,10 @@ pub(crate) unsafe fn bar_page() {
 
 /// Bar transparency from the colours page (the window is layered; 100 % = opaque).
 pub(crate) unsafe fn apply_opacity(hwnd: HWND) {
-    SetLayeredWindowAttributes(hwnd, 0, (255 * i18n::style::bar_opacity() as u32 / 100) as u8, LWA_ALPHA);
+    // With the blur on, the transparency lives in the tinted background instead of the whole window: that keeps the
+    // icons and the text crisp instead of washing them out.
+    let a = if crate::blur::on() { 255 } else { (255 * i18n::style::bar_opacity() as u32 / 100) as u8 };
+    SetLayeredWindowAttributes(hwnd, 0, a, LWA_ALPHA);
 }
 
 /// The user's own look: every colour of the bar and the WinRust windows, and the bar's transparency. Each colour opens
@@ -153,7 +235,7 @@ pub(crate) unsafe fn colors_page() {
     items.push(fly::MItem::new(t!("Вернуть цвета темы", "Back to the theme's colors", ja: "テーマの色に戻す", pt: "Voltar às cores do tema", zh: "恢复主题颜色")).danger().sep());
     let (c0, o0) = (2, 3 + colors.len()); // first colour row, first opacity row
     gear_page("\u{E790}", t!("Цвета и прозрачность", "Colors and transparency", ja: "色と透明度", pt: "Cores e transparência", zh: "颜色与透明度"), t!("Поверх выбранной темы", "On top of the chosen theme", ja: "選択したテーマの上に適用", pt: "Sobre o tema escolhido", zh: "在所选主题之上"), items, move |i| {
-        let bar = BAR.load(Relaxed) as HWND;
+        let bar = cur_bar();
         if i == 0 {
             return style_menu();
         } else if (c0..c0 + colors.len()).contains(&i) {
@@ -174,7 +256,7 @@ pub(crate) unsafe fn colors_page() {
             i18n::style::reset_custom();
         }
         apply_opacity(bar);
-        InvalidateRect(bar, null(), 0);
+        invalidate_bars();
         colors_page();
     });
 }

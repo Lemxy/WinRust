@@ -37,6 +37,8 @@ members = [
     "plugins/topbar",
     "plugins/rtaskmgr-win32",
     "plugins/rs-du",
+    "plugins/rs-notify",
+    "plugins/rs-notify-bridge",
     "plugins/rust-explorer",
     "plugins/rs-shell",
     "plugins/wiztree",
@@ -44,6 +46,7 @@ members = [
     "plugins/debloat",
     "plugins/purge",
     "plugins/rust-settings",
+    "plugins/rust-control",
     "tools/winrust-sign",
 ]
 # Stay separate projects with their own target\ and Cargo.lock, because they need panic = "unwind" (the profile below is

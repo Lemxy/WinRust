@@ -1,6 +1,18 @@
+# build output and local state
 target/
-/share
-/ripgrep
-/payload/*.exe
-*.log
-.claude/
+payload/
+tools/state/
+tools/*.zip
+tools/*.log
+*.orig.exe
+*.v1.exe
+*.v2.exe
+es-chunks/
+*.pdb
+*.dSYM/
+
+# editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,4 +1,4 @@
-//! Отрисовка страниц: боковая панель, шапка, таблицы, «Производительность», «Что тормозит», «Параметры».
+﻿//! Отрисовка страниц: боковая панель, шапка, таблицы, «Производительность», «Что тормозит», «Параметры».
 use crate::{app::*, data::*, model::*, ui::*};
 use std::collections::{HashMap, VecDeque};
 use winapi::shared::windef::POINT;
@@ -80,7 +80,7 @@ impl App {
     // ---------------- шапка страницы ----------------
     pub fn draw_band(&self, g: &G, ui: &Ui, d: &Data, lay: &Lay) {
         let th = g.th;
-        g.fill(lay.band, th.bg);
+        g.fill(lay.band, th.bg); // opaque: the frost stays in the empty space, not behind the text
         g.text(lay.title, page_title(ui.page), Font::Title, th.text);
         if ui.page_has_search() {
             g.round(lay.search, g.px(5.0), Some(th.panel), Some(th.border));
@@ -171,7 +171,7 @@ impl App {
             let selected = ui.sel.as_deref() == Some(row.key.as_str());
             let hovered = matches!(ui.hit, Hit::Row(j) | Hit::Chevron(j) if j == i);
             let base = if selected { th.sel } else if hovered { th.hover } else { th.bg };
-            g.fill(R::new(area.l, y, xs[cols.len()].min(area.r), y + row_h), base);
+            g.fill(R::new(area.l, y, xs[cols.len()].min(area.r), y + row_h), base); // opaque: a soft fill here let the frost show between rows
             for (ci, c) in cols.iter().enumerate() {
                 let cell = R::new(xs[ci], y, xs[ci + 1], y + row_h);
                 let mut tc = th.text;
@@ -298,7 +298,7 @@ impl App {
         let th = g.th;
         let items = perf_items(d);
         let sel_idx = items.iter().position(|i| i.kind == ui.perf_sel).unwrap_or(0);
-        g.fill(lay.perf_list, th.bg);
+        g.fill(lay.perf_list, th.bg); // opaque: the list must not show the frost between the devices
         for (i, r) in lay.perf_items.iter().enumerate() {
             let it = &items[i];
             let sel = sel_idx == i;

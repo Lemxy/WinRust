@@ -1,4 +1,4 @@
-//! The window: drawing (GDI+ shapes, GDI text), layout, dialogs and the message loop handler.
+﻿//! The window: drawing (GDI+ shapes, GDI text), layout, dialogs and the message loop handler.
 use crate::*;
 
 // ---------- drawing ----------
@@ -1028,7 +1028,7 @@ thread_local! { static LANG_HOVER: Cell<usize> = const { Cell::new(usize::MAX) }
 thread_local! { static LANG_ANIM: Cell<Option<(std::time::Instant, i32, i32)>> = const { Cell::new(None) }; } // opened at, final x, y
 const LANG_ANIM_MS: f32 = 160.0;
 pub(crate) const WM_LANG_DONE: u32 = WM_APP + 9; // a language was picked in the list: say that a restart is needed
-const LANGS: [i18n::Lang; 5] = [i18n::Lang::En, i18n::Lang::Ru, i18n::Lang::Ja, i18n::Lang::Pt, i18n::Lang::Zh];
+const LANGS: [i18n::Lang; 6] = [i18n::Lang::En, i18n::Lang::Ru, i18n::Lang::Ja, i18n::Lang::Pt, i18n::Lang::Zh, i18n::Lang::Es];
 
 unsafe fn lang_scale() -> f32 {
     let dc = GetDC(null_mut());

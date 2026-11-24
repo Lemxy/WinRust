@@ -1,10 +1,10 @@
-﻿//! The look of the file manager window, in the same palette as topbar: the top part (tabs, back / forward / up / reload,
+//! The look of the file manager window, in the same palette as topbar: the top part (tabs, back / forward / up / reload,
 //! address pill) and the status line are painted by hand (double buffered, eased hover, click flash); the file list is the
 //! native list themed dark with taller rows. Everything is scaled by the system DPI.
 #![allow(unsafe_op_in_unsafe_fn)]
 use super::*;
 use std::{cell::Cell, collections::HashMap, path::Path};
-use windows_sys::Win32::{Graphics::{Dwm::DwmSetWindowAttribute, Gdi::*}, System::{LibraryLoader::{GetProcAddress, LoadLibraryW}, SystemInformation::GetTickCount64}, UI::Input::KeyboardAndMouse::{GetFocus, TRACKMOUSEEVENT, TME_LEAVE, TrackMouseEvent}};
+use windows_sys::Win32::{Graphics::{Dwm::DwmSetWindowAttribute, Gdi::*}, System::{LibraryLoader::{GetProcAddress, LoadLibraryW}, SystemInformation::GetTickCount64}, UI::Input::KeyboardAndMouse::{GetFocus, ReleaseCapture, SetCapture, TRACKMOUSEEVENT, TME_LEAVE, TrackMouseEvent}};
 
 // The colours come from the WinRust style the topbar gear picks (normal, terminal, dock, tiling): the same palette as the bar.
 pub use winrust_common::style::{pal, ui_face};
@@ -17,6 +17,7 @@ pub fn off() -> u32 { mix(pal().dim, pal().bg, 0.45) }
 pub const CHROME_H: i32 = 88;
 pub const STATUS_H: i32 = 26;
 pub const WM_UI: u32 = WM_APP + 4; // chrome -> window: wp = action (see Hit), lp = tab index
+pub const WM_NET: u32 = WM_APP + 8; // network worker -> window: lp = Box<Vec<(title, UNC)>>
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported under the enabled features
 
 // what the pointer is over / what a click does
@@ -33,6 +34,9 @@ const CMD_GLYPHS: [&str; 5] = ["\u{E8C6}", "\u{E8C8}", "\u{E77F}", "\u{E8AC}", "
 const TAB: i32 = 100; // + index
 const CLOSE: i32 = 200; // + index
 const CRUMB: i32 = 400; // + index: a part of the path in the address pill
+const MINI: i32 = 300; // the window buttons at the right end of the title row
+const MAXI: i32 = 301;
+const SHUT: i32 = 302;
 
 thread_local! {
     static CRUMBS: RefCell<Vec<(RECT, PathBuf)>> = const { RefCell::new(Vec::new()) }; // where each path part was painted
@@ -83,7 +87,7 @@ fn now() -> u64 { unsafe { GetTickCount64() } }
 
 fn ease(t: f32) -> f32 { t * t * (3.0 - 2.0 * t) }
 
-fn mix(a: u32, b: u32, t: f32) -> u32 {
+pub(crate) fn mix(a: u32, b: u32, t: f32) -> u32 {
     let ch = |s: u32| {
         let (x, y) = (((a >> s) & 255) as f32, ((b >> s) & 255) as f32);
         (x + (y - x) * t) as u32
@@ -194,6 +198,84 @@ pub fn row_height(list: HWND, on: bool) {
 thread_local! {
     static ROWHOT: Cell<isize> = const { Cell::new(-1) }; // list row under the pointer
     static FONTS: Cell<(isize, isize)> = const { Cell::new((0, 0)) }; // (name, details) fonts of the list rows
+    static GRID_FONTS: Cell<(isize, isize)> = const { Cell::new((0, 0)) }; // (name, second line) fonts of the icon grid
+}
+
+/// Cell of the icon grid: in This PC it has to fit the drive's second line (letter tag + free / total space).
+pub fn grid_spacing(list: HWND, pc: bool) {
+    let (cx, cy) = if pc { (184, 114) } else { (THUMB + 26, THUMB + 34) };
+    unsafe { SendMessageW(list, LVM_SETICONSPACING, 0, ((sc(cy) as isize) << 16) | sc(cx) as isize); }
+}
+
+/// Width a string takes with font `f` in `dc`.
+unsafe fn text_w(dc: HDC, f: HFONT, s: &str) -> i32 {
+    let old = SelectObject(dc, f);
+    let ws: Vec<u16> = s.encode_utf16().collect();
+    let mut sz: SIZE = std::mem::zeroed();
+    GetTextExtentPoint32W(dc, ws.as_ptr(), ws.len() as i32, &mut sz);
+    SelectObject(dc, old);
+    sz.cx
+}
+
+/// "Datos (I:)" -> ("Datos", Some("I:")): a drive's letter is drawn as a small tag of its own.
+fn split_letter(title: &str) -> (&str, Option<&str>) {
+    if let Some(i) = title.rfind(" (") {
+        let tail = &title[i + 2..];
+        if tail.len() == 3 && tail.ends_with(":)") && tail.as_bytes()[0].is_ascii_uppercase() {
+            return (&title[..i], Some(&tail[..2]));
+        }
+    }
+    (title, None)
+}
+
+/// One cell of the This PC icon grid: the drive icon, the volume name, and a second line with the drive letter as a
+/// small tag plus the free / total space (the control's one-line label has no room for it). false = not a local drive,
+/// so the control draws its own cell.
+unsafe fn drive_cell(cd: &NMLVCUSTOMDRAW) -> bool {
+    let (list, dc, i) = (cd.nmcd.hdr.hwndFrom, cd.nmcd.hdc, cd.nmcd.dwItemSpec);
+    let Some((name, cap, path)) = ST.with(|c| {
+        let st = c.try_borrow().ok()?;
+        let r = st.rows.get(i)?;
+        Some((r.name.clone(), r.cap?, r.path.clone()?))
+    }) else { return false };
+    let mut rb = RECT { left: LVIR_BOUNDS as i32, ..std::mem::zeroed() };
+    if SendMessageW(list, LVM_GETITEMRECT, i, &mut rb as *mut _ as isize) == 0 { return false; }
+    let sel = SendMessageW(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
+    let hot = ROWHOT.get() == i as isize;
+    let focus = GetFocus() == list;
+    if sel || hot {
+        let bg = match (sel, focus) {
+            (true, true) => mix(listbg(), pal().accent, if hot { 0.26 } else { 0.20 }),
+            (true, false) => mix(listbg(), pal().text, 0.10),
+            _ => mix(listbg(), pal().text, 0.055),
+        };
+        fill(dc, rc(rb.left + sc(2), rb.top + sc(2), rb.right - sc(2), rb.bottom - sc(2)), bg, sc(10));
+    }
+    SetBkMode(dc, TRANSPARENT as i32);
+    // the name is "label (X:)": the volume label stays and the letter becomes a tag of its own
+    let (shown, tag) = split_letter(&name);
+    let tag = tag.unwrap_or("?");
+    let px = THUMB; // the grid's own size: the list's 48 px images
+    let (ix, iy) = ((rb.left + rb.right - px) / 2, rb.top + sc(4));
+    let ic = winrust_common::icon::best(&path, px);
+    if !ic.is_null() { winrust_common::icon::draw(dc, ic, ix, iy, px); }
+    if GRID_FONTS.get().0 == 0 { GRID_FONTS.set((font(12, 400, ui_face()), font(10, 400, ui_face()))); }
+    let (f_name, f_det) = GRID_FONTS.get();
+    let of = SelectObject(dc, f_name as HFONT);
+    text(dc, shown, rc(rb.left + sc(4), iy + px + sc(3), rb.right - sc(4), iy + px + sc(21)), pal().text, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dc, f_det as HFONT);
+    let gb = |b: u64| b as f64 / 1_073_741_824.0;
+    let info = tf!("{:.0} ГБ свободно из {:.0} ГБ", "{:.0} GB free of {:.0} GB", ja: "{:.0} GB 空き / {:.0} GB", pt: "{:.0} GB livres de {:.0} GB", zh: "{:.0} GB 可用，共 {:.0} GB", gb(cap.0), gb(cap.1));
+    let (bw, iw) = (text_w(dc, f_det as HFONT, tag) + sc(9), text_w(dc, f_det as HFONT, &info));
+    let gap = sc(6);
+    let x0 = (rb.left + rb.right) / 2 - (bw + gap + iw) / 2;
+    let y = iy + px + sc(23);
+    let bh = sc(15);
+    fill(dc, rc(x0, y, x0 + bw, y + bh), mix(listbg(), pal().accent, 0.30), sc(3));
+    text(dc, &tag, rc(x0, y, x0 + bw, y + bh), pal().text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    text(dc, &info, rc(x0 + bw + gap, y, x0 + bw + gap + iw, y + bh), pal().dim, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(dc, of);
+    true
 }
 
 /// "Today, 09:48" / "Yesterday, 21:50" for recent files, the plain date otherwise.
@@ -221,6 +303,7 @@ fn items_text(k: usize) -> String {
         Lang::Ja => format!("{k} 個の項目"),
         Lang::Pt => format!("{k} ite{}", if k == 1 { "m" } else { "ns" }),
         Lang::Zh => format!("{k} 个项目"),
+        Lang::Es => format!("{k} elemento{}", if k == 1 { "" } else { "s" }),
         Lang::En => format!("{k} item{}", if k == 1 { "" } else { "s" }),
     }
 }
@@ -230,7 +313,17 @@ fn items_text(k: usize) -> String {
 pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
     let cd = &*(lp as *const NMLVCUSTOMDRAW);
     let list = cd.nmcd.hdr.hwndFrom;
-    if ST.with(|c| c.try_borrow().map_or(true, |s| s.thumbs)) { return CDRF_DODEFAULT as isize; }
+    let (thumbs, pc) = ST.with(|c| c.try_borrow().map_or((false, false), |s| (s.thumbs, is_this_pc(&s.dir))));
+    if thumbs {
+        // the icon grid: the control paints the cells, except in This PC, where a drive needs the second line
+        // (letter tag + free / total space) that its one-line label cannot show
+        if !pc { return CDRF_DODEFAULT as isize; }
+        return match cd.nmcd.dwDrawStage {
+            CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as isize,
+            CDDS_ITEMPREPAINT => if drive_cell(cd) { CDRF_SKIPDEFAULT as isize } else { CDRF_DODEFAULT as isize },
+            _ => CDRF_DODEFAULT as isize,
+        };
+    }
     let dc = cd.nmcd.hdc;
     let mut cr: RECT = std::mem::zeroed();
     GetClientRect(list, &mut cr);
@@ -245,7 +338,9 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
                 let of = SelectObject(dc, f_big);
                 text(dc, "\u{E8B7}", rc(0, mid - sc(40), cr.right, mid + sc(10)), mix(listbg(), pal().dim, 0.5), DT_CENTER);
                 SelectObject(dc, f_txt);
-                let msg = if SEARCHING.with_borrow(|s| s.is_some()) { t!("Ничего не найдено", "Nothing found", ja: "何も見つかりません", pt: "Nada encontrado", zh: "未找到任何内容") } else { t!("Эта папка пуста", "This folder is empty", ja: "このフォルダーは空です", pt: "Esta pasta está vazia", zh: "此文件夹为空") };
+                let msg = if SEARCHING.with_borrow(|s| s.is_some()) { t!("Ничего не найдено", "Nothing found", ja: "何も見つかりません", pt: "Nada encontrado", zh: "未找到任何内容") }
+                    else if ST.with(|c| c.try_borrow().map_or(false, |s| is_trash(&s.dir))) { t!("Корзина пуста", "Recycle Bin is empty", ja: "ごみ箱は空です", pt: "A Lixeira está vazia", zh: "回收站为空") }
+                    else { t!("Эта папка пуста", "This folder is empty", ja: "このフォルダーは空です", pt: "Esta pasta está vazia", zh: "此文件夹为空") };
                 text(dc, msg, rc(0, mid + sc(14), cr.right, mid + sc(40)), pal().dim, DT_CENTER);
                 SelectObject(dc, of);
                 DeleteObject(f_big);
@@ -259,10 +354,12 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
                 let mut st = c.try_borrow_mut().ok()?;
                 let State { dir, rows, .. } = &mut *st;
                 let r = rows.get_mut(i)?;
-                if r.icon < 0 && !r.hdr { r.icon = icon_of(&dir.join(&r.name), r.dir); }
-                Some((r.name.clone(), r.dir, r.time, r.size, r.icon, r.hdr))
+                if r.icon < 0 && !r.hdr { r.icon = icon_of(&r.full(dir), r.dir); }
+                // a drive row: its kind goes in the Type column and its free / total space in Size
+                let dtype = r.path.as_ref().map(|p| windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(w(&p.to_string_lossy()).as_ptr()));
+                Some((r.name.clone(), r.dir, r.time, r.size, r.icon, r.hdr, r.cap, dtype))
             });
-            let Some((name, is_dir, time, size, icon, hdr)) = row else { return CDRF_DODEFAULT as isize };
+            let Some((name, is_dir, time, size, icon, hdr, cap, dtype)) = row else { return CDRF_DODEFAULT as isize };
             let mut r = RECT { left: LVIR_BOUNDS as i32, ..std::mem::zeroed() };
             SendMessageW(list, LVM_GETITEMRECT, i, &mut r as *mut _ as isize);
             let row_r = rc(0, r.top, cr.right, r.bottom);
@@ -305,14 +402,37 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
             let of = SelectObject(dc, f_name as HFONT);
             let p = Path::new(&name);
             let hit_of_search = p.is_absolute(); // search hits are absolute paths: show the name, and where it lies in the type column
-            let shown = if hit_of_search { p.file_name().map_or(name.clone(), |n| n.to_string_lossy().into_owned()) } else { name.clone() };
-            text(dc, &shown, rc(x[0] + sc(16) + iw + sc(12), r.top, x[1] - sc(8), r.bottom), pal().text, DT_LEFT);
+            let full = if hit_of_search { p.file_name().map_or(name.clone(), |n| n.to_string_lossy().into_owned()) } else { name.clone() };
+            // a drive: "SYSTEM" then its letter as a small tag, instead of "SYSTEM (C:)"
+            let (shown, tag) = split_letter(&full);
+            let nx = x[0] + sc(16) + iw + sc(12);
+            let nw = text_w(dc, f_name as HFONT, shown);
+            text(dc, shown, rc(nx, r.top, (nx + nw).min(x[1] - sc(8)), r.bottom), pal().text, DT_LEFT | DT_SINGLELINE);
+            if let Some(tg) = tag {
+                let bw = text_w(dc, f_det as HFONT, tg) + sc(9);
+                let bh = sc(15);
+                let bx = nx + nw + sc(6);
+                if bx + bw < x[1] - sc(8) {
+                    let by = r.top + (r.bottom - r.top - bh) / 2;
+                    fill(dc, rc(bx, by, bx + bw, by + bh), mix(listbg(), pal().accent, 0.30), sc(3));
+                    text(dc, tg, rc(bx, by, bx + bw, by + bh), pal().text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+            }
             SelectObject(dc, f_det as HFONT);
             let dim = if sel { mix(pal().dim, pal().text, 0.45) } else { pal().dim };
             text(dc, &friendly_date(time), rc(x[1] + sc(10), r.top, x[2] - sc(8), r.bottom), dim, DT_LEFT);
-            let kind = if hit_of_search { p.parent().map_or(String::new(), |d| d.to_string_lossy().into_owned()) } else { type_text(&name, is_dir) };
+            let kind = match dtype {
+                Some(ty) => drive_kind(ty),
+                None if hit_of_search => p.parent().map_or(String::new(), |d| d.to_string_lossy().into_owned()),
+                None => type_text(&name, is_dir),
+            };
             text(dc, &kind, rc(x[2] + sc(10), r.top, x[3] - sc(8), r.bottom), dim, DT_LEFT | DT_PATH_ELLIPSIS);
-            if !is_dir { text(dc, &size_text(size), rc(x[3], r.top, x[3] + cw[3] - sc(14), r.bottom), dim, DT_RIGHT); }
+            let size_s = match cap {
+                Some((free, total)) => tf!("{} свободно из {}", "{} free of {}", ja: "{} 空き / {}", pt: "{} livres de {}", zh: "{} 可用，共 {}", size_text(free), size_text(total)),
+                None if is_dir => String::new(),
+                None => size_text(size),
+            };
+            if !size_s.is_empty() { text(dc, &size_s, rc(x[3], r.top, x[3] + cw[3] - sc(14), r.bottom), dim, DT_RIGHT); }
             SelectObject(dc, of);
             CDRF_SKIPDEFAULT as isize
         }
@@ -402,13 +522,20 @@ unsafe extern "system" fn list_sub(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id:
 
 // ---------- layout and hit testing ----------
 
-struct Layout { tabs: Vec<RECT>, close: Vec<RECT>, plus: RECT, back: RECT, fwd: RECT, up: RECT, reload: RECT, pill: RECT, search: RECT, view: RECT, cmds: Vec<RECT> }
+struct Layout { tabs: Vec<RECT>, close: Vec<RECT>, plus: RECT, mini: RECT, maxi: RECT, shut: RECT, back: RECT, fwd: RECT, up: RECT, reload: RECT, pill: RECT, search: RECT, view: RECT, cmds: Vec<RECT> }
 
 fn rc(l: i32, t: i32, r: i32, b: i32) -> RECT { RECT { left: l, top: t, right: r, bottom: b } }
 
 fn layout(cw: i32, n: usize) -> Layout {
     let (ty0, ty1) = (sc(8), sc(36));
-    let tw = ((cw - sc(12) * 2 - sc(36)) / n.max(1) as i32 - sc(4)).clamp(sc(90), sc(220));
+    // the window buttons take the right end of the title row, like on any window
+    let (bw, bx) = (sc(46), cw - sc(6));
+    let shut = rc(bx - bw, ty0, bx, ty1);
+    let maxi = rc(shut.left - bw, ty0, shut.left, ty1);
+    let mini = rc(maxi.left - bw, ty0, maxi.left, ty1);
+    // the tabs share the rest of the row with the plus button
+    let avail = (mini.left - sc(12) - sc(36)).max(sc(90));
+    let tw = (avail / n.max(1) as i32 - sc(4)).clamp(sc(80), sc(220));
     let tabs: Vec<RECT> = (0..n as i32).map(|i| { let l = sc(12) + i * (tw + sc(4)); rc(l, ty0, l + tw, ty1) }).collect();
     let close = tabs.iter().map(|t| rc(t.right - sc(26), (t.top + t.bottom) / 2 - sc(10), t.right - sc(6), (t.top + t.bottom) / 2 + sc(10))).collect();
     let px = tabs.last().map_or(sc(12), |t| t.right + sc(4));
@@ -421,12 +548,13 @@ fn layout(cw: i32, n: usize) -> Layout {
     // command buttons only while the address pill keeps a usable width
     let cmds: Vec<RECT> = if cw >= sc(900) { (4..9).map(btn).collect() } else { vec![] };
     let pill = rc(cmds.last().unwrap_or(&reload).right + sc(8), by0, search.left - sc(8), by1);
-    Layout { tabs, close, plus, back: btn(0), fwd: btn(1), up: btn(2), reload, pill, search, view, cmds }
+    Layout { tabs, close, plus, mini, maxi, shut, back: btn(0), fwd: btn(1), up: btn(2), reload, pill, search, view, cmds }
 }
 
 fn inside(r: &RECT, x: i32, y: i32) -> bool { x >= r.left && x < r.right && y >= r.top && y < r.bottom }
 
 fn hit(l: &Layout, x: i32, y: i32) -> i32 {
+    for (k, r) in [(MINI, &l.mini), (MAXI, &l.maxi), (SHUT, &l.shut)] { if inside(r, x, y) { return k; } }
     for (i, c) in l.close.iter().enumerate() { if inside(c, x, y) && l.tabs.len() > 1 { return CLOSE + i as i32; } }
     for (i, t) in l.tabs.iter().enumerate() { if inside(t, x, y) { return TAB + i as i32; } }
     for (k, r) in [(BACK, &l.back), (FWD, &l.fwd), (UP, &l.up), (RELOAD, &l.reload), (SEARCH, &l.search), (VIEW, &l.view), (PLUS, &l.plus)] {
@@ -434,6 +562,25 @@ fn hit(l: &Layout, x: i32, y: i32) -> i32 {
     }
     for (i, r) in l.cmds.iter().enumerate() { if inside(r, x, y) { return CMD + i as i32; } }
     NONE
+}
+
+/// The window has no native caption: the empty stretches of the title row (not a tab, not a button) are the caption,
+/// so the window still drags there and double click still maximizes. Client coordinates.
+pub fn caption_at(x: i32, y: i32) -> bool {
+    let Some(h) = ST.with(|c| c.try_borrow().ok().map(|s| s.tab)).filter(|h| !h.is_null()) else { return false };
+    let mut cr: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(h, &mut cr) };
+    if y < 0 || y >= sc(44) { return false; } // the toolbar row and below are not caption
+    let l = layout(cr.right, ST.with(|c| c.try_borrow().map_or(1, |s| s.tabs.len())));
+    !(inside(&l.plus, x, y) || inside(&l.mini, x, y) || inside(&l.maxi, x, y) || inside(&l.shut, x, y)
+        || l.tabs.iter().any(|t| inside(t, x, y)) || l.close.iter().any(|c| inside(c, x, y)))
+}
+
+/// Screen coordinates packed the way the non-client mouse messages carry them.
+fn nc_lparam(h: HWND, x: i32, y: i32) -> isize {
+    let mut p = POINT { x, y };
+    unsafe { ClientToScreen(h, &mut p) };
+    (p.x as u16 as isize) | ((p.y as u16 as isize) << 16)
 }
 
 /// Puts the address box inside the pill.
@@ -463,7 +610,7 @@ pub fn gdiplus_start() {
 }
 
 /// Fills `r` (right / bottom exclusive) in `c`; `rad` > 0 rounds the corners (rad = corner diameter), anti-aliased.
-unsafe fn fill(dc: HDC, r: RECT, c: u32, rad: i32) {
+pub(crate) unsafe fn fill(dc: HDC, r: RECT, c: u32, rad: i32) {
     let rad = if winrust_common::style::style().square() { 0 } else { rad };
     use windows_sys::Win32::Graphics::GdiPlus::*;
     let (wd, ht) = ((r.right - r.left) as f32, (r.bottom - r.top) as f32);
@@ -500,7 +647,7 @@ unsafe fn fill(dc: HDC, r: RECT, c: u32, rad: i32) {
     GdipDeleteGraphics(g);
 }
 
-unsafe fn text(dc: HDC, s: &str, mut r: RECT, c: u32, flags: u32) {
+pub(crate) unsafe fn text(dc: HDC, s: &str, mut r: RECT, c: u32, flags: u32) {
     SetTextColor(dc, c);
     DrawTextW(dc, w(s).as_ptr(), -1, &mut r, flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
 }
@@ -509,6 +656,70 @@ unsafe fn text(dc: HDC, s: &str, mut r: RECT, c: u32, flags: u32) {
 unsafe fn glow(dc: HDC, key: i32, r: RECT, base: u32, to: u32, rad: i32, on: bool) {
     let (t, p) = (hv(key, on), press_t(key));
     if t > 0.01 || p > 0.0 { fill(dc, r, mix(mix(base, to, t), pal().accent, 0.45 * p), rad); }
+}
+
+// ---------- frost (Mica) behind the window's own surfaces ----------
+
+thread_local! {
+    // The blurred wallpaper under each of our windows: (screen rect, pixels, taken at) by HWND. Captured on the first
+    // paint and again only when that rect changes (move, resize, DPI change) - never once per frame.
+    static FROST: RefCell<HashMap<isize, (RECT, Vec<u32>, u64)>> = RefCell::new(HashMap::new());
+}
+
+/// Blur behind the window's own surfaces: the shared look flag the menus read too. Kept in one place so it is the only
+/// line to change when `frost` grows a dedicated switch for windows.
+fn frost_on() -> bool { winrust_common::frost::menu_blur() }
+
+/// Drops the capture kept for `hwnd` (the window is going away).
+fn frost_forget(hwnd: HWND) {
+    FROST.with_borrow_mut(|m| { m.remove(&(hwnd as isize)); });
+}
+
+/// The window moved: the captures were taken where it was, so the chrome and the left pane paint again and re-take
+/// them. Called from the window's WM_MOVE - a plain paint never captures when the screen rect is unchanged.
+pub unsafe fn frost_moved() {
+    if !frost_on() { return; }
+    let chrome = ST.with(|c| c.try_borrow().map_or(ptr::null_mut(), |s| s.tab));
+    for c in [chrome, NAVWND.get() as HWND] {
+        if !c.is_null() { InvalidateRect(c, ptr::null(), 0); }
+    }
+}
+
+/// Paints the background of `hwnd`'s client area `dst` (client coordinates): the blurred desktop under the window
+/// with the theme colour over it, the Mica recipe. Returns false when frost is off or the capture failed, so the
+/// caller can fall back to the plain theme colour exactly as before.
+unsafe fn frost_bg(hwnd: HWND, dc: HDC, dst: RECT) -> bool {
+    let (w, h) = (dst.right - dst.left, dst.bottom - dst.top);
+    if w <= 0 || h <= 0 || !frost_on() { return false; }
+    // the capture is taken from the desktop, so it must know where this window sits on screen
+    let mut at = POINT { x: dst.left, y: dst.top };
+    MapWindowPoints(hwnd, ptr::null_mut(), &mut at, 1);
+    let screen = RECT { left: at.x, top: at.y, right: at.x + w, bottom: at.y + h };
+    let (painted, late) = FROST.with_borrow_mut(|m| {
+        let key = hwnd as isize;
+        let now = now();
+        let mut take = true;
+        let mut late = false;
+        if let Some((r, _, at)) = m.get(&key) {
+            let moved = r.left != screen.left || r.top != screen.top || r.right != screen.right || r.bottom != screen.bottom;
+            let resized = r.right - r.left != w || r.bottom - r.top != h;
+            if !moved {
+                take = false; // same place and size: the pixels we already have are the right ones
+            } else if !resized && now.saturating_sub(*at) < 90 {
+                take = false; // being dragged: one capture per ~90 ms, not one per frame; the timer catches up
+                late = true;
+            }
+        }
+        if take {
+            let px = winrust_common::frost::capture_desktop(screen, winrust_common::frost::radius_for(w, h));
+            m.insert(key, (screen, px, now));
+        }
+        let painted = m.get(&key).is_some_and(|(_, px, _)| winrust_common::frost::paint_capture(dc, px, dst, pal().bg, winrust_common::frost::tint_alpha()));
+        (painted, late)
+    });
+    // a throttled paint shows the previous capture: paint once more when the window has settled
+    if late && painted { SetTimer(hwnd, 5, 100, None); }
+    painted
 }
 
 unsafe fn paint_chrome(hwnd: HWND) {
@@ -522,10 +733,14 @@ unsafe fn paint_chrome(hwnd: HWND) {
     BUSY.set(false);
     let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
     let old = SelectObject(dc, bmp);
-    let bg = CreateSolidBrush(pal().bg);
-    FillRect(dc, &cr, bg);
-    DeleteObject(bg);
-    winrust_common::style::backdrop(dc, cr, sc(100) as f32 / 100.0);
+    // the window background: the blurred desktop behind it (Mica) when that is on, else the plain theme colour
+    if !frost_bg(hwnd, dc, cr) {
+        let bg = CreateSolidBrush(pal().bg);
+        FillRect(dc, &cr, bg);
+        DeleteObject(bg);
+        // the style's own wall (the facets of the White road, the ruby gloss): only when the blur does not hide it
+        winrust_common::style::backdrop(dc, cr, sc(100) as f32 / 100.0);
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let l = layout(cr.right, labels.len());
     let hot = HOT.get();
@@ -551,6 +766,14 @@ unsafe fn paint_chrome(hwnd: HWND) {
     glow(dc, PLUS, l.plus, pal().bg, pal().hover, sc(6), hot == PLUS);
     SelectObject(dc, f_small);
     text(dc, "\u{E710}", l.plus, pal().dim, DT_CENTER);
+
+    // window buttons: minimize, maximize / restore, close (the native caption is not drawn)
+    let zoomed = IsZoomed(GetParent(hwnd)) != 0;
+    for (k, r, g, danger) in [(MINI, l.mini, "\u{E921}", false), (MAXI, l.maxi, if zoomed { "\u{E923}" } else { "\u{E922}" }, false), (SHUT, l.shut, "\u{E8BB}", true)] {
+        let h = hot == k;
+        if h || press_t(k) > 0.0 { glow(dc, k, r, pal().bg, if danger { 0xC42B1C } else { pal().hover }, sc(6), h); }
+        text(dc, g, r, if danger && h { 0x00FF_FFFF } else { pal().text }, DT_CENTER);
+    }
 
     // toolbar buttons
     SelectObject(dc, f_glyph);
@@ -580,6 +803,10 @@ unsafe fn paint_chrome(hwnd: HWND) {
         if let Some(q) = &searching {
             SelectObject(dc, f_txt);
             text(dc, &format!("Results for \u{201C}{q}\u{201D}"), rc(x0 + sc(6), l.pill.top, x1, l.pill.bottom), pal().accent, DT_LEFT);
+        } else if is_this_pc(&dir) || is_trash(&dir) {
+            // a view, not a path: one label, no parts to click
+            SelectObject(dc, f_txt);
+            text(dc, &display_dir(&dir), rc(x0 + sc(6), l.pill.top, x1, l.pill.bottom), pal().text, DT_LEFT);
         } else {
             let parts = crumbs_of(&dir);
             let width = |s: &str| { let mut r = rc(0, 0, 0, 0); DrawTextW(dc, w(s).as_ptr(), -1, &mut r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX); r.right + sc(16) };
@@ -655,7 +882,8 @@ pub unsafe fn paint_status(h: HWND) {
             (s, 0) => format!("{}  \u{00B7}  {}", items_text(n), selected(s)),
             (s, b) => format!("{}  \u{00B7}  {}  \u{00B7}  {}", items_text(n), selected(s), size_text(b)),
         };
-        let left = crate::jobs::status_text().unwrap_or(left); // a copy, packing or unpacking in progress
+        // a message from the last action wins over the counts; then a running copy / packing job
+        let left = notice_text().or_else(crate::jobs::status_text).unwrap_or(left);
         let by = [
             t!("Имя", "Name", ja: "名前", pt: "Nome", zh: "名称"),
             t!("Дата", "Date", ja: "日付", pt: "Data", zh: "日期"),
@@ -693,8 +921,10 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
     match m {
         WM_PAINT => paint_chrome(h),
         WM_ERASEBKGND => return 1,
+        WM_DESTROY => frost_forget(h), // the cached capture goes with the window
         WM_SIZE => { place_edit(h); InvalidateRect(h, ptr::null(), 0); } // the pill and the tabs re-flow: repaint it all
         WM_TIMER if wp == 4 => { InvalidateRect(h, ptr::null(), 0); }
+        WM_TIMER if wp == 5 => { KillTimer(h, 5); InvalidateRect(h, ptr::null(), 0); } // the background was throttled: catch up
         WM_MOUSEMOVE => {
             let k = match hit(&layout_now(), x, y) { NONE => crumb_at(x, y).map_or(NONE, |i| CRUMB + i as i32), k => k };
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
@@ -704,6 +934,14 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
         WM_MOUSELEAVE => {
             HOT.set(NONE);
             InvalidateRect(h, ptr::null(), 0);
+        }
+        WM_MOUSEWHEEL if wheel_to_nav(wp, lp) => {}
+        WM_LBUTTONDBLCLK => {
+            // double click on the empty part of the title row: maximize / restore, like a caption
+            if hit(&layout_now(), x, y) == NONE && caption_at(x, y) {
+                ReleaseCapture();
+                SendMessageW(GetParent(h), WM_NCLBUTTONDBLCLK, HTCAPTION as usize, nc_lparam(h, x, y));
+            }
         }
         WM_LBUTTONDOWN | WM_MBUTTONDOWN => {
             let l = layout_now();
@@ -717,6 +955,11 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
                     let edit = ST.with(|c| c.try_borrow().map_or(ptr::null_mut(), |s| s.edit));
                     SetFocus(edit);
                     SendMessageW(edit, EM_SETSEL, 0, -1);
+                } else if m == WM_LBUTTONDOWN && caption_at(x, y) {
+                    // an empty stretch of the title row: drag the window as the native caption used to
+                    ReleaseCapture();
+                    SendMessageW(GetParent(h), WM_NCLBUTTONDOWN, HTCAPTION as usize, nc_lparam(h, x, y));
+                    return 0;
                 }
                 InvalidateRect(h, ptr::null(), 0);
                 return 0;
@@ -725,6 +968,7 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
             InvalidateRect(h, ptr::null(), 0);
             let (act, idx) = match k {
                 k if (CMD..CMD + 5).contains(&k) => (k as usize - CMD as usize + 10, 0), BACK => (4, 0), FWD => (5, 0), UP => (6, 0), RELOAD => (7, 0), SEARCH => (9, 0), VIEW => (8, 0), PLUS => (3, 0),
+                MINI => (22, 0), MAXI => (23, 0), SHUT => (24, 0),
                 k if k >= CLOSE => (2, (k - CLOSE) as isize),
                 k => (if m == WM_MBUTTONDOWN { 2 } else { 1 }, (k - TAB) as isize), // middle click on a tab closes it
             };
@@ -743,18 +987,6 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
             if BRUSH.get() == 0 { BRUSH.set(CreateSolidBrush(pill()) as isize); }
             return BRUSH.get();
         }
-        WM_RBUTTONUP => {
-            // right click on a pinned folder: unpin it
-            if let Some(p) = nav_hit(y).and_then(nav_path).filter(|p| pins().contains(p)) {
-                let menu = CreatePopupMenu();
-                AppendMenuW(menu, MF_STRING, 1, w(t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定")).as_ptr());
-                let mut pt: POINT = std::mem::zeroed();
-                GetCursorPos(&mut pt);
-                let id = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h, ptr::null());
-                DestroyMenu(menu);
-                if id == 1 { toggle_pin(&p); }
-            }
-        }
         _ => return DefWindowProcW(h, m, wp, lp),
     }
     0
@@ -765,9 +997,16 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
 
 pub const NAV_W: i32 = 232;
 const NAV_ROW: i32 = 34;
-const NAV_HEAD: i32 = 32;
+const NAV_HEAD: i32 = 40; // a section: its label, a hairline under it and 8 px of air
 
-struct NavItem { title: String, path: PathBuf, glyph: &'static str, cap: Option<(u64, u64)> } // empty path = section heading; cap = (free, total) bytes of a drive
+#[derive(Clone)]
+struct NavItem {
+    title: String,
+    path: PathBuf, // empty = a section heading: painted, never clicked
+    glyph: &'static str,
+    cap: Option<(u64, u64)>, // (free, total) bytes of a drive
+    quick: bool, // a Quick access row: draggable, with its own right-click menu
+}
 
 const NAV_DRIVE: i32 = 52; // a drive row also shows how full it is
 
@@ -779,33 +1018,45 @@ thread_local! {
     static NAV: RefCell<Vec<NavItem>> = const { RefCell::new(Vec::new()) };
     static NAVWND: Cell<isize> = const { Cell::new(0) };
     static NAVHOT: Cell<i32> = const { Cell::new(-1) };
+/// How far the pane is scrolled down, in pixels (0 = top). The pane is painted by hand, so the offset is ours.
+static NAV_SCROLL: Cell<i32> = const { Cell::new(0) };
+    static NET: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) }; // (title, UNC) of the Network group
+    static NOTICE: RefCell<Option<String>> = const { RefCell::new(None) }; // one line in the status bar
+    static DRAG: Cell<isize> = const { Cell::new(-1) }; // Quick access row under the mouse button
+    static DRAG_TO: Cell<isize> = const { Cell::new(-1) }; // Quick access row it would land on
+    static DRAG_Y: Cell<i32> = const { Cell::new(0) }; // where the press started
+    static DRAG_ON: Cell<bool> = const { Cell::new(false) }; // the pointer moved enough to be a drag
 }
 
-/// Folders the user pinned to Quick access: %APPDATA%\WinRust\rust-explorer-pins.txt, one path per line.
-fn pins_file() -> Option<PathBuf> { env::var_os("APPDATA").map(|a| PathBuf::from(a).join("WinRust").join("rust-explorer-pins.txt")) }
+static NET_RUNNING: AtomicBool = AtomicBool::new(false);
+static NET_KNOWN: AtomicBool = AtomicBool::new(false);
 
-pub fn pins() -> Vec<PathBuf> {
-    pins_file().and_then(|f| fs::read_to_string(f).ok()).map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect()).unwrap_or_default()
+// ---------- the status line's one-line message ----------
+
+/// Shows `text` in the status line until the next navigation or message.
+pub unsafe fn notice(h: HWND, text: impl Into<String>) {
+    NOTICE.set(Some(text.into()));
+    status_dirty(h);
 }
 
-/// Pins `p` (or unpins it when already pinned) and rebuilds the left pane.
-pub fn toggle_pin(p: &Path) {
-    let mut v = pins();
-    if let Some(i) = v.iter().position(|x| x == p) { v.remove(i); } else { v.push(p.to_path_buf()); }
-    if let Some(f) = pins_file() {
-        if let Some(d) = f.parent() { let _ = fs::create_dir_all(d); }
-        let _ = fs::write(f, v.iter().map(|x| x.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"));
-    }
-    let h = NAVWND.get() as HWND;
-    if !h.is_null() { nav_init(h); nav_dirty(); }
-}
+pub fn clear_notice() { NOTICE.set(None); }
 
-pub fn nav_init(h: HWND) {
-    NAVWND.set(h as isize);
-    let home = PathBuf::from(env::var_os("USERPROFILE").unwrap_or_default());
-    let head = |lbl: &str| NavItem { title: lbl.into(), path: PathBuf::new(), glyph: "", cap: None };
-    let mut v = vec![head(t!("Быстрый доступ", "Quick access", ja: "クイック アクセス", pt: "Acesso rápido", zh: "快速访问")), NavItem { title: t!("Главная", "Home", ja: "ホーム", pt: "Início", zh: "主页").into(), path: home.clone(), glyph: "\u{E80F}", cap: None }];
+fn notice_text() -> Option<String> { NOTICE.with_borrow(|n| n.clone()) }
+
+// ---------- Quick access: the list, its file, and the edits ----------
+
+fn same(a: &Path, b: &Path) -> bool { a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()) }
+
+/// %APPDATA%\WinRust\quick-access.txt: the whole list, one path per line, in the order shown.
+fn quick_file() -> Option<PathBuf> { env::var_os("APPDATA").map(|a| PathBuf::from(a).join("WinRust").join("quick-access.txt")) }
+
+/// Home and Explorer's known folders, with the icons the pane has always used.
+fn known_folders() -> Vec<(String, PathBuf, &'static str)> {
     use windows::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos};
+    let mut v = vec![];
+    if let Some(home) = env::var_os("USERPROFILE").map(PathBuf::from) {
+        v.push((t!("Главная", "Home", ja: "ホーム", pt: "Início", zh: "主页").to_string(), home, "\u{E80F}"));
+    }
     let known = [
         (t!("Рабочий стол", "Desktop", ja: "デスクトップ", pt: "Área de Trabalho", zh: "桌面"), &FOLDERID_Desktop, "\u{E7F4}"),
         (t!("Загрузки", "Downloads", ja: "ダウンロード", pt: "Downloads", zh: "下载"), &FOLDERID_Downloads, "\u{E896}"),
@@ -815,37 +1066,289 @@ pub fn nav_init(h: HWND) {
         (t!("Видео", "Videos", ja: "ビデオ", pt: "Vídeos", zh: "视频"), &FOLDERID_Videos, "\u{E714}"),
     ];
     for (lbl, id, g) in known {
-        let Some(p) = crate::sh::known_dir(id).filter(|p| p.is_dir()) else { continue };
-        v.push(NavItem { title: lbl.into(), path: p, glyph: g, cap: None });
+        if let Some(p) = crate::sh::known_dir(id) { v.push((lbl.to_string(), p, g)); }
     }
-    for p in pins() {
-        if p.is_dir() { v.push(NavItem { title: p.file_name().map_or_else(|| p.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned()), path: p, glyph: "\u{E718}", cap: None }); }
+    v
+}
+
+fn quick_defaults() -> Vec<PathBuf> { known_folders().into_iter().map(|(_, p, _)| p).collect() }
+
+/// The old pin file, read once while quick-access.txt does not exist yet, so nobody loses their pins.
+fn legacy_pins() -> Vec<PathBuf> {
+    env::var_os("APPDATA").map(|a| PathBuf::from(a).join("WinRust").join("rust-explorer-pins.txt"))
+        .and_then(|f| fs::read_to_string(f).ok())
+        .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect())
+        .unwrap_or_default()
+}
+
+/// The file as it is: folders that are gone stay in it (they are only left out of the pane).
+pub fn quick_load() -> Vec<PathBuf> {
+    match quick_file().and_then(|f| fs::read_to_string(f).ok()) {
+        Some(s) => s.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect(),
+        None => {
+            let mut v = quick_defaults();
+            for p in legacy_pins() { if !v.iter().any(|x| same(x, &p)) { v.push(p); } }
+            v
+        }
     }
-    v.push(head(t!("Этот компьютер", "This PC", ja: "PC", pt: "Este Computador", zh: "此电脑")));
+}
+
+/// The rows the pane shows: the list without the folders that are gone.
+pub fn quick_items() -> Vec<PathBuf> { quick_load().into_iter().filter(|p| p.is_dir()).collect() }
+
+pub fn quick_has(p: &Path) -> bool { quick_load().iter().any(|x| same(x, p)) }
+
+/// Rewrites the whole file: one path per line, no duplicates (compared without case).
+fn quick_save(v: &[PathBuf]) {
+    let Some(f) = quick_file() else { return };
+    let mut out: Vec<PathBuf> = vec![];
+    for p in v { if !out.iter().any(|x| same(x, p)) { out.push(p.clone()); } }
+    if let Some(d) = f.parent() { let _ = fs::create_dir_all(d); }
+    let _ = fs::write(f, out.iter().map(|x| x.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"));
+}
+
+/// The list changed: the pane is built again.
+fn quick_changed() { nav_refresh(NAVWND.get() as HWND); }
+
+/// Adds `p` at the end (when it is already there, nothing happens).
+pub fn quick_pin(p: &Path) {
+    let mut v = quick_load();
+    if v.iter().any(|x| same(x, p)) { return; }
+    v.push(p.to_path_buf());
+    quick_save(&v);
+    quick_changed();
+}
+
+/// Takes `p` out of the list; the folder itself is untouched.
+pub fn quick_unpin(p: &Path) {
+    let mut v = quick_load();
+    let before = v.len();
+    v.retain(|x| !same(x, p));
+    if v.len() != before { quick_save(&v); quick_changed(); }
+}
+
+/// Moves `p` one visible place up or down. False at the ends (the menu shows the item dimmed there).
+pub fn quick_move(p: &Path, up: bool) -> bool {
+    let mut v = quick_load();
+    let Some(i) = v.iter().position(|x| same(x, p)) else { return false };
+    // the neighbour has to be a folder that is actually shown, or the move would have no visible effect
+    let mut j = i as isize + if up { -1 } else { 1 };
+    while j >= 0 && (j as usize) < v.len() {
+        if v[j as usize].is_dir() {
+            v.swap(i, j as usize);
+            quick_save(&v);
+            quick_changed();
+            return true;
+        }
+        j += if up { -1 } else { 1 };
+    }
+    false
+}
+
+/// Drag and drop: `from` takes the place of `to` in the list.
+pub fn quick_reorder(from: &Path, to: &Path) -> bool {
+    let mut v = quick_load();
+    let (Some(i), Some(j)) = (v.iter().position(|x| same(x, from)), v.iter().position(|x| same(x, to))) else { return false };
+    if i == j { return false; }
+    let p = v.remove(i);
+    v.insert(j, p);
+    quick_save(&v);
+    quick_changed();
+    true
+}
+
+// ---------- Network: WNetOpenEnum / WNetEnumResource out of mpr.dll ----------
+
+/// Every computer and share the network neighbourhood reports, as (title, UNC). Runs on a worker thread only: a host
+/// that went away can hold an enumeration for a while, and the window must not wait for it. `mpr.dll` is loaded by hand
+/// because windows-sys is only built with the features the crate already uses.
+fn net_enum() -> Vec<(String, String)> {
+    #[repr(C)]
+    struct NetResource {
+        scope: u32,
+        kind: u32,
+        display: u32,
+        usage: u32,
+        local: *const u16,
+        remote: *const u16,
+        comment: *const u16,
+        provider: *const u16,
+    }
+    type Open = unsafe extern "system" fn(u32, u32, u32, *const NetResource, *mut isize) -> u32;
+    type Next = unsafe extern "system" fn(isize, *mut u32, *mut core::ffi::c_void, *mut u32) -> u32;
+    type Close = unsafe extern "system" fn(isize) -> u32;
+    const GLOBALNET: u32 = 2; // RESOURCE_GLOBALNET
+    const CONTAINER: u32 = 2; // RESOURCEUSAGE_CONTAINER
+    const CONNECTABLE: u32 = 1; // RESOURCEUSAGE_CONNECTABLE
+    const MORE_DATA: u32 = 234; // ERROR_MORE_DATA
+    const MAX: usize = 200;
+
+    /// One level of the neighbourhood: containers (computers) are listed and opened, shares are listed.
+    unsafe fn walk(open: Open, next: Next, close: Close, parent: *const NetResource, depth: u32, t0: std::time::Instant, out: &mut Vec<(String, String)>) {
+        if out.len() >= MAX || t0.elapsed().as_secs() > 4 { return; }
+        let mut h: isize = 0;
+        if open(GLOBALNET, 0, 0, parent, &mut h) != 0 || h == 0 { return; }
+        // 64-bit words so the NETRESOURCE array the API writes is aligned; the strings it points to live in the same buffer
+        let mut words = vec![0u64; 2 * 1024];
+        let buf = words.as_mut_ptr() as *mut u8;
+        loop {
+            let mut count: u32 = u32::MAX; // as many as fit
+            let mut size = (words.len() * 8) as u32;
+            let r = next(h, &mut count, buf as *mut core::ffi::c_void, &mut size);
+            if r != 0 && r != MORE_DATA { break; }
+            let n = count as usize;
+            if n == 0 { break; }
+            let items = core::slice::from_raw_parts(buf as *const NetResource, n);
+            for it in items {
+                if out.len() >= MAX || t0.elapsed().as_secs() > 4 { break; }
+                let remote = if it.remote.is_null() { String::new() } else { wstr(it.remote) };
+                if remote.is_empty() { continue; } // providers ("Microsoft Windows Network") have no name of their own
+                if !out.iter().any(|(_, u)| u.eq_ignore_ascii_case(&remote)) { out.push((remote.clone(), remote.clone())); }
+                if it.usage & CONTAINER != 0 && depth < 2 { walk(open, next, close, it as *const NetResource, depth + 1, t0, out); }
+                else if it.usage & CONNECTABLE == 0 { /* a container at the last level: listed, not opened */ }
+            }
+            if r != MORE_DATA { break; }
+        }
+        close(h);
+    }
+
+    unsafe {
+        let lib = LoadLibraryW(w("mpr.dll").as_ptr());
+        if lib.is_null() { return vec![]; }
+        let (Some(fo), Some(fe), Some(fc)) = (GetProcAddress(lib, b"WNetOpenEnumW\0".as_ptr()), GetProcAddress(lib, b"WNetEnumResourceW\0".as_ptr()), GetProcAddress(lib, b"WNetCloseEnum\0".as_ptr())) else { return vec![] };
+        let (open, next, close) = (
+            std::mem::transmute::<_, Open>(fo),
+            std::mem::transmute::<_, Next>(fe),
+            std::mem::transmute::<_, Close>(fc),
+        );
+        let mut out = vec![];
+        walk(open, next, close, ptr::null(), 0, std::time::Instant::now(), &mut out);
+        out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        out.truncate(MAX);
+        out
+    }
+}
+
+/// Starts the network scan (once per session) unless it already ran or is running.
+pub fn net_scan(nav: HWND) {
+    let main = unsafe { GetParent(nav) };
+    if main.is_null() || NET_RUNNING.load(Relaxed) || NET_KNOWN.load(Relaxed) { return; }
+    NET_RUNNING.store(true, Relaxed);
+    let hwnd = main as isize;
+    std::thread::spawn(move || {
+        let v = net_enum();
+        NET_RUNNING.store(false, Relaxed);
+        NET_KNOWN.store(true, Relaxed);
+        unsafe { PostMessageW(hwnd as HWND, WM_NET, 0, Box::into_raw(Box::new(v)) as isize) };
+    });
+}
+
+/// Takes the worker's list (lp = Box<Vec<(title, UNC)>>) into the pane's cache.
+pub unsafe fn net_take(lp: LPARAM) {
+    let v = *Box::from_raw(lp as *mut Vec<(String, String)>);
+    NET.with_borrow_mut(|n| *n = v);
+}
+
+/// The pane's window (0 before it exists).
+pub fn nav_window() -> HWND { NAVWND.get() as HWND }
+
+/// Asks for a new network scan (F5); the old list stays until the worker brings the new one.
+pub fn net_rescan() { NET_KNOWN.store(false, Relaxed); }
+
+/// Rebuilds the pane from the current lists and starts the first network scan.
+pub fn nav_refresh(h: HWND) {
+    if h.is_null() { return; }
+    nav_init(h);
+    nav_dirty();
+    net_scan(h);
+}
+
+// ---------- building the pane ----------
+
+/// The drives for the left pane: (fixed, removable, mapped network letters), with label, icon and free space.
+fn drive_items() -> (Vec<NavItem>, Vec<NavItem>, Vec<NavItem>) {
     unsafe {
         use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
+        let (mut fixed, mut removable, mut mapped) = (vec![], vec![], vec![]);
         let mask = GetLogicalDrives();
         for i in 0..26u32 {
             if mask & (1 << i) == 0 { continue; }
             let letter = (b'A' + i as u8) as char;
             let root = format!("{letter}:\\");
-            // fixed and removable disks only: asking a dead network share for its label would stall the window
             let ty = GetDriveTypeW(w(&root).as_ptr());
-            if ty == 4 {
-                // a mapped network drive: listed without label and size, they would stall the window while a share is down
-                v.push(NavItem { title: tf!("Сетевой диск ({}:)", "Network Drive ({}:)", ja: "ネットワーク ドライブ ({}:)", pt: "Unidade de rede ({}:)", zh: "网络驱动器（{}:）", letter), path: PathBuf::from(root), glyph: "\u{E8CE}", cap: None });
-                continue;
+            match ty {
+                4 => {
+                    // a mapped network drive: no label or size, a dead share would stall the window
+                    mapped.push(NavItem { title: tf!("Сетевой диск ({}:)", "Network Drive ({}:)", ja: "ネットワーク ドライブ ({}:)", pt: "Unidade de rede ({}:)", zh: "网络驱动器（{}:）", letter), path: PathBuf::from(root), glyph: "\u{E8CE}", cap: None, quick: false });
+                    continue;
+                }
+                2 | 3 => {}
+                _ => continue, // CD-ROM and RAM disks stay out, as before
             }
-            if !matches!(ty, 2 | 3) { continue; }
             let mut label = [0u16; 64];
             let ok = GetVolumeInformationW(w(&root).as_ptr(), label.as_mut_ptr(), 64, ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), 0);
             let name = if ok != 0 { wstr(label.as_ptr()) } else { String::new() };
             let (mut free, mut total) = (0u64, 0u64);
             let cap = (GetDiskFreeSpaceExW(w(&root).as_ptr(), &mut free, &mut total, ptr::null_mut()) != 0 && total > 0).then_some((free, total));
-            let base = if name.is_empty() { t!("Локальный диск", "Local Disk", ja: "ローカル ディスク", pt: "Disco local", zh: "本地磁盘") } else { &name };
-            v.push(NavItem { title: format!("{base} ({letter}:)"), path: PathBuf::from(root), glyph: "\u{EDA2}", cap });
+            let base = if !name.is_empty() {
+                name
+            } else if ty == 2 {
+                t!("Съемный диск", "Removable Disk", ja: "リムーバブル ディスク", pt: "Disco removível", zh: "可移动磁盘").to_string()
+            } else {
+                t!("Локальный диск", "Local Disk", ja: "ローカル ディスク", pt: "Disco local", zh: "本地磁盘").to_string()
+            };
+            let it = NavItem { title: format!("{base} ({letter}:)"), path: PathBuf::from(root), glyph: "\u{EDA2}", cap, quick: false };
+            if ty == 2 { removable.push(it) } else { fixed.push(it) }
         }
+        (fixed, removable, mapped)
     }
+}
+
+pub fn nav_init(h: HWND) {
+    NAVWND.set(h as isize);
+    let head = |lbl: String| NavItem { title: lbl, path: PathBuf::new(), glyph: "", cap: None, quick: false };
+    let mut v: Vec<NavItem> = vec![];
+
+    // Quick access: the ordered list from quick-access.txt (or its defaults), folders that are gone left out
+    let known = known_folders();
+    let quick: Vec<NavItem> = quick_items().into_iter().map(|p| {
+        let (title, glyph) = known.iter().find(|x| same(&x.1, &p)).map(|x| (x.0.clone(), x.2))
+            .unwrap_or_else(|| (p.file_name().map_or_else(|| p.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned()), "\u{E8B7}"));
+        NavItem { title, path: p, glyph, cap: None, quick: true }
+    }).collect();
+    if !quick.is_empty() {
+        v.push(head(t!("Быстрый доступ", "Quick access", ja: "クイック アクセス", pt: "Acesso rápido", zh: "快速访问").to_string()));
+        v.extend(quick);
+    }
+
+    // This PC: the fixed disks (the view itself stays reachable as a row of the group)
+    let (fixed, removable, mapped) = drive_items();
+    let pc = t!("Этот компьютер", "This PC", ja: "PC", pt: "Este Computador", zh: "此电脑").to_string();
+    if !fixed.is_empty() {
+        v.push(head(pc.clone()));
+        v.push(NavItem { title: pc, path: this_pc(), glyph: "\u{E7F8}", cap: None, quick: false });
+        v.extend(fixed);
+    }
+
+    // Removable devices: USB sticks and memory cards, only when there are any
+    if !removable.is_empty() {
+        v.push(head(t!("Съемные устройства", "Removable devices", ja: "リムーバブル デバイス", pt: "Dispositivos removíveis", zh: "可移动设备").to_string()));
+        v.extend(removable);
+    }
+
+    // Network: the mapped drive letters and what the neighbourhood reported (worker thread, cache)
+    let mut net = mapped;
+    net.extend(NET.with_borrow(|n| n.iter().map(|(title, unc)| NavItem { title: title.clone(), path: PathBuf::from(unc.as_str()), glyph: "\u{E8CE}", cap: None, quick: false }).collect::<Vec<_>>()));
+    if !net.is_empty() {
+        v.push(head(t!("Сеть", "Network", ja: "ネットワーク", pt: "Rede", zh: "网络").to_string()));
+        v.extend(net);
+    }
+
+    // Recycle Bin: always there, one entry
+    let bin = t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira", zh: "回收站").to_string();
+    v.push(head(bin.clone()));
+    v.push(NavItem { title: bin, path: trash_dir(), glyph: "\u{E74D}", cap: None, quick: false });
+
     NAV.with_borrow_mut(|n| *n = v);
 }
 
@@ -874,6 +1377,7 @@ pub unsafe fn layout_children(cw: i32, ch: i32) {
 /// Item under y (None over headings or empty space).
 fn nav_hit(y: i32) -> Option<usize> {
     let mut top = sc(8);
+    let y = y + NAV_SCROLL.get(); // the pointer is in window space, the rows in content space
     NAV.with_borrow(|n| {
         for (i, it) in n.iter().enumerate() {
             let hgt = nav_h(it);
@@ -884,18 +1388,37 @@ fn nav_hit(y: i32) -> Option<usize> {
     })
 }
 
+/// Height the pane would need to show everything.
+fn nav_content_h() -> i32 {
+    NAV.with_borrow(|n| sc(16) + n.iter().map(nav_h).sum::<i32>())
+}
+
+/// Keeps the offset inside the pane (nothing to scroll: back to the top) and returns it.
+fn nav_clamp(h: HWND) -> i32 {
+    let mut cr: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(h, &mut cr) };
+    let max = (nav_content_h() - cr.bottom).max(0);
+    let v = NAV_SCROLL.get().clamp(0, max);
+    NAV_SCROLL.set(v);
+    v
+}
+
 unsafe fn paint_nav(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let wdc = BeginPaint(hwnd, &mut ps);
     let mut cr: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut cr);
+    let scroll = nav_clamp(hwnd); // a resized window or a shorter list may leave the offset out of range
     BUSY.set(false);
     let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right.max(1), cr.bottom.max(1)));
     let old = SelectObject(dc, bmp);
-    let bg = CreateSolidBrush(pal().bg);
-    FillRect(dc, &cr, bg);
-    DeleteObject(bg);
-    winrust_common::style::backdrop(dc, cr, sc(100) as f32 / 100.0);
+    // same Mica background as the chrome: blurred wallpaper + tint, or the flat theme colour without frost
+    if !frost_bg(hwnd, dc, cr) {
+        let bg = CreateSolidBrush(pal().bg);
+        FillRect(dc, &cr, bg);
+        DeleteObject(bg);
+        winrust_common::style::backdrop(dc, cr, sc(100) as f32 / 100.0);
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let (f_txt, f_head, f_glyph, f_small) = (font(13, 400, ui_face()) as HFONT, font(12, 600, ui_face()) as HFONT, font(16, 400, winrust_common::style::icon_face()) as HFONT, font(11, 400, ui_face()) as HFONT);
     let of = SelectObject(dc, f_txt);
@@ -904,11 +1427,15 @@ unsafe fn paint_nav(hwnd: HWND) {
     let hot = NAVHOT.get();
     NAV.with_borrow(|n| {
         let here = n.iter().enumerate().filter(|(_, it)| !it.path.as_os_str().is_empty() && cur.starts_with(&it.path.to_string_lossy().to_lowercase())).max_by_key(|(_, it)| it.path.as_os_str().len()).map(|(i, _)| i);
-        let mut y = sc(8);
+        let (dragging, drop_at) = (DRAG.get(), DRAG_TO.get());
+        let on = DRAG_ON.get();
+        let mut y = sc(8) - scroll;
         for (i, it) in n.iter().enumerate() {
             if it.path.as_os_str().is_empty() {
+                // a section: label, a hairline under it, then 8 px of air (the height of NAV_HEAD)
                 SelectObject(dc, f_head);
-                text(dc, &it.title.to_uppercase(), rc(sc(18), y + sc(6), cr.right - sc(8), y + sc(NAV_HEAD)), pal().dim, DT_LEFT);
+                text(dc, &it.title.to_uppercase(), rc(sc(18), y + sc(8), cr.right - sc(8), y + sc(26)), pal().dim, DT_LEFT);
+                fill(dc, rc(sc(16), y + sc(31), cr.right - sc(16), y + sc(32)), pal().line, 0);
                 y += sc(NAV_HEAD);
                 continue;
             }
@@ -918,11 +1445,31 @@ unsafe fn paint_nav(hwnd: HWND) {
             let p = press_t(5000 + i as i32);
             if th.max(ta) > 0.01 || p > 0.0 { fill(dc, r, mix(mix(mix(pal().bg, pal().hover, th), pal().active, ta), pal().accent, 0.3 * p), sc(10)); }
             if ta > 0.01 { fill(dc, rc(r.left, y + sc(10), r.left + sc(3), y + hgt - sc(10)), mix(pal().active, pal().accent, ta), sc(3)); }
+            if on && drop_at == i as isize { fill(dc, rc(r.left + sc(8), y - sc(1), r.right - sc(8), y + sc(2)), pal().accent, sc(2)); } // where a dragged row lands
             let line = rc(r.left, y, r.right, y + sc(NAV_ROW)); // the title line (a drive has its usage bar below it)
+            let dim = if on && dragging == i as isize { 0.45 } else { 1.0 }; // the row being dragged
             SelectObject(dc, f_glyph);
             text(dc, it.glyph, rc(r.left + sc(10), line.top, r.left + sc(40), line.bottom), mix(pal().dim, pal().accent, ta), DT_CENTER);
             SelectObject(dc, f_txt);
-            text(dc, &it.title, rc(r.left + sc(48), line.top, r.right - sc(8), line.bottom), mix(pal().dim, pal().text, ta.max(th)), DT_LEFT);
+            let color = mix(pal().bg, mix(pal().dim, pal().text, ta.max(th)), dim);
+            let (title, tag) = split_letter(&it.title);
+            match tag {
+                // a drive: "SYSTEM" then its letter as a small tag, instead of "SYSTEM (C:)"
+                Some(tg) => {
+                    let x = r.left + sc(48);
+                    let tw = text_w(dc, f_txt as HFONT, title);
+                    text(dc, title, rc(x, line.top, x + tw, line.bottom), color, DT_LEFT | DT_SINGLELINE);
+                    SelectObject(dc, f_small);
+                    let bw = text_w(dc, f_small as HFONT, tg) + sc(9);
+                    let bh = sc(15);
+                    let by = line.top + (line.bottom - line.top - bh) / 2;
+                    let bx = (x + tw + sc(6)).min(r.right - bw - sc(6));
+                    fill(dc, rc(bx, by, bx + bw, by + bh), mix(pal().bg, pal().accent, 0.30), sc(3));
+                    text(dc, tg, rc(bx, by, bx + bw, by + bh), pal().text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    SelectObject(dc, f_txt);
+                }
+                None => text(dc, &it.title, rc(r.left + sc(48), line.top, r.right - sc(8), line.bottom), color, DT_LEFT),
+            }
             if let Some((free, total)) = it.cap {
                 // usage bar like Windows' "This PC": accent, red once the drive is more than 90 % full
                 let used = 1.0 - free as f32 / total as f32;
@@ -932,11 +1479,20 @@ unsafe fn paint_nav(hwnd: HWND) {
                 fill(dc, rc(bar.left, bar.top, bar.left + fw.max(sc(4)), bar.bottom), if used > 0.9 { winrust_common::style::BAD } else { pal().accent }, sc(4));
                 SelectObject(dc, f_small);
                 let gb = |b: u64| b as f64 / 1_073_741_824.0;
-                text(dc, &format!("{:.0} GB free of {:.0} GB", gb(free), gb(total)), rc(bar.left, bar.bottom + sc(1), r.right - sc(8), y + hgt - sc(2)), pal().dim, DT_LEFT);
+                text(dc, &tf!("{:.0} ГБ свободно из {:.0} ГБ", "{:.0} GB free of {:.0} GB", ja: "{:.0} GB 空き / {:.0} GB", pt: "{:.0} GB livres de {:.0} GB", zh: "{:.0} GB 可用，共 {:.0} GB", gb(free), gb(total)), rc(bar.left, bar.bottom + sc(1), r.right - sc(8), y + hgt - sc(2)), pal().dim, DT_LEFT);
             }
             y += hgt;
         }
     });
+    // a slim thumb on the right edge, only while there is something to scroll
+    let total = nav_content_h();
+    if total > cr.bottom && cr.bottom > 0 {
+        let (tt, th) = (sc(6), cr.bottom - sc(12)); // track: top and height
+        let thumb = ((th as f32 * cr.bottom as f32 / total as f32) as i32).max(sc(28));
+        let pos = tt + ((th - thumb) as f32 * scroll as f32 / (total - cr.bottom) as f32) as i32;
+        fill(dc, rc(cr.right - sc(6), tt, cr.right - sc(3), tt + th), mix(pal().bg, pal().text, 0.07), sc(2));
+        fill(dc, rc(cr.right - sc(6), pos, cr.right - sc(3), pos + thumb), mix(pal().bg, pal().text, 0.38), sc(2));
+    }
     fill(dc, rc(cr.right - 1, 0, cr.right, cr.bottom), pal().line, 0); // hairline between the pane and the list
     BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
@@ -948,24 +1504,122 @@ unsafe fn paint_nav(hwnd: HWND) {
     EndPaint(hwnd, &ps);
 }
 
+/// Right-click on a Quick access row: unpin, move it one place, or open it in a tab of its own.
+unsafe fn quick_menu(h: HWND, p: &Path) {
+    use crate::menu::{Icon, Item};
+    let vis = quick_items();
+    let pos = vis.iter().position(|x| same(x, p)).unwrap_or(0);
+    let last = vis.len().saturating_sub(1);
+    let items = vec![
+        Item::new(1, t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定")).icon(Icon::Glyph("\u{E718}")),
+        Item::new(2, t!("Переместить вверх", "Move up", ja: "上へ移動", pt: "Mover para cima", zh: "上移")).icon(Icon::Glyph("\u{E74A}")).dim(pos == 0),
+        Item::new(3, t!("Переместить вниз", "Move down", ja: "下へ移動", pt: "Mover para baixo", zh: "下移")).icon(Icon::Glyph("\u{E74B}")).dim(pos >= last),
+        Item::new(4, t!("Открыть в новой вкладке", "Open in a new tab", ja: "新しいタブで開く", pt: "Abrir em uma nova aba", zh: "在新标签页中打开")).icon(Icon::Glyph("\u{E8A7}")),
+    ];
+    let mut pt: POINT = std::mem::zeroed();
+    GetCursorPos(&mut pt);
+    match crate::menu::show(pt.x, pt.y, items) {
+        1 => quick_unpin(p),
+        2 => { quick_move(p, true); }
+        3 => { quick_move(p, false); }
+        4 => { PostMessageW(GetParent(h), WM_UI, 25, Box::into_raw(Box::new(p.to_path_buf())) as isize); }
+        _ => {}
+    }
+}
+
+/// Wheel over the nav pane scrolls it, whichever of our children happens to hold the focus (Windows only routes the
+/// wheel to the hovered window when "scroll inactive windows" is on). Returns true when the pane took the message.
+pub fn wheel_to_nav(wp: WPARAM, lp: LPARAM) -> bool {
+    let nav = nav_window();
+    if nav.is_null() { return false; }
+    // the wheel message carries screen coordinates in lParam
+    let pt = POINT { x: (lp & 0xFFFF) as i16 as i32, y: ((lp >> 16) & 0xFFFF) as i16 as i32 };
+    let mut r: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetWindowRect(nav, &mut r) };
+    if pt.x < r.left || pt.x >= r.right || pt.y < r.top || pt.y >= r.bottom { return false; }
+    unsafe { SendMessageW(nav, WM_MOUSEWHEEL, wp, lp) };
+    true
+}
+
 pub unsafe extern "system" fn nav_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
     match m {
         WM_PAINT => paint_nav(h),
         WM_ERASEBKGND => return 1,
+        WM_DESTROY => frost_forget(h),
         WM_TIMER if wp == 4 => { InvalidateRect(h, ptr::null(), 0); }
+        WM_TIMER if wp == 5 => { KillTimer(h, 5); InvalidateRect(h, ptr::null(), 0); } // the background was throttled: catch up
         WM_MOUSEMOVE => {
             let k = nav_hit(y).map_or(-1, |i| i as i32);
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
             if NAVHOT.replace(k) != k { InvalidateRect(h, ptr::null(), 0); }
+            // a Quick access row is being dragged: the row under the pointer is where it would land
+            if DRAG.get() >= 0 {
+                if !DRAG_ON.get() && (y - DRAG_Y.get()).abs() > sc(5) { DRAG_ON.set(true); }
+                if DRAG_ON.get() {
+                    let to = nav_hit(y).filter(|&i| NAV.with_borrow(|n| n.get(i).is_some_and(|it| it.quick))).map_or(-1, |i| i as isize);
+                    if DRAG_TO.replace(to) != to { InvalidateRect(h, ptr::null(), 0); }
+                }
+            }
         }
         WM_MOUSELEAVE => { NAVHOT.set(-1); InvalidateRect(h, ptr::null(), 0); }
+        WM_MOUSEWHEEL => {
+            // three rows per notch; the pane is painted by hand, so it scrolls itself
+            let d = ((wp >> 16) & 0xFFFF) as i16 as i32;
+            let before = NAV_SCROLL.get();
+            NAV_SCROLL.set(before - d * sc(NAV_ROW) * 3 / 120);
+            if nav_clamp(h) != before {
+                let mut pt: POINT = std::mem::zeroed();
+                GetCursorPos(&mut pt);
+                ScreenToClient(h, &mut pt);
+                NAVHOT.set(nav_hit(pt.y).map_or(-1, |i| i as i32)); // the row under the pointer changed
+                InvalidateRect(h, ptr::null(), 0);
+            }
+        }
         WM_LBUTTONDOWN => {
             if let Some(i) = nav_hit(y) {
                 PRESS.set((5000 + i as i32, now()));
                 InvalidateRect(h, ptr::null(), 0);
-                PostMessageW(GetParent(h), WM_UI, 20, i as isize);
+                let quick = NAV.with_borrow(|n| n.get(i).is_some_and(|it| it.quick));
+                if quick {
+                    // the click opens the folder on release, so that a drag can reorder the row instead
+                    DRAG.set(i as isize); DRAG_TO.set(i as isize); DRAG_Y.set(y); DRAG_ON.set(false);
+                    SetCapture(h);
+                } else {
+                    PostMessageW(GetParent(h), WM_UI, 20, i as isize);
+                }
+            }
+        }
+        WM_LBUTTONUP => {
+            let (from, to, dragged) = (DRAG.replace(-1), DRAG_TO.replace(-1), DRAG_ON.replace(false));
+            if from >= 0 {
+                ReleaseCapture();
+                if dragged && to >= 0 && to != from {
+                    let (a, b) = NAV.with_borrow(|n| (n.get(from as usize).map(|it| it.path.clone()), n.get(to as usize).map(|it| it.path.clone())));
+                    if let (Some(a), Some(b)) = (a, b) { quick_reorder(&a, &b); }
+                } else if !dragged {
+                    PostMessageW(GetParent(h), WM_UI, 20, from as isize); // a plain click: open it here
+                }
+                InvalidateRect(h, ptr::null(), 0);
+            }
+        }
+        WM_CAPTURECHANGED => {
+            DRAG.set(-1); DRAG_TO.set(-1); DRAG_ON.set(false);
+            InvalidateRect(h, ptr::null(), 0);
+        }
+        WM_LBUTTONDBLCLK => {
+            // a network share opens in a tab of its own
+            if let Some(i) = nav_hit(y) {
+                if let Some(p) = nav_path(i).filter(|p| p.to_string_lossy().starts_with("\\\\")) {
+                    PostMessageW(GetParent(h), WM_UI, 25, Box::into_raw(Box::new(p)) as isize);
+                }
+            }
+        }
+        WM_RBUTTONUP => {
+            if let Some(i) = nav_hit(y) {
+                let it = NAV.with_borrow(|n| n.get(i).cloned());
+                if let Some(it) = it.filter(|it| it.quick) { quick_menu(h, &it.path); }
             }
         }
         _ => return DefWindowProcW(h, m, wp, lp),

@@ -530,6 +530,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-notify"
+version = "0.1.0"
+dependencies = [
+ "windows-sys",
+ "winrust-common",
+]
+
+[[package]]
+name = "rs-notify-bridge"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows",
+ "windows-sys",
+ "winrust-common",
+]
+
+[[package]]
 name = "rs-shell"
 version = "0.1.0"
 dependencies = [
@@ -546,6 +564,16 @@ dependencies = [
  "native-windows-gui",
  "sysinfo",
  "winapi",
+ "windows-sys",
+ "winrust-common",
+]
+
+[[package]]
+name = "rust-control"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows",
  "windows-sys",
  "winrust-common",
 ]

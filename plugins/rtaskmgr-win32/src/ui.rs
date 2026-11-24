@@ -1,4 +1,4 @@
-//! Тема, шрифты и примитивы рисования (GDI) в стиле диспетчера задач Windows 11.
+﻿//! Тема, шрифты и примитивы рисования (GDI) в стиле диспетчера задач Windows 11.
 use std::ptr::null_mut;
 use winapi::shared::windef::{HBRUSH, HDC, HFONT, HGDIOBJ, POINT, RECT};
 use winapi::um::{wingdi::*, winuser::*};
@@ -164,7 +164,13 @@ pub struct G<'a> {
     pub s: f64,
     pub th: Theme,
     pub fonts: &'a Fonts,
+    /// The window background is a frosted desktop capture: background areas are painted slightly
+    /// translucent so the blur shows through, as in Windows 11's Mica.
+    pub frost: bool,
 }
+
+/// How much of a background area stays theme colour over the frost (the rest is the blur).
+const BG_SOFT_ALPHA: u8 = 214;
 
 impl<'a> G<'a> {
     pub fn px(&self, v: f64) -> i32 {
@@ -176,6 +182,29 @@ impl<'a> G<'a> {
             let b = CreateSolidBrush(c.c());
             FillRect(self.dc, &r.rc(), b);
             DeleteObject(b as HGDIOBJ);
+        }
+    }
+
+    /// Alpha-blended fill (0 = keep what is under it, 255 = opaque).
+    pub fn fill_soft(&self, r: R, c: Rgb, alpha: u8) {
+        if r.w() <= 0 || r.h() <= 0 {
+            return;
+        }
+        if alpha >= 255 {
+            self.fill(r, c);
+            return;
+        }
+        // one tinted pixel stretched over the rect: the same blend the frost painter uses
+        let wr = windows_sys::Win32::Foundation::RECT { left: r.l, top: r.t, right: r.r, bottom: r.b };
+        unsafe { winrust_common::frost::paint_capture(self.dc as *mut std::ffi::c_void, &[c.c()], wr, c.c(), alpha) };
+    }
+
+    /// Page/row background: solid normally, translucent over the frost.
+    pub fn bg_fill(&self, r: R, c: Rgb) {
+        if self.frost {
+            self.fill_soft(r, c, BG_SOFT_ALPHA);
+        } else {
+            self.fill(r, c);
         }
     }
 

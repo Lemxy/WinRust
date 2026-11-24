@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+﻿#![windows_subsystem = "windows"]
 #[macro_use]
 extern crate winrust_common;
 mod app;
@@ -112,9 +112,10 @@ fn main() {
     let hidden = args.iter().any(|a| a == "--tray") || (sys::is_admin() && std::fs::remove_file(&tray_flag).is_ok()); // запуск из автозагрузки: сразу в трей
     nwg::enable_visual_styles();
     nwg::init().expect("не удалось инициализировать Win32");
-    let scale = nwg::scale_factor();
+    // a smaller shell: the whole layout (fonts, rows, paddings) follows this factor
+    let scale = nwg::scale_factor() * 0.8;
     let mut font = nwg::Font::default();
-    nwg::Font::builder().family("Segoe UI").size(17).build(&mut font).unwrap();
+    nwg::Font::builder().family("Segoe UI").size(14).build(&mut font).unwrap();
     nwg::Font::set_global_default(Some(font));
 
     store::trim_history(10_080);
@@ -139,7 +140,7 @@ fn main() {
     nwg::Window::builder()
         .flags(if hidden { nwg::WindowFlags::MAIN_WINDOW } else { nwg::WindowFlags::MAIN_WINDOW | nwg::WindowFlags::VISIBLE })
         .icon(Some(&icon_big))
-        .size((cfg.size.0 as i32, cfg.size.1 as i32))
+        .size((cfg.size.0.min(760) as i32, cfg.size.1.min(560) as i32))
         .position(cfg.pos)
         .title(t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器"))
         .build(&mut win)
@@ -193,6 +194,7 @@ fn main() {
         edit_brush: Cell::new(0),
         search_rect: Cell::new(R::new(0, 0, 0, 0)),
         last_tick: Cell::new(Instant::now()),
+        frost_cache: RefCell::new(None),
     });
     app.apply_theme();
     {
@@ -223,6 +225,19 @@ fn main() {
                 Some(0)
             },
             WM_SIZE => {
+                // the blurred background is tied to the client size: take a new capture on the next paint
+                a.drop_frost();
+                a.invalidate();
+                None
+            }
+            WM_MOVE => {
+                // the window moved over a different part of the wallpaper: recapture, but do not force
+                // a repaint mid-drag (the next natural repaint picks it up)
+                a.drop_frost();
+                None
+            }
+            WM_EXITSIZEMOVE => {
+                a.drop_frost();
                 a.invalidate();
                 None
             }

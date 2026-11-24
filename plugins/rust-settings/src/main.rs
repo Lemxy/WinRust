@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+﻿#![windows_subsystem = "windows"]
 // rust-settings [page]   A small Settings window that does not need Explorer or the Store Settings app.
 // Pages: Display (resolution, refresh rate, scale, orientation, HDR, night light, arrangement of several displays by dragging), Sound (output/input
 // device, volume, mute, volume per app), Power & storage (battery, power plan, drives, disk cleanup), Network (adapters, Wi-Fi on every adapter:
@@ -29,6 +29,7 @@ use std::{
     ptr::{null, null_mut},
 };
 use sys::wide;
+use winrust_common::frost;
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
@@ -97,7 +98,7 @@ enum Op {
 }
 
 /// The languages the drop-down offers, in the order it shows them.
-const LANGS: [winrust_common::Lang; 5] = [winrust_common::Lang::En, winrust_common::Lang::Ru, winrust_common::Lang::Ja, winrust_common::Lang::Pt, winrust_common::Lang::Zh];
+const LANGS: [winrust_common::Lang; 6] = [winrust_common::Lang::En, winrust_common::Lang::Ru, winrust_common::Lang::Ja, winrust_common::Lang::Pt, winrust_common::Lang::Zh, winrust_common::Lang::Es];
 
 fn lang_text() -> String {
     lang!().name().to_string()
@@ -929,9 +930,62 @@ fn refresh_fonts() {
     });
 }
 
+/// The blurred wallpaper behind the window, kept between paints. The window is already on screen when it paints, so the
+/// capture comes from `frost::capture_desktop` (PaintDesktop): it never catches this window. A fresh capture costs a
+/// full-window blur, so it is taken only when the client area on screen or the setting changed.
+struct Glass {
+    rect: RECT,  // the client area on screen
+    dpi: i32,
+    on: bool,
+    px: Vec<u32>, // empty when the setting is off or the capture failed
+}
+thread_local! { static GLASS: RefCell<Option<Glass>> = const { RefCell::new(None) } }
+
+/// Forgets the capture: the next paint takes it again (the window moved, resized or changed display).
+fn glass_drop() {
+    GLASS.with_borrow_mut(|g| *g = None);
+}
+
+/// The client area in screen pixels: the paint works in client coordinates, the wallpaper in desktop ones.
+unsafe fn client_on_screen(hwnd: HWND) -> RECT {
+    unsafe {
+        let mut rc: RECT = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rc);
+        let mut pt = POINT { x: 0, y: 0 };
+        ClientToScreen(hwnd, &mut pt); // client corner -> screen
+        RECT { left: pt.x, top: pt.y, right: pt.x + rc.right, bottom: pt.y + rc.bottom }
+    }
+}
+
+/// Captures the wallpaper under the window unless the cached one still matches it.
+unsafe fn glass_capture(hwnd: HWND) {
+    unsafe {
+        let r = client_on_screen(hwnd);
+        let on = frost::menu_blur(); // the user's frost setting (look.txt)
+        let dpi = APP.with_borrow(|a| a.dpi);
+        let (w, h) = ((r.right - r.left).max(0), (r.bottom - r.top).max(0));
+        let stale = GLASS.with_borrow(|g| {
+            let Some(g) = g else { return true };
+            g.on != on
+                || g.dpi != dpi
+                || g.rect.left != r.left
+                || g.rect.top != r.top
+                || g.rect.right != r.right
+                || g.rect.bottom != r.bottom
+                || (on && g.px.len() != (w * h) as usize)
+        });
+        if !stale {
+            return;
+        }
+        let px = if on && w > 0 && h > 0 { frost::capture_desktop(r, frost::radius_for(w, h)) } else { Vec::new() };
+        GLASS.with_borrow_mut(|g| *g = Some(Glass { rect: r, dpi, on, px }));
+    }
+}
+
 unsafe fn paint(hwnd: HWND) {
     unsafe {
         refresh_fonts();
+        glass_capture(hwnd); // before the APP borrow below: it reads a.dpi
         let mut ps: PAINTSTRUCT = std::mem::zeroed();
         let dc = BeginPaint(hwnd, &mut ps);
         let mut rc: RECT = std::mem::zeroed();
@@ -956,7 +1010,15 @@ unsafe fn paint(hwnd: HWND) {
                 let kx = if lit { l + w - k - p(2) } else { l + p(2) };
                 shape(mem, RECT { left: kx, top: tp + p(2), right: kx + k, bottom: tp + p(2) + k }, if on.is_none() { mix(t.fg, t.card, 0.5) } else { rgb(255, 255, 255) }, rd(k));
             };
-            shape(mem, rc, t.bg, 0);
+            // the window's own background: the wallpaper behind it, blurred and tinted (Mica), or the solid colour
+            let (gw, gh) = (cw.max(0), ch.max(0));
+            let frosted = GLASS.with_borrow(|g| match g.as_ref() {
+                Some(g) if g.on && g.px.len() == (gw * gh) as usize => frost::paint_capture(mem, &g.px, rc, t.bg, frost::tint_alpha()),
+                _ => false,
+            });
+            if !frosted {
+                shape(mem, rc, t.bg, 0);
+            }
             // sidebar: one surface with the title bar, a hairline to the content
             winrust_common::style::backdrop(mem, RECT { left: p(SIDE), ..rc }, a.dpi as f32 / 96.0);
             shape(mem, RECT { left: 0, top: 0, right: p(SIDE), bottom: ch }, t.side, 0);
@@ -1422,7 +1484,7 @@ unsafe fn run_cmd(hwnd: HWND, label: &str, cmd: Cmd) {
                     }
                     Cmd::Wallpaper => {
                         if sys::pick_wallpaper(hwnd).is_ok() {
-                            say(t!("Обои изменены", "Wallpaper changed", ja: "壁紙を変更しました", pt: "Plano de fundo alterado").into());
+                            say(t!("Обои изменены", "Wallpaper changed", ja: "壁紙を変更しました", pt: "Plano de fundo alterado", zh: "壁纸已更改").into());
                         }
                     }
                     Cmd::EmptyBin => {
@@ -1434,10 +1496,7 @@ unsafe fn run_cmd(hwnd: HWND, label: &str, cmd: Cmd) {
                         say(t!("Сопряжение…", "Pairing…", ja: "ペアリング中…", pt: "Pareando…", zh: "正在配对…").into());
                         bt::pair(id, ping);
                     }
-                    Cmd::BtScan => {
-                        bt::scan(ping);
-                        ping();
-                    }
+                    Cmd::BtScan => bt::scan(ping),
                     Cmd::Check => {
                         wu::check(ping);
                         ping();
@@ -1694,6 +1753,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             WM_ERASEBKGND => 1,
             WM_SIZE | WM_SETTINGCHANGE => {
+                glass_drop(); // the client area changed: the wallpaper under it is captured again on the next paint
                 clamp_scroll(hwnd, 0);
                 let (ed, dpi) = APP.with_borrow(|a| (a.edit, a.dpi));
                 if ed != 0 {
@@ -1704,6 +1764,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }
                 InvalidateRect(hwnd, null(), 0); // a changed theme repaints in it
                 0
+            }
+            // the window moved or went to a display with another scale: the wallpaper under it is captured again
+            WM_MOVE | WM_DPICHANGED => {
+                glass_drop();
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_CTLCOLOREDIT => {
                 let t = theme();

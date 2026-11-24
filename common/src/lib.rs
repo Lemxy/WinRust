@@ -1,8 +1,9 @@
-//! Code shared by the WinRust programs: the language switch (`t!`, `tf!`, `lang!`, `en!`), the NTFS MFT reader, Win+D.
+﻿//! Code shared by the WinRust programs: the language switch (`t!`, `tf!`, `lang!`, `en!`), the NTFS MFT reader, Win+D.
 //! Use it with `#[macro_use] extern crate winrust_common;` at the crate root.
 //!
-//! English by default; Russian, Japanese, Portuguese (Brazil) or Simplified Chinese when %ProgramData%\WinRust\lang.txt
-//! contains "ru", "ja", "pt" or "zh" (the language list in the installer and in rust-settings writes it).
+//! English by default; Russian, Japanese, Portuguese (Brazil), Simplified Chinese or Spanish when
+//! %ProgramData%\WinRust\lang.txt contains "ru", "ja", "pt", "zh" or "es" (the language list in the installer and in
+//! rust-settings writes it). Spanish lives in `es.tsv` (see `es`), so a text that is not translated yet shows English.
 //! Programs read the file once at start; the one that flips the switch updates its own texts at once.
 use std::{
     path::PathBuf,
@@ -10,11 +11,17 @@ use std::{
 };
 
 pub mod desktop;
+pub mod es;
 pub mod fg;
+pub mod frost;
+pub mod icon;
 pub mod journal;
+pub mod look;
 pub mod launch;
 pub mod mem;
 pub mod mft;
+pub mod notify;
+pub mod monitors;
 pub mod proc;
 pub mod reg;
 pub mod search;
@@ -53,6 +60,12 @@ pub enum Lang {
     Ja,
     Pt,
     Zh,
+    Es,
+}
+
+impl Lang {
+    /// Every language, in the order the switch goes round them.
+    pub const ALL: [Lang; 6] = [Lang::En, Lang::Ru, Lang::Ja, Lang::Pt, Lang::Zh, Lang::Es];
 }
 
 impl Lang {
@@ -64,6 +77,7 @@ impl Lang {
             Lang::Ja => "日本語",
             Lang::Pt => "Português",
             Lang::Zh => "简体中文",
+            Lang::Es => "Español",
         }
     }
     /// The language after this one: the switch button goes round them.
@@ -73,13 +87,14 @@ impl Lang {
             Lang::Ru => Lang::Ja,
             Lang::Ja => Lang::Pt,
             Lang::Pt => Lang::Zh,
-            Lang::Zh => Lang::En,
+            Lang::Zh => Lang::Es,
+            Lang::Es => Lang::En,
         }
     }
     fn code(self) -> &'static str {
-        ["en", "ru", "ja", "pt", "zh"][self as usize]
+        ["en", "ru", "ja", "pt", "zh", "es"][self as usize]
     }
-    /// The language of a code or a lang.txt line (`en`, `ru`, `ja`, `pt`, `zh`; `zh-CN` and `zh_CN` work too).
+    /// The language of a code or a lang.txt line (`en`, `ru`, `ja`, `pt`, `zh`, `es`; `zh-CN` and `zh_CN` work too).
     pub fn parse(s: &str) -> Lang {
         let s = s.trim().to_ascii_lowercase();
         match s.get(..2) {
@@ -87,6 +102,7 @@ impl Lang {
             Some("ja") => Lang::Ja,
             Some("pt") => Lang::Pt,
             Some("zh") => Lang::Zh,
+            Some("es") => Lang::Es,
             _ => Lang::En,
         }
     }
@@ -106,6 +122,7 @@ pub fn lang() -> Lang {
         2 => Lang::Ja,
         3 => Lang::Pt,
         4 => Lang::Zh,
+        5 => Lang::Es,
         _ => {
             let l = file().and_then(|f| std::fs::read_to_string(f).ok()).map_or(Lang::En, |s| Lang::parse(&s));
             LANG.store(l as u8, Relaxed);
@@ -163,6 +180,7 @@ macro_rules! t {
             $crate::Lang::Ja => $ja,
             $crate::Lang::Pt => $pt,
             $crate::Lang::Zh => $zh,
+            $crate::Lang::Es => $crate::es::tr($en),
         }
     };
     ($ru:expr, $en:expr, ja: $ja:expr, pt: $pt:expr $(,)?) => {
@@ -172,17 +190,23 @@ macro_rules! t {
             $crate::Lang::Ja => $ja,
             $crate::Lang::Pt => $pt,
             $crate::Lang::Zh => $en,
+            $crate::Lang::Es => $crate::es::tr($en),
         }
     };
     ($ru:expr, $en:expr, zh: $zh:expr $(,)?) => {
         match $crate::lang!() {
             $crate::Lang::Ru => $ru,
             $crate::Lang::Zh => $zh,
+            $crate::Lang::Es => $crate::es::tr($en),
             _ => $en,
         }
     };
     ($ru:expr, $en:expr) => {
-        if $crate::lang!() == $crate::Lang::Ru { $ru } else { $en }
+        match $crate::lang!() {
+            $crate::Lang::Ru => $ru,
+            $crate::Lang::Es => $crate::es::tr($en),
+            _ => $en,
+        }
     };
 }
 
@@ -197,6 +221,7 @@ macro_rules! tf {
             $crate::Lang::Ja => format!($ja $(, $a)*),
             $crate::Lang::Pt => format!($pt $(, $a)*),
             $crate::Lang::Zh => format!($zh $(, $a)*),
+            $crate::Lang::Es => $crate::es::fill($crate::es::tr($en), &[$(&$a as &dyn ::core::fmt::Display),*]),
         }
     };
     ($ru:literal, $en:literal, ja: $ja:literal, pt: $pt:literal $(, $a:expr)* $(,)?) => {
@@ -206,17 +231,23 @@ macro_rules! tf {
             $crate::Lang::Ja => format!($ja $(, $a)*),
             $crate::Lang::Pt => format!($pt $(, $a)*),
             $crate::Lang::Zh => format!($en $(, $a)*),
+            $crate::Lang::Es => $crate::es::fill($crate::es::tr($en), &[$(&$a as &dyn ::core::fmt::Display),*]),
         }
     };
     ($ru:literal, $en:literal, zh: $zh:literal $(, $a:expr)* $(,)?) => {
         match $crate::lang!() {
             $crate::Lang::Ru => format!($ru $(, $a)*),
             $crate::Lang::Zh => format!($zh $(, $a)*),
+            $crate::Lang::Es => $crate::es::fill($crate::es::tr($en), &[$(&$a as &dyn ::core::fmt::Display),*]),
             _ => format!($en $(, $a)*),
         }
     };
     ($ru:literal, $en:literal $(, $a:expr)* $(,)?) => {
-        if $crate::lang!() == $crate::Lang::Ru { format!($ru $(, $a)*) } else { format!($en $(, $a)*) }
+        match $crate::lang!() {
+            $crate::Lang::Ru => format!($ru $(, $a)*),
+            $crate::Lang::Es => $crate::es::fill($crate::es::tr($en), &[$(&$a as &dyn ::core::fmt::Display),*]),
+            _ => format!($en $(, $a)*),
+        }
     };
 }
 

@@ -1,4 +1,4 @@
-//! Настройки, правила и история в %APPDATA%\rtaskmgr (обычные текстовые файлы).
+﻿//! Настройки, правила и история в %APPDATA%\rtaskmgr (обычные текстовые файлы).
 use std::{fs, io::Write, path::PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -32,7 +32,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { view: 0, sort: 2, desc: true, pos: (150, 60), size: (1000, 740), to_tray: true, theme: 2, etw: false, gpu_temp_always: false, rules: vec![] }
+        Self { view: 0, sort: 2, desc: true, pos: (150, 60), size: (760, 560), to_tray: true, theme: 2, etw: false, gpu_temp_always: false, rules: vec![] }
     }
 }
 

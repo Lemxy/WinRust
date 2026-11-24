@@ -1,0 +1,1252 @@
+﻿  {} app entries found	plugins\purge\src\main.rs:128
+  app (installed)    {name}	plugins\purge\src\main.rs:124
+  app (provisioned)  {name}	plugins\purge\src\main.rs:125
+  Edge               {}	plugins\purge\src\main.rs:139
+  exclude {0}	plugins\debloat\src\main.rs:383
+  exclude process {0}	plugins\debloat\src\main.rs:386
+  hosts   {0} ad/tracker domains -> 0.0.0.0	plugins\debloat\src\main.rs:389
+  OneDrive           {}	plugins\purge\src\main.rs:136
+  policy  {0:<34} {1}   ({2})	plugins\debloat\src\main.rs:367
+  service {0:<18} {1} -> disabled   ({2})	plugins\debloat\src\main.rs:357
+  service {0:<18} already disabled	plugins\debloat\src\main.rs:356
+  service {0:<18} not present	plugins\debloat\src\main.rs:355
+  task               {t}	plugins\purge\src\main.rs:133
+  task    {0}   {1}	plugins\debloat\src\main.rs:379
+  task    {0}   -> disabled	plugins\debloat\src\main.rs:372
+ (menu '…' → 'Restart as administrator')	plugins\rtaskmgr-win32\src\app.rs:1021
+ (processes: {})	plugins\rtaskmgr-win32\src\model.rs:198
+ Administrator rights are needed to change it.	plugins\rtaskmgr-win32\src\model.rs:354
+ for \u{201C}{}\u{201D}	plugins\rust-explorer\src\main.rs:673
+ in this folder	plugins\rust-explorer\src\main.rs:678
+ It goes to quarantine for 30 days and can be restored (rs-du --restore).	plugins\rs-du\src\clean.rs:266
+ It is deleted permanently.	plugins\rs-du\src\clean.rs:266
+ See warnings in %ProgramData%\\plugin-launcher\\install.log.	src\install\mod.rs:172
+ The busiest svchost (PID {}) hosts services: {}.	plugins\rtaskmgr-win32\src\data.rs:529
+ The worst slowdowns: {}. Disable them on the 'Startup' page ('Slows boot by' column).	plugins\rtaskmgr-win32\src\data.rs:599
+ There are warnings (see %ProgramData%\\plugin-launcher\\install.log).	src\ui.rs:855
+ Warnings: {} (see %ProgramData%\\plugin-launcher\\install.log).	src\install\mod.rs:146
+ Warnings: {} (see %ProgramData%\\plugin-launcher\\install.log).	src\install\mod.rs:159
+
+Press Enter to close.	plugins\purge\src\main.rs:202
+
+This REMOVES the apps above FOR GOOD, there is no undo. Type YES to continue: 	plugins\purge\src\main.rs:192
+% utilization	plugins\rtaskmgr-win32\src\draw.rs:577
+(none) -> {data}	plugins\debloat\src\main.rs:364
+(preview only; --apply deletes the safe items, --apply --all everything, --apply --safe only the green ones)	plugins\rs-du\src\clean.rs:273
+, stopped early: narrow the search	plugins\rust-explorer\src\main.rs:675
+... and {} more	plugins\rust-search\src\bin\rs-launcher.rs:1034
+\"{}\" did not answer in 30 s	plugins\rust-settings\src\main.rs:1765
+\n\nA restore point is created before installing.	src\ui.rs:997
+\n… and {} more reasons	plugins\rtaskmgr-win32\src\model.rs:202
+\nFiles:	plugins\rs-du\src\main.rs:59
+\nFolders (depth <= {depth}):	plugins\rs-du\src\main.rs:57
+\nFreed: {}. In quarantine: {} (the space returns in {QUAR_DAYS} days or after rs-du --purge).	plugins\rs-du\src\clean.rs:299
+\nRestored (services start again after a reboot or by hand).	plugins\debloat\src\main.rs:594
+\nThis cannot be undone. A log of what was removed: {}	plugins\purge\src\main.rs:182
+\nUndo information saved to {}. Some changes need a reboot or sign-out.	plugins\debloat\src\main.rs:548
+\nYou can free: {} safely, {} in total ({} places)	plugins\rs-du\src\clean.rs:271
+\u{2191}\u{2193} select     \u{21B5} open     Ctrl+\u{21B5} folder     Right-click menu     Esc close{}	plugins\rust-search\src\bin\rs-launcher.rs:1456
+\u{21B5} run     Ctrl+Shift+\u{21B5} as administrator     Tab complete     Esc close	plugins\rust-search\src\bin\rs-launcher.rs:1452
+{:.0} MB	plugins\rtaskmgr-win32\src\ui.rs:336
+{:.0} Mbps	plugins\rtaskmgr-win32\src\draw.rs:721
+{:.0}%  {} GHz	plugins\rtaskmgr-win32\src\draw.rs:575
+{:.1} MB	plugins\rtaskmgr-win32\src\ui.rs:336
+{} ({} pcs)	plugins\rtaskmgr-win32\src\data.rs:518
+'{}' (PID {}) has used more than {:.0}% CPU for {} s	plugins\rtaskmgr-win32\src\data.rs:473
+{} components installed. Choose what to do.	src\ui.rs:453
+{} could not be removed (in use or access denied):	plugins\rust-search\src\bin\rs-launcher.rs:1031
+{} file	plugins\rust-explorer\src\main.rs:211
+{} free of {}	plugins\rust-settings\src\main.rs:609
+{} freed	plugins\rtaskmgr-win32\src\boost.rs:176
+{} GB	plugins\rtaskmgr-win32\src\draw.rs:519
+{} Gbps	plugins\rust-settings\src\net.rs:32
+{} GHz	plugins\rtaskmgr-win32\src\draw.rs:583
+{} GHz	plugins\rtaskmgr-win32\src\draw.rs:591
+{} h	plugins\rust-settings\src\power.rs:141
+{} is already installed	src\cli.rs:87
+{} item(s) failed (run as administrator)	plugins\purge\src\main.rs:183
+{} KB	plugins\rtaskmgr-win32\src\draw.rs:523
+{} Kbps	plugins\rtaskmgr-win32\src\draw.rs:715
+{} Kbps	plugins\rtaskmgr-win32\src\draw.rs:719
+{} MB	plugins\rtaskmgr-win32\src\draw.rs:523
+{} MB	plugins\rtaskmgr-win32\src\draw.rs:615
+{} MB	plugins\rtaskmgr-win32\src\draw.rs:652
+{} MB	plugins\rtaskmgr-win32\src\draw.rs:653
+{} MB	plugins\rtaskmgr-win32\src\model.rs:140
+{} MB	plugins\rtaskmgr-win32\src\ui.rs:336
+{} MB/s	plugins\rtaskmgr-win32\src\draw.rs:551
+{} MB/s	plugins\rtaskmgr-win32\src\draw.rs:681
+{} MB/s	plugins\rtaskmgr-win32\src\model.rs:145
+{} Mbps	plugins\rtaskmgr-win32\src\model.rs:153
+{} Mbps	plugins\rust-settings\src\net.rs:33
+{} min	plugins\rust-settings\src\power.rs:140
+{} ms	plugins\rtaskmgr-win32\src\draw.rs:688
+{} MT/s	plugins\rtaskmgr-win32\src\draw.rs:612
+{} need administrator rights and were left in place	plugins\rust-search\src\bin\rs-launcher.rs:1052
+{} of {} ({}%)  \u{00B7}  {}/s	plugins\rust-explorer\src\jobs.rs:49
+{} of {} files	plugins\rust-explorer\src\jobs.rs:45
+{} of {}	plugins\rtaskmgr-win32\src\draw.rs:613
+{} pcs	common\src\lib.rs:228
+{} pcs	common\src\lib.rs:230
+{} point to it and will be removed:	plugins\rust-search\src\bin\rs-launcher.rs:1169
+{} removed ({})	plugins\rust-search\src\bin\rs-launcher.rs:1039
+{} removed	plugins\rust-search\src\bin\rs-launcher.rs:1050
+{} removed.{note}	src\install\mod.rs:160
+{} selected	plugins\rust-explorer\src\ui.rs:652
+{} settings	src\ui.rs:673
+{}: {e}	plugins\debloat\src\main.rs:534
+'{}': administrator rights needed	plugins\rtaskmgr-win32\src\app.rs:1133
+{}: ERROR {e}	src\install\mod.rs:127
+{}: ERROR {e}	src\install\mod.rs:132
+{}: older than the installed release, refused	src\update\mod.rs:123
+{}: running…	plugins\rtaskmgr-win32\src\app.rs:1157
+{}: uninstall ERROR {e}	src\install\mod.rs:155
+{}: up to date	src\update\mod.rs:126
+{}: up to date	src\update\mod.rs:146
+{}: updated {}	src\update\mod.rs:146
+'{}': Win32 error {e}	plugins\rtaskmgr-win32\src\app.rs:1134
+{0}  {1}	plugins\debloat\src\main.rs:588
+{0}  {1}: {2} -> disabled	plugins\debloat\src\main.rs:422
+{0}  {t}: disabled	plugins\debloat\src\main.rs:462
+{0}  {value} = {data}	plugins\debloat\src\main.rs:447
+{0}  {WINGET_TASK}: weekly winget upgrade --all (Sunday 12:00, or at the next start)	plugins\debloat\src\main.rs:481
+{0}  exclude {1}	plugins\debloat\src\main.rs:510
+{0}  hosts: {1} domains blocked	plugins\debloat\src\main.rs:526
+{0}: {1} (run as admin)	plugins\purge\src\main.rs:145
+{0}: is not NTFS (error {1})	common\src\mft.rs:111
+{d} -> {data}	plugins\debloat\src\main.rs:363
+{drive}: {0} records, {1} total ({2}), {3:.2}s	plugins\rs-du\src\main.rs:56
+{exe}: registry error {rc}	plugins\rtaskmgr-win32\src\boost.rs:399
+{failed} change(s) failed (run as administrator)	plugins\debloat\src\main.rs:549
+{failed} item(s) not restored; the undo file is kept at {}	plugins\debloat\src\main.rs:591
+{head}: error - {e}	plugins\rtaskmgr-win32\src\boost.rs:159
+{key}: could not verify the write to {name}	src\install\explorer.rs:84
+{n} is missing from the build	src\install\mod.rs:99
+{n} is not installed (use install)	src\cli.rs:116
+{n} is not installed	src\cli.rs:121
+{n} processes blocked	plugins\rtaskmgr-win32\src\boost.rs:403
+{n} processes unblocked	plugins\rtaskmgr-win32\src\boost.rs:403
+{n}: from {}	src\install\mod.rs:102
+{name}: hash does not match the manifest	src\update\mod.rs:139
+{path}: invalid journal record on line {line}	src\install\journal.rs:45
+{started} services and {launched} programs started again	plugins\rtaskmgr-win32\src\boost.rs:342
+{stopped} services stopped, {closed} processes closed	plugins\rtaskmgr-win32\src\boost.rs:323
+{what}: {ok} of {} succeeded - the rest need administrator rights{}	plugins\rtaskmgr-win32\src\app.rs:1021
+{what}: done ({ok})	plugins\rtaskmgr-win32\src\app.rs:1021
+‹   Back	plugins\topbar\src\settings.rs:37
++ {} more	plugins\rust-search\src\bin\rs-launcher.rs:1172
++{} s	plugins\rtaskmgr-win32\src\model.rs:344
+▲ Medium	plugins\rtaskmgr-win32\src\suspect.rs:26
+● Low	plugins\rtaskmgr-win32\src\suspect.rs:27
+⚠ High	plugins\rtaskmgr-win32\src\suspect.rs:25
+0 MB/s	plugins\rtaskmgr-win32\src\model.rs:145
+0 Mbps	plugins\rtaskmgr-win32\src\model.rs:153
+100 %, solid	plugins\topbar\src\settings.rs:152
+60 seconds	plugins\rtaskmgr-win32\src\draw.rs:331
+A large file that has not been opened for a long time.	plugins\rs-du\src\clean.rs:129
+A long time ago	plugins\rust-explorer\src\main.rs:154
+a one-time action: nothing to disable	plugins\rtaskmgr-win32\src\boost.rs:150
+A ready-made look for the bar and windows	plugins\topbar\src\settings.rs:87
+A restore point is created before any change	src\ui.rs:460
+a temporary folder	plugins\rtaskmgr-win32\src\suspect.rs:48
+About 170 ad and tracker domains lead nowhere through the hosts file (Microsoft domains are left alone).	plugins\rtaskmgr-win32\src\boost.rs:71
+About	plugins\rust-settings\src\main.rs:717
+Above normal	plugins\rtaskmgr-win32\src\sys.rs:117
+Accent color on title bars	plugins\rust-settings\src\main.rs:713
+Accent	plugins\topbar\src\settings.rs:142
+Accessibility	plugins\topbar\src\fly.rs:1300
+Action	plugins\rtaskmgr-win32\src\model.rs:98
+Active time	plugins\rtaskmgr-win32\src\draw.rs:680
+Active time	plugins\rtaskmgr-win32\src\draw.rs:687
+activity history stays local	plugins\debloat\src\main.rs:54
+Adapter name:	plugins\rtaskmgr-win32\src\draw.rs:721
+Add to Start	plugins\rust-search\src\bin\rs-launcher.rs:674
+Add to Start	plugins\topbar\src\fly.rs:1033
+Add to Start	plugins\topbar\src\main.rs:2231
+Adjust date and time	plugins\topbar\src\main.rs:2599
+administrator needed	plugins\rtaskmgr-win32\src\boost.rs:122
+administrator needed	plugins\rtaskmgr-win32\src\draw.rs:287
+administrator needed	plugins\rtaskmgr-win32\src\model.rs:346
+Administrator rights are needed	plugins\rust-settings\src\wu.rs:50
+Adobe Acrobat updater	plugins\debloat\src\main.rs:76
+Adobe Genuine Monitor	plugins\debloat\src\main.rs:79
+Adobe Genuine Software check	plugins\debloat\src\main.rs:78
+Adobe updater	plugins\debloat\src\main.rs:77
+Airplane mode	plugins\rust-settings\src\main.rs:625
+Airplane mode	plugins\topbar\src\fly.rs:1299
+All components will be removed. Windows Search, the stock Task Manager, the taskbar and regular Explorer come back.	src\ui.rs:943
+All cores	plugins\rtaskmgr-win32\src\app.rs:828
+All good: no process uses noticeably more than usual.	plugins\rtaskmgr-win32\src\data.rs:576
+All plugins removed.{note}	src\install\mod.rs:175
+Almost no free memory ({}) while the standby cache holds {}. In games this shows as stutter: use 'Clear memory cache' on the 'Speed' page.	plugins\rtaskmgr-win32\src\data.rs:573
+Already in Start	plugins\topbar\src\fly.rs:294
+Already paired	plugins\rust-settings\src\bt.rs:127
+already running	plugins\rtaskmgr-win32\src\boost.rs:145
+already set	plugins\debloat\src\main.rs:362
+Alt+Space is taken (is the launcher already running?)	plugins\rust-search\src\bin\rs-launcher.rs:1557
+Alt+Tab: this monitor only	plugins\topbar\src\settings.rs:111
+Always read GPU temperature	plugins\rtaskmgr-win32\src\draw.rs:455
+any	plugins\rtaskmgr-win32\src\model.rs:400
+app {name}	plugins\purge\src\main.rs:158
+App history	plugins\rtaskmgr-win32\src\model.rs:24
+App	plugins\topbar\src\fly.rs:1710
+Appearance	plugins\rust-settings\src\main.rs:709
+Application	plugins\rust-search\src\bin\rs-launcher.rs:167
+Applied	src\ui.rs:534
+Apply +{a} −{r}	src\ui.rs:559
+Apply the changes?	src\ui.rs:1007
+Apply	src\ui.rs:1007
+Apps with sound	plugins\rust-settings\src\main.rs:590
+Apps	plugins\rust-settings\src\main.rs:701
+April	plugins\topbar\src\fly.rs:127
+Arrange icons	plugins\rust-explorer\src\main.rs:449
+August	plugins\topbar\src\fly.rs:131
+Automatic (DHCP)	plugins\rust-settings\src\net.rs:76
+automatic rollback completed	src\install\mod.rs:137
+automatic rollback failed: {u}	src\install\mod.rs:138
+automatic updates were not enabled	src\update\mod.rs:156
+Autostart is disabled	plugins\rtaskmgr-win32\src\app.rs:931
+Auto-start service (disabling = manual start)	plugins\rtaskmgr-win32\src\startup.rs:46
+autoupdate: ERROR {e}	src\update\mod.rs:74
+Available	plugins\rtaskmgr-win32\src\draw.rs:649
+Average response time	plugins\rtaskmgr-win32\src\draw.rs:688
+Back to the theme's colors	plugins\topbar\src\settings.rs:153
+Back	src\ui.rs:553
+Background	plugins\topbar\src\settings.rs:138
+Backup (double-click to restore): {}	plugins\rust-search\src\bin\rs-launcher.rs:1196
+Bar opacity	plugins\topbar\src\settings.rs:151
+Bar settings	plugins\topbar\src\settings.rs:18
+Bar	plugins\topbar\src\settings.rs:113
+Bar	plugins\topbar\src\settings.rs:13
+Base speed:	plugins\rtaskmgr-win32\src\draw.rs:591
+Battery	plugins\rust-settings\src\main.rs:602
+Behavior	plugins\topbar\src\settings.rs:108
+Below normal	plugins\rtaskmgr-win32\src\sys.rs:115
+Block ads (hosts)	plugins\rtaskmgr-win32\src\boost.rs:58
+Block unneeded shell processes	plugins\rtaskmgr-win32\src\boost.rs:54
+Bluetooth	plugins\topbar\src\fly.rs:1298
+Bluetooth: no adapter	plugins\rust-settings\src\main.rs:624
+Bottom	plugins\topbar\src\settings.rs:101
+Bringing the stock Windows parts back…	src\ui.rs:582
+Build	plugins\rust-settings\src\main.rs:725
+Built-in display	plugins\rust-settings\src\display.rs:67
+Buttons on the left, like Windows 10	plugins\topbar\src\settings.rs:110
+Cache of Steam's built-in browser. Games are not touched.	plugins\rs-du\src\clean.rs:70
+Cached	plugins\rtaskmgr-win32\src\draw.rs:651
+CAN BE DELETED: it is recreated, but may run a little slower for a while	plugins\rs-du\src\clean.rs:262
+Cancel	plugins\rust-search\src\bin\rs-launcher.rs:1186
+Cancel	plugins\topbar\src\settings.rs:240
+Cancel	src\ui.rs:663
+Cancelled	plugins\rust-explorer\src\jobs.rs:291
+cannot create {}: {e} (run as admin)	plugins\debloat\src\main.rs:533
+cannot list apps (run as administrator)	plugins\purge\src\main.rs:97
+Cannot open this picture: {}	plugins\photoview\src\main.rs:205
+cannot open volume {0}: (run as administrator), error {1}	common\src\mft.rs:107
+cannot read the $MFT record, error {0}	common\src\mft.rs:117
+cannot save the old value: {e:?}	src\install\journal.rs:53
+Capacity:	plugins\rtaskmgr-win32\src\draw.rs:694
+CCleaner updater	plugins\debloat\src\main.rs:83
+CCleaner updater	plugins\debloat\src\main.rs:84
+Check for updates	plugins\rust-settings\src\main.rs:666
+Checking for updates…	plugins\rust-settings\src\wu.rs:76
+Checking what will be removed\u{2026}	plugins\rust-search\src\bin\rs-launcher.rs:1150
+Choose a picture…	plugins\rust-settings\src\main.rs:708
+Choose how to install WinRust.	src\ui.rs:451
+Cleaning…	plugins\rust-settings\src\main.rs:1420
+Clear memory cache now	plugins\rtaskmgr-win32\src\boost.rs:52
+Clear memory cache when it runs short	plugins\rtaskmgr-win32\src\boost.rs:53
+Click a template to delete it	plugins\topbar\src\settings.rs:228
+Click again to restart	plugins\topbar\src\fly.rs:1726
+Click again to shut down	plugins\topbar\src\fly.rs:1727
+Click again	plugins\rust-settings\src\main.rs:1097
+Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan	plugins\wiztree\src\main.rs:199
+Close all windows	plugins\topbar\src\main.rs:2234
+Close the bar	plugins\topbar\src\fly.rs:849
+Close window	plugins\topbar\src\main.rs:2234
+Close	plugins\rust-search\src\bin\rs-launcher.rs:1199
+Close	plugins\rust-search\src\bin\rs-launcher.rs:1203
+Close	src\ui.rs:650
+Closes Steam, Epic, Battle.net, EA, Ubisoft, GOG, Overwolf, Xbox and Game Bar, stops their services. 'Disable' starts the launchers again.	plugins\rtaskmgr-win32\src\boost.rs:64
+Closing the window minimizes to tray	plugins\rtaskmgr-win32\src\app.rs:865
+Closing the window minimizes to tray	plugins\rtaskmgr-win32\src\draw.rs:452
+Closing the window will minimize to tray	plugins\rtaskmgr-win32\src\app.rs:921
+Closing the window will quit the program	plugins\rtaskmgr-win32\src\app.rs:921
+code {}	plugins\rust-settings\src\ext.rs:130
+code {}	plugins\rust-settings\src\wifi.rs:250
+Collapse	plugins\rtaskmgr-win32\src\app.rs:817
+Colors (dot on the right: changed by you)	plugins\topbar\src\settings.rs:149
+Colors and transparency	plugins\topbar\src\settings.rs:10
+Colors and transparency	plugins\topbar\src\settings.rs:155
+Colour	plugins\rust-settings\src\main.rs:569
+Command line copied	plugins\rtaskmgr-win32\src\app.rs:1078
+Command line unavailable for this process	plugins\rtaskmgr-win32\src\app.rs:1075
+Command line	plugins\rtaskmgr-win32\src\model.rs:93
+Command	plugins\rtaskmgr-win32\src\model.rs:95
+Committed	plugins\rtaskmgr-win32\src\draw.rs:650
+Component	src\ui.rs:631
+Components	src\ui.rs:414
+Components	src\ui.rs:505
+Compress to ZIP	plugins\rust-explorer\src\main.rs:381
+Computer name	plugins\rust-settings\src\main.rs:720
+Condition	plugins\rtaskmgr-win32\src\model.rs:98
+Confirmation	plugins\rtaskmgr-win32\src\app.rs:1164
+Connect	plugins\rust-settings\src\main.rs:1663
+Connect	plugins\topbar\src\fly.rs:1544
+Connect	plugins\topbar\src\fly.rs:667
+Connected  ·  right click: disconnect, forget	plugins\rust-settings\src\main.rs:489
+Connected User Experiences and Telemetry	plugins\debloat\src\main.rs:26
+Connected	plugins\rust-settings\src\main.rs:1098
+Connected	plugins\rust-settings\src\main.rs:539
+Connected	plugins\rust-settings\src\main.rs:632
+Connected	plugins\rust-settings\src\net.rs:52
+Connected	plugins\topbar\src\fly.rs:1285
+Connected	plugins\topbar\src\fly.rs:1502
+Connected	plugins\topbar\src\fly.rs:1503
+Connected, no internet	plugins\topbar\src\fly.rs:1406
+Connected, no internet	plugins\topbar\src\fly.rs:1499
+Connecting to \"{}\"…	plugins\rust-settings\src\main.rs:1415
+Connecting to \"{}\"…	plugins\rust-settings\src\main.rs:1559
+Connecting	plugins\topbar\src\fly.rs:1495
+Connecting…	plugins\rust-settings\src\main.rs:1085
+Connection type:	plugins\rtaskmgr-win32\src\draw.rs:721
+Connections	plugins\rust-settings\src\main.rs:511
+Copies of pages and images. Sites open a little slower the first time. Passwords, bookmarks and history are not touched.	plugins\rs-du\src\clean.rs:55
+Copilot off	plugins\debloat\src\main.rs:47
+Copy command line	plugins\rtaskmgr-win32\src\app.rs:831
+Copy	plugins\rtaskmgr-win32\src\draw.rs:745
+Copy	plugins\rust-explorer\src\main.rs:348
+Copying	plugins\rust-explorer\src\jobs.rs:187
+Core affinity	plugins\rtaskmgr-win32\src\app.rs:1060
+Cores:	plugins\rtaskmgr-win32\src\draw.rs:593
+Could not change autostart	plugins\rtaskmgr-win32\src\app.rs:932
+Could not check: {}	plugins\rust-settings\src\wu.rs:83
+Could not connect to \"{}\": {}	plugins\rust-settings\src\main.rs:1739
+Could not connect to “{ssid}”	plugins\topbar\src\fly.rs:563
+could not determine the signed-in user	src\install\session.rs:178
+Could not forget “{ssid}”	plugins\topbar\src\fly.rs:579
+Could not install: {}	plugins\rust-settings\src\wu.rs:117
+Could not pair (code {})	plugins\rust-settings\src\bt.rs:130
+Could not pair: {}	plugins\rust-settings\src\bt.rs:155
+could not read the installer's own account SID	src\install\session.rs:176
+Could not remove (code {})	plugins\rust-settings\src\bt.rs:169
+could not remove: {}	plugins\rs-du\src\clean.rs:291
+Could not remove: {}	plugins\rust-settings\src\bt.rs:171
+Could not save CSV: {e}	plugins\rtaskmgr-win32\src\app.rs:1187
+Could not save the credentials: {}	plugins\rust-settings\src\wifi.rs:337
+Could not save the network (wrong password format?)	plugins\topbar\src\fly.rs:617
+Could not start connecting	plugins\rust-settings\src\wifi.rs:289
+Could not start connecting	plugins\rust-settings\src\wifi.rs:341
+Could not start ETW	plugins\rtaskmgr-win32\src\app.rs:949
+could not start the ETW session (administrator rights needed)	plugins\rtaskmgr-win32\src\main.rs:37
+Could not start uninstalling \"{}\"	plugins\rust-settings\src\main.rs:1396
+Could not take a screenshot	plugins\topbar\src\shot.rs:68
+Counting files and searching the registry. Nothing is deleted yet.	plugins\rust-search\src\bin\rs-launcher.rs:1152
+CPU %	plugins\rtaskmgr-win32\src\model.rs:96
+CPU > {:.0}% for over {} s	plugins\rtaskmgr-win32\src\model.rs:401
+CPU cores	plugins\rtaskmgr-win32\src\app.rs:828
+CPU is almost fully used - sort processes by CPU to see the culprit.	plugins\rtaskmgr-win32\src\data.rs:558
+CPU	plugins\rtaskmgr-win32\src\draw.rs:574
+CPU	plugins\rtaskmgr-win32\src\draw.rs:579
+CPU	plugins\rtaskmgr-win32\src\model.rs:77
+CPU	plugins\rtaskmgr-win32\src\model.rs:87
+CPU	plugins\rtaskmgr-win32\src\model.rs:93
+CPU: '{}' averages {a:.0}% over the last 30 s (now {now:.0}%).	plugins\rtaskmgr-win32\src\data.rs:525
+Critical system processes (csrss, lsass, smss, etc.) are protected and skipped	plugins\rtaskmgr-win32\src\app.rs:1011
+Custom (advanced)	src\ui.rs:476
+Custom installation	src\ui.rs:504
+Dark theme for apps	plugins\rust-settings\src\main.rs:710
+Dark theme for the system	plugins\rust-settings\src\main.rs:711
+Dark	plugins\rtaskmgr-win32\src\app.rs:852
+Dark	plugins\rtaskmgr-win32\src\draw.rs:269
+Date modified	plugins\rust-explorer\src\main.rs:1577
+Date	plugins\rust-explorer\src\ui.rs:661
+December	plugins\topbar\src\fly.rs:135
+Dedicated GPU memory usage	plugins\rtaskmgr-win32\src\draw.rs:748
+Dedicated GPU memory:	plugins\rtaskmgr-win32\src\draw.rs:764
+Defender exclusions for builds and games	plugins\rtaskmgr-win32\src\boost.rs:56
+Defender stops scanning the caches of cargo, rustup, npm, pip, NuGet, Gradle and the Steam/Epic libraries, and cargo.exe and rustc.exe. Builds and game loading get faster, but those folders are not scanned.	plugins\rtaskmgr-win32\src\boost.rs:69
+Defender will stop scanning build caches and game libraries (cargo, npm, pip, Steam, Epic…). A malicious file in those folders will not be caught when opened. Enable?	plugins\rtaskmgr-win32\src\app.rs:1151
+Delete a template	plugins\topbar\src\settings.rs:228
+Delete a template…	plugins\topbar\src\settings.rs:200
+Delete forever + clean registry	plugins\rust-search\src\bin\rs-launcher.rs:677
+Delete forever	plugins\rust-search\src\bin\rs-launcher.rs:1187
+Delete forever?	plugins\rust-search\src\bin\rs-launcher.rs:1177
+Delete rule	plugins\rtaskmgr-win32\src\app.rs:170
+Delete rule	plugins\rtaskmgr-win32\src\app.rs:840
+Deleted	plugins\rust-search\src\bin\rs-launcher.rs:1042
+Deleted	plugins\rust-search\src\bin\rs-launcher.rs:1054
+Deleted, registry kept	plugins\rust-search\src\bin\rs-launcher.rs:1047
+Deleting\u{2026}	plugins\rust-search\src\bin\rs-launcher.rs:1158
+Description	plugins\rtaskmgr-win32\src\model.rs:94
+Description	plugins\rust-settings\src\net.rs:66
+Desktop background	plugins\rust-settings\src\main.rs:707
+Desktop	plugins\rust-explorer\src\ui.rs:810
+Details	plugins\rtaskmgr-win32\src\model.rs:27
+Developer caches (cargo, npm, pip, NuGet)	plugins\rs-du\src\clean.rs:71
+Device paired	plugins\rust-settings\src\bt.rs:126
+Device removed	plugins\rust-settings\src\bt.rs:169
+Device	plugins\rust-settings\src\main.rs:719
+Devices	plugins\rust-settings\src\main.rs:629
+Diagnostic Policy Service (troubleshooters)	plugins\debloat\src\main.rs:32
+diagnostic service host (needs DPS)	plugins\debloat\src\main.rs:33
+diagnostic system host (needs DPS)	plugins\debloat\src\main.rs:34
+DirectX version:	plugins\rtaskmgr-win32\src\draw.rs:767
+Disable	plugins\rtaskmgr-win32\src\app.rs:169
+Disable	plugins\rtaskmgr-win32\src\app.rs:172
+Disable	plugins\rtaskmgr-win32\src\app.rs:839
+Disable	plugins\rtaskmgr-win32\src\app.rs:841
+disabled - will not start with Windows	plugins\rtaskmgr-win32\src\app.rs:1132
+Disabled	plugins\rtaskmgr-win32\src\draw.rs:595
+Disabled	plugins\rtaskmgr-win32\src\model.rs:351
+Disables updater services and tasks of Adobe, Mozilla, Dropbox, CCleaner, Opera, Apple, Zoom, OneDrive; winget updates every app once a week. Browsers keep updating themselves.	plugins\rtaskmgr-win32\src\boost.rs:68
+Disconnect or forget: right click	plugins\rust-settings\src\main.rs:1637
+Disconnect	plugins\rust-settings\src\main.rs:1663
+Disconnect	plugins\topbar\src\fly.rs:1536
+Disconnect	plugins\topbar\src\fly.rs:667
+Disconnected	plugins\rust-settings\src\main.rs:539
+Disconnected	plugins\topbar\src\fly.rs:1155
+Disk {} ({})	plugins\rtaskmgr-win32\src\draw.rs:671
+Disk Cleaner	plugins\topbar\src\fly.rs:848
+Disk cleanup	plugins\rust-settings\src\main.rs:611
+Disk is {:.0}% busy (read+write {:.0} MB/s).	plugins\rtaskmgr-win32\src\data.rs:542
+Disk usage (WinRust Disk)	plugins\rust-explorer\src\main.rs:443
+Disk	plugins\rtaskmgr-win32\src\model.rs:79
+Disk	plugins\rtaskmgr-win32\src\model.rs:89
+Disk	plugins\rtaskmgr-win32\src\model.rs:93
+Display {}	plugins\rust-settings\src\display.rs:67
+Display	plugins\rust-settings\src\main.rs:560
+Display	plugins\rust-settings\src\main.rs:696
+Displays	plugins\rust-settings\src\main.rs:555
+distributed link tracking	plugins\debloat\src\main.rs:36
+Documents	plugins\rust-explorer\src\ui.rs:812
+done  	plugins\debloat\src\main.rs:405
+Done	src\ui.rs:598
+Done	src\ui.rs:688
+Download and install	plugins\rust-settings\src\main.rs:668
+downloaded maps	plugins\debloat\src\main.rs:28
+Downloaded packages. They download again on the next build.	plugins\rs-du\src\clean.rs:71
+Downloading and installing updates…	plugins\rust-settings\src\wu.rs:89
+Downloads	plugins\rust-explorer\src\ui.rs:811
+Drag an app or file onto the Start button to add it	plugins\topbar\src\fly.rs:1671
+Drive {}:	plugins\rust-settings\src\main.rs:609
+Driver date:	plugins\rtaskmgr-win32\src\draw.rs:766
+Driver version:	plugins\rtaskmgr-win32\src\draw.rs:765
+Drivers are fine: DPC {:.1}%, interrupts {:.1}% of CPU time.	plugins\rtaskmgr-win32\src\data.rs:579
+Drivers took {:.1}% of CPU time (DPC {:.1}%, interrupts {:.1}%; normal is under 2%). This is what 'a driver slows the system down' looks like: crackling audio, jerky mouse, frame drops. Usually Wi-Fi/network, audio, graphics or USB drivers: update them or disable them one by one in Device Manager.	plugins\rtaskmgr-win32\src\data.rs:566
+Dropbox updater	plugins\debloat\src\main.rs:81
+Dropbox updater	plugins\debloat\src\main.rs:82
+Drops the standby list (cached file data nobody holds), like ISLC. Helps against stutter in games when no memory is free.	plugins\rtaskmgr-win32\src\boost.rs:65
+Dry run: nothing is changed. Add --apply (admin) to do it, --undo to revert.\n	plugins\debloat\src\main.rs:346
+Dry run: nothing is removed. --apply REMOVES it FOR GOOD (no undo).\n	plugins\purge\src\main.rs:119
+Duplicate	plugins\rust-settings\src\main.rs:243
+Earlier this month	plugins\rust-explorer\src\main.rs:151
+Earlier this week	plugins\rust-explorer\src\main.rs:149
+Earlier this year	plugins\rust-explorer\src\main.rs:153
+Edge (best effort, Windows may refuse)	plugins\purge\src\main.rs:177
+Edge does not preload at sign-in	plugins\debloat\src\main.rs:56
+Edge does not run after it is closed	plugins\debloat\src\main.rs:57
+Edition	plugins\rust-settings\src\main.rs:723
+Editor cache. It will be recreated.	plugins\rs-du\src\clean.rs:67
+Efficiency mode off	plugins\rtaskmgr-win32\src\app.rs:1058
+Efficiency mode on	plugins\rtaskmgr-win32\src\app.rs:1058
+Efficiency mode	plugins\rtaskmgr-win32\src\app.rs:165
+Efficiency mode	plugins\rtaskmgr-win32\src\app.rs:823
+Efficiency	plugins\rtaskmgr-win32\src\model.rs:217
+empty	plugins\rust-settings\src\main.rs:613
+Enable	plugins\rtaskmgr-win32\src\app.rs:169
+Enable	plugins\rtaskmgr-win32\src\app.rs:172
+Enable	plugins\rtaskmgr-win32\src\app.rs:839
+Enable	plugins\rtaskmgr-win32\src\app.rs:841
+enabled	plugins\rtaskmgr-win32\src\app.rs:1132
+Enabled	plugins\rtaskmgr-win32\src\draw.rs:595
+Enabled	plugins\rtaskmgr-win32\src\model.rs:351
+End {} processes (for a tree, together with their children)?	plugins\rtaskmgr-win32\src\app.rs:1017
+End process tree	plugins\rtaskmgr-win32\src\app.rs:822
+End process	plugins\topbar\src\main.rs:2235
+End task	plugins\rtaskmgr-win32\src\app.rs:165
+End task	plugins\rtaskmgr-win32\src\app.rs:166
+End task	plugins\rtaskmgr-win32\src\app.rs:167
+End task	plugins\rtaskmgr-win32\src\app.rs:821
+Ended {ok} of {} (with children)	plugins\rtaskmgr-win32\src\app.rs:1036
+Ending	plugins\rtaskmgr-win32\src\app.rs:1028
+Energy saver	plugins\topbar\src\fly.rs:1301
+english {}	common\src\lib.rs:189
+english	common\src\lib.rs:155
+Enter — connect · Esc — cancel	plugins\topbar\src\fly.rs:1450
+Enter = clean the safe items (green and yellow), a = everything, 12,13 = safe + these numbers, n = cancel:	plugins\rs-du\src\clean.rs:275
+Enter password	plugins\topbar\src\fly.rs:1544
+Enter the user name	plugins\rust-settings\src\main.rs:1606
+Enterprise (802.1X)  ·  user name and password	plugins\rust-settings\src\main.rs:491
+Enterprise with certificates: not supported	plugins\rust-settings\src\main.rs:492
+Error reports and crash dumps	plugins\rs-du\src\clean.rs:49
+error: {0}: {1}	src\cli.rs:108
+error: {0}: {1}	src\cli.rs:94
+ERROR: {e}	plugins\rtaskmgr-win32\src\main.rs:63
+error: {e}	src\cli.rs:131
+Error: {e}	src\ui.rs:798
+Error: {e}	src\ui.rs:890
+Esc hides this card; the result waits for the next Alt+Space.	plugins\rust-search\src\bin\rs-launcher.rs:1160
+Everything recommended is already there: the installed components are updated from this version, settings are kept.	src\ui.rs:469
+Exit	plugins\rtaskmgr-win32\src\app.rs:872
+Expand	plugins\rtaskmgr-win32\src\app.rs:817
+Export to CSV	plugins\rtaskmgr-win32\src\app.rs:850
+Express (recommended)	src\ui.rs:474
+Extend	plugins\rust-settings\src\main.rs:242
+Extract here	plugins\rust-explorer\src\main.rs:349
+Extract here	plugins\rust-explorer\src\main.rs:383
+Extracting {}	plugins\rust-explorer\src\jobs.rs:316
+Extras	src\ui.rs:509
+FAILED  	plugins\debloat\src\main.rs:557
+FAILED 	plugins\purge\src\main.rs:149
+FAILED	plugins\debloat\src\main.rs:407
+FAILED	plugins\rs-du\src\clean.rs:232
+Failed	src\ui.rs:642
+Faster NTFS	plugins\rtaskmgr-win32\src\boost.rs:57
+Fax	plugins\debloat\src\main.rs:31
+February	plugins\topbar\src\fly.rs:125
+File folder	plugins\rust-explorer\src\main.rs:209
+File path unavailable (system or protected process)	plugins\rtaskmgr-win32\src\app.rs:1067
+File	plugins\rust-explorer\src\main.rs:211
+Files deleted: {} ({})	plugins\rust-settings\src\ext.rs:231
+Files skip the Recycle Bin and cannot be restored.	plugins\rust-search\src\bin\rs-launcher.rs:1181
+Files skip the Recycle Bin. Registry entries are saved to a .reg backup first.	plugins\rust-search\src\bin\rs-launcher.rs:1183
+Files you have already deleted.	plugins\rs-du\src\clean.rs:242
+Filter keys	plugins\topbar\src\fly.rs:1102
+Find devices	plugins\rust-settings\src\main.rs:636
+Finish	src\ui.rs:416
+Finished, but not everything worked	src\ui.rs:619
+Floating dock	plugins\topbar\src\settings.rs:45
+folder verbs {k} were not restored	src\install\explorer.rs:209
+Forget network	plugins\rust-settings\src\main.rs:1663
+Forget network	plugins\topbar\src\fly.rs:669
+Forgot “{ssid}”	plugins\topbar\src\fly.rs:579
+Form factor:	plugins\rtaskmgr-win32\src\draw.rs:614
+Formatted:	plugins\rtaskmgr-win32\src\draw.rs:695
+Fr	plugins\topbar\src\fly.rs:154
+Free {}	plugins\rtaskmgr-win32\src\draw.rs:636
+free {}, cache {}	plugins\rtaskmgr-win32\src\boost.rs:128
+Game Bar background capture off	plugins\debloat\src\main.rs:55
+'Game' profile	plugins\rtaskmgr-win32\src\boost.rs:50
+Games rebuild it themselves, the first launch of a game may stutter a little.	plugins\rs-du\src\clean.rs:68
+Gateway	plugins\rust-settings\src\net.rs:73
+GPU memory	plugins\rtaskmgr-win32\src\draw.rs:757
+GPU shader cache (NVIDIA, AMD, DirectX)	plugins\rs-du\src\clean.rs:68
+GPU temperature is read continuously	plugins\rtaskmgr-win32\src\app.rs:962
+GPU temperature is read only on the GPU page	plugins\rtaskmgr-win32\src\app.rs:962
+GPU temperature	plugins\rtaskmgr-win32\src\draw.rs:758
+Group by date	plugins\rust-explorer\src\main.rs:454
+Half of the cores only	plugins\rtaskmgr-win32\src\app.rs:828
+Handles	plugins\rtaskmgr-win32\src\draw.rs:586
+Hardware reserved:	plugins\rtaskmgr-win32\src\draw.rs:615
+HDR	plugins\rust-settings\src\main.rs:568
+Hidden network name	plugins\rust-settings\src\main.rs:1160
+Hide automatically	plugins\topbar\src\settings.rs:109
+Hide desktop icons	plugins\rust-explorer\src\main.rs:462
+Hide the OneDrive icon	src\ui.rs:679
+High	plugins\rtaskmgr-win32\src\suspect.rs:34
+High	plugins\rtaskmgr-win32\src\sys.rs:118
+Home	plugins\rust-explorer\src\ui.rs:807
+Hover	plugins\topbar\src\settings.rs:140
+I/O KB/s	plugins\rtaskmgr-win32\src\model.rs:96
+Image and UI cache. It will be recreated.	plugins\rs-du\src\clean.rs:65
+In use (compressed)	plugins\rtaskmgr-win32\src\draw.rs:648
+In use {}	plugins\rtaskmgr-win32\src\draw.rs:626
+In use	plugins\rtaskmgr-win32\src\draw.rs:648
+Input device	plugins\rust-settings\src\main.rs:583
+Input language	plugins\topbar\src\lang.rs:33
+Input language: {}	plugins\topbar\src\main.rs:452
+Input	plugins\rust-settings\src\main.rs:582
+Install ({a})	src\ui.rs:557
+Install the selected?	src\ui.rs:1005
+install topbar first: without it there will be no bar after Explorer is disabled	src\install\explorer.rs:135
+Install	src\ui.rs:1005
+Install	src\ui.rs:499
+installation is not available	src\install\mod.rs:126
+Installation options	src\ui.rs:455
+Installed programs: {}	plugins\rust-settings\src\main.rs:645
+installed	src\cli.rs:59
+installed	src\install\mod.rs:145
+installed	src\install\mod.rs:147
+Installed	src\ui.rs:534
+Installed	src\ui.rs:643
+Installed. Restart to finish	plugins\rust-settings\src\wu.rs:109
+Installed:	src\ui.rs:846
+Installing WinRust	src\ui.rs:567
+Installing	src\ui.rs:415
+Installing	src\ui.rs:588
+Installing…	src\ui.rs:599
+Installs {}. Explorer and the Windows clean-up are left alone, nothing is removed.	src\ui.rs:471
+Interface language	plugins\rust-settings\src\main.rs:706
+Internet over a cable	plugins\topbar\src\main.rs:456
+Internet	plugins\rust-settings\src\net.rs:49
+IP assignment	plugins\rust-settings\src\net.rs:76
+January	plugins\topbar\src\fly.rs:124
+July	plugins\topbar\src\fly.rs:130
+June	plugins\topbar\src\fly.rs:129
+Junk left by programs and installers. Programs will recreate what they need.	plugins\rs-du\src\clean.rs:47
+Keep the window open until it finishes. The screen may flicker while Windows parts are swapped.	src\ui.rs:568
+Keep this mode? Enter keeps it, Esc or {} s goes back	plugins\rust-settings\src\main.rs:1152
+Known networks…	plugins\topbar\src\fly.rs:671
+L1 cache:	plugins\rtaskmgr-win32\src\draw.rs:596
+L2 cache:	plugins\rtaskmgr-win32\src\draw.rs:597
+L3 cache:	plugins\rtaskmgr-win32\src\draw.rs:598
+Landscape (flipped)	plugins\rust-settings\src\main.rs:271
+Landscape	plugins\rust-settings\src\main.rs:271
+Language changed. Restart the WinRust programs (or sign out) to apply it everywhere.	plugins\rust-settings\src\main.rs:351
+Language changed. Restart the WinRust programs (or sign out) to apply it everywhere.	src\ui.rs:1196
+Language settings	plugins\topbar\src\lang.rs:32
+Language	plugins\topbar\src\settings.rs:12
+Language	plugins\topbar\src\settings.rs:73
+Language: {}	src\cli.rs:53
+Large icons	plugins\rust-explorer\src\main.rs:458
+Large	plugins\topbar\src\settings.rs:107
+Last month	plugins\rust-explorer\src\main.rs:152
+Last week	plugins\rust-explorer\src\main.rs:150
+Left	plugins\topbar\src\settings.rs:102
+Light	plugins\rtaskmgr-win32\src\app.rs:852
+Light	plugins\rtaskmgr-win32\src\draw.rs:269
+Light, dark or follow the system	plugins\rtaskmgr-win32\src\draw.rs:451
+Lines and borders	plugins\topbar\src\settings.rs:139
+Link speed:	plugins\rtaskmgr-win32\src\draw.rs:721
+List: {}	plugins\rs-du\src\clean.rs:300
+Live captions	plugins\topbar\src\fly.rs:1302
+Local disk	plugins\rtaskmgr-win32\src\draw.rs:677
+Local Disk	plugins\rust-explorer\src\ui.rs:845
+Logical processors:	plugins\rtaskmgr-win32\src\draw.rs:594
+logical	plugins\rs-du\src\main.rs:56
+Look of the bar and the WinRust programs	plugins\topbar\src\settings.rs:18
+Look	plugins\topbar\src\settings.rs:8
+Low · {} K	plugins\rust-settings\src\main.rs:423
+Low	plugins\rtaskmgr-win32\src\suspect.rs:36
+Low	plugins\rtaskmgr-win32\src\sys.rs:114
+Lower priority	plugins\rtaskmgr-win32\src\model.rs:402
+lsass.exe was started not by wininit.exe but by the process '{}'	plugins\rtaskmgr-win32\src\suspect.rs:98
+Magnifier	plugins\topbar\src\fly.rs:1100
+Main display	plugins\rust-settings\src\main.rs:562
+Make main	plugins\rust-settings\src\main.rs:252
+Manual	plugins\rust-settings\src\net.rs:76
+Manufacturer:	plugins\rtaskmgr-win32\src\draw.rs:620
+March	plugins\topbar\src\fly.rs:126
+Maximum · {} K	plugins\rust-settings\src\main.rs:426
+May	plugins\topbar\src\fly.rs:128
+Mbps	plugins\topbar\src\fly.rs:1501
+measuring…	plugins\rust-settings\src\ext.rs:237
+Medium · {} K	plugins\rust-settings\src\main.rs:424
+Medium	plugins\rtaskmgr-win32\src\suspect.rs:35
+Memory %	plugins\rtaskmgr-win32\src\model.rs:96
+Memory composition: {}	plugins\rtaskmgr-win32\src\draw.rs:657
+Memory is {:.0}% used. Biggest users: {}.	plugins\rtaskmgr-win32\src\data.rs:538
+Memory usage	plugins\rtaskmgr-win32\src\draw.rs:643
+Memory	plugins\rtaskmgr-win32\src\draw.rs:640
+Memory	plugins\rtaskmgr-win32\src\draw.rs:645
+Memory	plugins\rtaskmgr-win32\src\model.rs:78
+Memory	plugins\rtaskmgr-win32\src\model.rs:88
+Memory	plugins\rtaskmgr-win32\src\model.rs:93
+Memory	plugins\rust-settings\src\main.rs:721
+Microphone muted	plugins\rust-settings\src\main.rs:585
+Microphone	plugins\rust-settings\src\main.rs:584
+Microsoft Defender is not active here (another antivirus?): nothing to exclude	plugins\debloat\src\main.rs:318
+Mo	plugins\topbar\src\fly.rs:150
+Modified {}	plugins\rtaskmgr-win32\src\draw.rs:629
+Most likely the programs are already installed.	plugins\rs-du\src\clean.rs:113
+Move down	plugins\topbar\src\main.rs:2226
+Move left	plugins\topbar\src\main.rs:2223
+Move right	plugins\topbar\src\main.rs:2226
+Move to Recycle Bin	plugins\rust-search\src\bin\rs-launcher.rs:676
+Move up	plugins\topbar\src\main.rs:2223
+Moving	plugins\rust-explorer\src\jobs.rs:187
+Mozilla maintenance (Firefox still updates itself while it runs)	plugins\debloat\src\main.rs:80
+Multiple displays	plugins\rust-settings\src\main.rs:561
+Music	plugins\rust-explorer\src\ui.rs:814
+Mute	plugins\rust-settings\src\main.rs:581
+My templates	plugins\topbar\src\settings.rs:187
+Name	plugins\rtaskmgr-win32\src\model.rs:75
+Name	plugins\rtaskmgr-win32\src\model.rs:93
+Name	plugins\rtaskmgr-win32\src\model.rs:94
+Name	plugins\rtaskmgr-win32\src\model.rs:95
+Name	plugins\rust-explorer\src\main.rs:1576
+Name	plugins\rust-explorer\src\ui.rs:660
+Narrator	plugins\topbar\src\fly.rs:1099
+Nearby devices	plugins\rust-settings\src\main.rs:635
+needs administrator rights	plugins\rust-settings\src\main.rs:668
+needs the topbar (no Start menu without it)	plugins\rtaskmgr-win32\src\boost.rs:133
+needs the topbar	plugins\rtaskmgr-win32\src\boost.rs:131
+'Network' column in Processes (ETW). Needs administrator rights	plugins\rtaskmgr-win32\src\draw.rs:454
+Network Drive ({}:)	plugins\rust-explorer\src\ui.rs:836
+Network KB/s	plugins\rtaskmgr-win32\src\model.rs:96
+Network name: 1 to 32 bytes	plugins\rust-settings\src\main.rs:1590
+Network settings	plugins\topbar\src\fly.rs:1556
+Network	plugins\rtaskmgr-win32\src\model.rs:80
+Network	plugins\rtaskmgr-win32\src\model.rs:90
+Network	plugins\rust-settings\src\main.rs:699
+Network: '{}' moves {:.1} MB/s - more than any other.	plugins\rtaskmgr-win32\src\data.rs:549
+Never	plugins\rust-settings\src\power.rs:139
+New folder	plugins\rust-explorer\src\main.rs:1788
+New folder	plugins\rust-explorer\src\main.rs:435
+New folder	plugins\rust-explorer\src\main.rs:490
+New text document.txt	plugins\rust-explorer\src\main.rs:491
+New text file	plugins\rust-explorer\src\main.rs:436
+New version {} ›	src\ui.rs:440
+New window	plugins\topbar\src\main.rs:2212
+Next	src\ui.rs:495
+Night light	plugins\rust-settings\src\main.rs:570
+no $DATA runs in the $MFT record	common\src\mft.rs:120
+no 8.3 short name created with every new file	plugins\debloat\src\main.rs:112
+no activity history (Timeline)	plugins\debloat\src\main.rs:53
+No address (DHCP)	plugins\rust-settings\src\net.rs:50
+no ads in Start	plugins\debloat\src\main.rs:62
+no ads on the lock screen	plugins\debloat\src\main.rs:67
+no advertising ID	plugins\debloat\src\main.rs:52
+No apps found	plugins\topbar\src\fly.rs:1674
+no apps installed behind your back	plugins\debloat\src\main.rs:59
+No battery	plugins\rust-settings\src\power.rs:23
+No Bluetooth state, opening Settings	plugins\topbar\src\fly.rs:1087
+no cloud-driven content	plugins\debloat\src\main.rs:50
+No data	plugins\rtaskmgr-win32\src\draw.rs:224
+no debloat.exe (reinstall the task manager)	plugins\rtaskmgr-win32\src\boost.rs:137
+no feedback pop-ups	plugins\debloat\src\main.rs:46
+No grouping	plugins\rust-explorer\src\main.rs:454
+No internet	plugins\rust-settings\src\net.rs:51
+no last-access time written on every read	plugins\debloat\src\main.rs:111
+No networks nearby	plugins\topbar\src\fly.rs:1460
+no OEM promoted apps	plugins\debloat\src\main.rs:61
+no pre-installed promoted apps	plugins\debloat\src\main.rs:60
+no profile was on	plugins\rtaskmgr-win32\src\boost.rs:329
+No registry entries point to it.	plugins\rust-search\src\bin\rs-launcher.rs:1167
+No registry entries pointed to it.	plugins\rust-search\src\bin\rs-launcher.rs:1041
+No results	plugins\rust-search\src\bin\rs-launcher.rs:1429
+No saved password: enter it once in Windows' VPN settings	plugins\rust-settings\src\ext.rs:155
+no SeProfileSingleProcess right	plugins\rtaskmgr-win32\src\boost.rs:129
+no service settings were backed up; the current values were left in place	src\install\explorer.rs:116
+no suggested/promoted apps	plugins\debloat\src\main.rs:49
+no suggestions in Settings	plugins\debloat\src\main.rs:65
+no suggestions in Settings	plugins\debloat\src\main.rs:66
+no suggestions in Start	plugins\debloat\src\main.rs:63
+no tips and suggestions	plugins\debloat\src\main.rs:64
+no web results in search	plugins\debloat\src\main.rs:58
+No Wi-Fi adapter	plugins\rust-settings\src\wifi.rs:279
+No Wi-Fi adapter	plugins\rust-settings\src\wifi.rs:325
+no Windows tips and tricks	plugins\debloat\src\main.rs:51
+No	plugins\rtaskmgr-win32\src\draw.rs:696
+No	plugins\rtaskmgr-win32\src\draw.rs:697
+none right now	plugins\rust-settings\src\main.rs:590
+none set up	plugins\rust-settings\src\main.rs:536
+None yet: set up a look and save it	plugins\topbar\src\settings.rs:189
+none	plugins\rust-settings\src\main.rs:629
+None	plugins\topbar\src\fly.rs:1293
+Non-paged pool	plugins\rtaskmgr-win32\src\draw.rs:653
+Normal	plugins\rtaskmgr-win32\src\sys.rs:116
+Normal	plugins\topbar\src\settings.rs:106
+Normal	plugins\topbar\src\settings.rs:43
+not a DWORD, left alone	plugins\debloat\src\main.rs:365
+Not a valid address	plugins\rust-settings\src\main.rs:1603
+Not an administrator: run the installer as administrator	src\ui.rs:459
+Not checked yet	plugins\rust-settings\src\main.rs:654
+Not connected	plugins\rust-settings\src\net.rs:46
+Not connected	plugins\topbar\src\fly.rs:1287
+Not connected	plugins\topbar\src\fly.rs:1408
+Not connected	plugins\topbar\src\main.rs:457
+not installed	src\cli.rs:59
+not present	plugins\purge\src\main.rs:136
+not present	plugins\purge\src\main.rs:139
+Not responding: '{title}' ({name}). The window hangs: wait or end the task on the 'Processes' page.	plugins\rtaskmgr-win32\src\data.rs:562
+not restored (the place is taken): {}	plugins\rs-du\src\clean.rs:230
+not set	plugins\rust-settings\src\ext.rs:26
+not set	plugins\rust-settings\src\ext.rs:30
+Nothing changed. Repeat with --yes to install.	src\cli.rs:81
+Nothing found	plugins\rtaskmgr-win32\src\draw.rs:224
+Nothing found	plugins\rust-explorer\src\ui.rs:248
+Nothing here yet	plugins\topbar\src\fly.rs:1670
+Nothing removed.	plugins\purge\src\main.rs:201
+Nothing selected	src\ui.rs:555
+Nothing to export on this page	plugins\rtaskmgr-win32\src\app.rs:1172
+nothing to undo (no undo file)	plugins\debloat\src\main.rs:564
+Nothing was deleted. Press Enter to close.	plugins\rs-du\src\clean.rs:277
+Notification settings	plugins\topbar\src\main.rs:2600
+Notify	plugins\rtaskmgr-win32\src\model.rs:402
+November	plugins\topbar\src\fly.rs:134
+NTFS stops writing the last-access time on every read and creating 8.3 short names. Takes effect after a reboot.	plugins\rtaskmgr-win32\src\boost.rs:70
+NTSTATUS 0x{:08X}	plugins\rtaskmgr-win32\src\boost.rs:171
+October	plugins\topbar\src\fly.rs:133
+off	plugins\debloat\src\main.rs:614
+off	plugins\rtaskmgr-win32\src\boost.rs:185
+Off	plugins\rtaskmgr-win32\src\model.rs:366
+Off	plugins\rust-settings\src\ext.rs:272
+Off	plugins\rust-settings\src\main.rs:422
+Off	plugins\topbar\src\fly.rs:1286
+Off	plugins\topbar\src\fly.rs:1292
+Old installers and archives in Downloads ({} items, older than 90 days)	plugins\rs-du\src\clean.rs:112
+on (works while the bar runs)	plugins\rtaskmgr-win32\src\boost.rs:182
+on battery	plugins\rust-settings\src\power.rs:25
+on disk	plugins\rs-du\src\main.rs:56
+On top of the chosen theme	plugins\topbar\src\settings.rs:155
+on	plugins\debloat\src\main.rs:614
+on	plugins\rtaskmgr-win32\src\boost.rs:194
+On	plugins\rtaskmgr-win32\src\model.rs:365
+On	plugins\topbar\src\fly.rs:1291
+One updater through winget	plugins\rtaskmgr-win32\src\boost.rs:55
+Online over a cable	plugins\topbar\src\fly.rs:1407
+Only needed to roll back to the old Windows.	plugins\rs-du\src\clean.rs:75
+Only this window switched: %ProgramData%\\WinRust\\lang.txt could not be written. Run the installer as administrator to apply the language everywhere.	plugins\rust-settings\src\main.rs:359
+Only this window switched: %ProgramData%\\WinRust\\lang.txt could not be written. Run the installer as administrator to apply the language everywhere.	src\ui.rs:1207
+Only when you choose	src\ui.rs:510
+Open a picture with this program, or drop one here	plugins\photoview\src\main.rs:139
+Open file location	plugins\rtaskmgr-win32\src\app.rs:830
+Open file location	plugins\rtaskmgr-win32\src\app.rs:839
+Open file location	plugins\topbar\src\fly.rs:1037
+Open network	plugins\rust-settings\src\main.rs:493
+Open network	plugins\topbar\src\fly.rs:1506
+Open	plugins\rust-explorer\src\main.rs:347
+Open	plugins\rust-search\src\bin\rs-launcher.rs:671
+Open	plugins\topbar\src\fly.rs:1035
+Open	plugins\topbar\src\fly.rs:68
+Open	plugins\topbar\src\main.rs:2212
+Options	src\ui.rs:413
+Options	src\ui.rs:649
+Or search an app and right-click it → Add to Start	plugins\topbar\src\fly.rs:1672
+Orientation	plugins\rust-settings\src\main.rs:567
+Other network…	plugins\rust-settings\src\main.rs:530
+Other networks	plugins\topbar\src\fly.rs:1464
+Otherwise the temperature is read only on the GPU page. Constant polling can wake a laptop's discrete GPU	plugins\rtaskmgr-win32\src\draw.rs:455
+Output device	plugins\rust-settings\src\main.rs:579
+Output	plugins\rust-settings\src\main.rs:578
+overlay is not running now: it starts at the next logon	src\install\explorer.rs:189
+PAC script address (empty: remove)	plugins\rust-settings\src\main.rs:1162
+Packing {}	plugins\rust-explorer\src\jobs.rs:244
+Page file:	plugins\rtaskmgr-win32\src\draw.rs:697
+Paged pool	plugins\rtaskmgr-win32\src\draw.rs:652
+Pair	plugins\rust-settings\src\main.rs:638
+Paired devices	plugins\rust-settings\src\main.rs:627
+Paired	plugins\rust-settings\src\main.rs:632
+Pairing…	plugins\rust-settings\src\main.rs:1434
+partially left {} (in use by a program or no rights): {}	plugins\rs-du\src\clean.rs:297
+Password for \"{}\" (empty: open)	plugins\rust-settings\src\main.rs:1165
+Password for \"{}\"	plugins\rust-settings\src\main.rs:1164
+Password for \"{}\"	plugins\rust-settings\src\main.rs:1166
+Password for “{name}”	plugins\topbar\src\fly.rs:1435
+Password: 8 to 63 characters	plugins\rust-settings\src\wifi.rs:70
+Paste	plugins\rust-explorer\src\main.rs:437
+PC screen only	plugins\rust-settings\src\main.rs:244
+PCI bus {b}, device {}, function {}	plugins\rtaskmgr-win32\src\gpu.rs:142
+Performance	plugins\rtaskmgr-win32\src\model.rs:23
+Per-process network (ETW, administrator)	plugins\rtaskmgr-win32\src\app.rs:867
+Per-process network is off	plugins\rtaskmgr-win32\src\app.rs:945
+Per-process network is on ('Network' column)	plugins\rtaskmgr-win32\src\app.rs:949
+Per-process network needs administrator rights - run the program as administrator	plugins\rtaskmgr-win32\src\app.rs:940
+Per-process network	plugins\rtaskmgr-win32\src\draw.rs:454
+Personalization	plugins\rust-settings\src\main.rs:704
+Personalization	plugins\topbar\src\fly.rs:846
+Photo viewer	plugins\photoview\src\main.rs:107
+Photo viewer	plugins\photoview\src\main.rs:109
+Photo viewer	plugins\photoview\src\main.rs:291
+Physical location:	plugins\rtaskmgr-win32\src\draw.rs:768
+Pick the components yourself, including the Explorer replacement, the Windows clean-up and removing what is installed.	src\ui.rs:477
+Pictures and videos from chats. They download again when you open a chat.	plugins\rs-du\src\clean.rs:64
+Pictures	plugins\rust-explorer\src\ui.rs:813
+pid={me} received={rx} sent={tx} processes_in_data={}	plugins\rtaskmgr-win32\src\main.rs:61
+Pin to Quick access	plugins\rust-explorer\src\main.rs:387
+Pin to the bar	plugins\topbar\src\main.rs:2218
+PIN: {}  (compare with the device)	plugins\rust-settings\src\bt.rs:145
+Pinned · {}	plugins\topbar\src\main.rs:2199
+Pinned · not running	plugins\topbar\src\main.rs:2198
+plugged in	plugins\rust-settings\src\power.rs:25
+Point at a component to read what it changes.	src\ui.rs:551
+Portrait (flipped)	plugins\rust-settings\src\main.rs:271
+Portrait	plugins\rust-settings\src\main.rs:271
+Position	plugins\topbar\src\settings.rs:100
+Position, size, behavior	plugins\topbar\src\settings.rs:14
+Power & storage	plugins\rust-settings\src\main.rs:698
+Power plan	plugins\rust-settings\src\main.rs:603
+Power	plugins\rust-settings\src\main.rs:601
+PowerShell profile was not written	src\install\topbar.rs:77
+Preparing and making a restore point…	src\ui.rs:582
+Press Enter to close.	plugins\rs-du\src\clean.rs:301
+Pressed and selected	plugins\topbar\src\settings.rs:141
+Priority	plugins\rtaskmgr-win32\src\app.rs:1038
+Priority	plugins\rtaskmgr-win32\src\app.rs:827
+Process	plugins\rtaskmgr-win32\src\model.rs:98
+Processes	plugins\rtaskmgr-win32\src\draw.rs:584
+Processes	plugins\rtaskmgr-win32\src\model.rs:22
+Processes	plugins\rtaskmgr-win32\src\model.rs:86
+Profile rejected: {}	plugins\rust-settings\src\wifi.rs:285
+Profile rejected: {}	plugins\rust-settings\src\wifi.rs:330
+Program crash data for developers. You do not need it.	plugins\rs-du\src\clean.rs:49
+Program	plugins\rust-search\src\bin\rs-launcher.rs:188
+Project build folders (target, node_modules)	plugins\rs-du\src\clean.rs:241
+Properties	plugins\rust-explorer\src\main.rs:439
+provisioned {name}	plugins\purge\src\main.rs:159
+Proxy address	plugins\rust-settings\src\main.rs:544
+Proxy	plugins\rust-settings\src\main.rs:542
+Proxy: host:port (empty: remove)	plugins\rust-settings\src\main.rs:1161
+Publisher	plugins\rtaskmgr-win32\src\model.rs:95
+quarantine emptied: {} freed	plugins\rs-du\src\clean.rs:221
+Queued	src\ui.rs:600
+Quick access	plugins\rust-explorer\src\ui.rs:807
+Read speed	plugins\rtaskmgr-win32\src\draw.rs:689
+reading the MFT failed at byte {0}, error {1}	common\src\mft.rs:134
+Reading the MFT of {drive}: ...	plugins\wiztree\src\main.rs:134
+Recall: no snapshots of your screen	plugins\debloat\src\main.rs:48
+Receive	plugins\rtaskmgr-win32\src\draw.rs:719
+Recent	plugins\rust-search\src\bin\rs-launcher.rs:189
+Recycle Bin emptied	plugins\rust-settings\src\main.rs:1430
+Recycle Bin	plugins\rs-du\src\clean.rs:242
+Recycle Bin	plugins\rust-settings\src\main.rs:613
+Refresh rate	plugins\rust-settings\src\main.rs:565
+Refresh	plugins\rust-explorer\src\main.rs:438
+Registry left as is: the backup could not be written ({}).	plugins\rust-search\src\bin\rs-launcher.rs:1046
+Registry, all users (32-bit)	plugins\rtaskmgr-win32\src\startup.rs:25
+Registry, all users	plugins\rtaskmgr-win32\src\startup.rs:24
+Registry, current user	plugins\rtaskmgr-win32\src\startup.rs:23
+Remove ({r})	src\ui.rs:558
+Remove all	src\ui.rs:944
+Remove apps for good?	src\ui.rs:1001
+Remove for good	src\ui.rs:1001
+Remove from Start	plugins\rust-search\src\bin\rs-launcher.rs:1472
+Remove from Start	plugins\topbar\src\fly.rs:1033
+Remove from Start	plugins\topbar\src\main.rs:2231
+Remove the selected?	src\ui.rs:1003
+Remove Windows junk (irreversible)	plugins\topbar\src\fly.rs:852
+Remove WinRust	src\ui.rs:492
+Remove WinRust?	src\ui.rs:942
+Remove	src\ui.rs:1003
+removed	plugins\purge\src\main.rs:149
+removed	src\install\mod.rs:158
+Removed	src\ui.rs:598
+Removed	src\ui.rs:644
+Removed:	src\ui.rs:849
+Removes every installed plugin. Repeat with --yes.	src\cli.rs:126
+Removing WinRust	src\ui.rs:567
+Removing	src\ui.rs:588
+Removing…	src\ui.rs:599
+Rename	plugins\rust-explorer\src\main.rs:386
+Rename	plugins\rust-search\src\bin\rs-launcher.rs:675
+Replace Explorer	src\ui.rs:680
+Reset everything to defaults…	plugins\topbar\src\settings.rs:16
+Reset everything?	plugins\topbar\src\settings.rs:241
+Resolution	plugins\rust-settings\src\main.rs:564
+Restart as administrator	plugins\rtaskmgr-win32\src\app.rs:856
+Restart as administrator	plugins\rtaskmgr-win32\src\app.rs:871
+restore point was not created	src\install\mod.rs:130
+restored	plugins\debloat\src\main.rs:555
+restored	plugins\rs-du\src\clean.rs:232
+restored	plugins\rtaskmgr-win32\src\boost.rs:194
+Result	plugins\rust-settings\src\main.rs:660
+Resume	plugins\rtaskmgr-win32\src\app.rs:825
+Resuming	plugins\rtaskmgr-win32\src\app.rs:1047
+retail demo mode	plugins\debloat\src\main.rs:29
+Right	plugins\topbar\src\settings.rs:103
+rs-overlay task was not created: it starts via Run, with a Windows startup delay	src\install\explorer.rs:174
+rtaskmgr task was not created, launching as administrator will go through UAC	src\install\taskmgr.rs:34
+Ruby	plugins\topbar\src\settings.rs:48
+Rule added: '{name}' - CPU > 25% for over 60 s	plugins\rtaskmgr-win32\src\app.rs:1094
+Rule deleted	plugins\rtaskmgr-win32\src\app.rs:990
+Rule: '{}' (PID {}) used CPU > {:.0}% - priority lowered	plugins\rtaskmgr-win32\src\data.rs:468
+Rule: lower priority when CPU > 25% for over 60 s	plugins\rtaskmgr-win32\src\app.rs:833
+Rule: notify when CPU > 25% for over 60 s	plugins\rtaskmgr-win32\src\app.rs:834
+Rules	plugins\rtaskmgr-win32\src\model.rs:30
+Run as administrator	plugins\rust-search\src\bin\rs-launcher.rs:672
+Run as administrator	plugins\topbar\src\fly.rs:1036
+Run new task	plugins\rtaskmgr-win32\src\app.rs:165
+Run new task	plugins\rtaskmgr-win32\src\app.rs:167
+Run new task	plugins\rtaskmgr-win32\src\app.rs:849
+Run	plugins\rust-search\src\bin\rs-launcher.rs:182
+Running · {}	plugins\topbar\src\main.rs:2200
+Running as administrator was cancelled	plugins\rtaskmgr-win32\src\app.rs:901
+Running as administrator	src\ui.rs:459
+Running	plugins\rtaskmgr-win32\src\model.rs:313
+Running	plugins\rtaskmgr-win32\src\model.rs:326
+Running…	plugins\rtaskmgr-win32\src\model.rs:367
+rust-explorer becomes the shell	src\ui.rs:680
+S: {} R: {} Kbps	plugins\rtaskmgr-win32\src\draw.rs:714
+Sa	plugins\topbar\src\fly.rs:155
+SAFE: Windows and programs recreate this on their own	plugins\rs-du\src\clean.rs:261
+Save the current look as a template	plugins\topbar\src\settings.rs:198
+Saved	plugins\rust-settings\src\main.rs:490
+Saved	plugins\topbar\src\fly.rs:1508
+Saved: {}	plugins\rtaskmgr-win32\src\app.rs:1186
+Scale	plugins\rust-settings\src\main.rs:566
+Screenshot saved: {n}\nand copied to the clipboard	plugins\topbar\src\shot.rs:67
+search: {} - {} hits{}{}	plugins\rust-explorer\src\main.rs:682
+search: {} - nothing{}{}	plugins\rust-explorer\src\main.rs:680
+searching…	plugins\rust-settings\src\main.rs:636
+Second screen only	plugins\rust-settings\src\main.rs:245
+Secondary text	plugins\topbar\src\settings.rs:144
+Secured  ·  {}	plugins\rust-settings\src\main.rs:501
+Secured	plugins\topbar\src\fly.rs:76
+Select a row in the list first	plugins\rtaskmgr-win32\src\app.rs:971
+Select all	src\ui.rs:507
+Select none	src\ui.rs:507
+Selected display	plugins\rust-settings\src\main.rs:563
+Send	plugins\rtaskmgr-win32\src\draw.rs:719
+September	plugins\topbar\src\fly.rs:132
+Service {n}: access denied - run as administrator	plugins\rtaskmgr-win32\src\app.rs:1113
+Service {n}: command sent	plugins\rtaskmgr-win32\src\app.rs:1112
+Service {n}: Win32 error {e}	plugins\rtaskmgr-win32\src\app.rs:1114
+service {name}: unknown start type	src\install\journal.rs:65
+Service host	plugins\rtaskmgr-win32\src\model.rs:268
+Service host: {s}	plugins\rtaskmgr-win32\src\model.rs:173
+Services	plugins\rtaskmgr-win32\src\model.rs:28
+Settings	plugins\rtaskmgr-win32\src\app.rs:853
+Settings	plugins\rtaskmgr-win32\src\model.rs:31
+Settings	plugins\rust-settings\src\main.rs:2052
+Setup script (PAC)	plugins\rust-settings\src\main.rs:545
+Setup	src\ui.rs:403
+Shared GPU memory usage	plugins\rtaskmgr-win32\src\draw.rs:749
+Shared GPU memory	plugins\rtaskmgr-win32\src\draw.rs:756
+Show backup	plugins\rust-search\src\bin\rs-launcher.rs:1200
+Show desktop icons	plugins\rust-explorer\src\main.rs:462
+Show desktop	plugins\topbar\src\main.rs:444
+Show in folder	plugins\rust-search\src\bin\rs-launcher.rs:673
+Show window	plugins\rtaskmgr-win32\src\app.rs:863
+signed-in user unknown, per-user settings are removed from the current account	src\install\session.rs:200
+Single display	plugins\rust-settings\src\main.rs:234
+Size	plugins\rust-explorer\src\main.rs:1579
+Size	plugins\rust-explorer\src\ui.rs:663
+Size	plugins\topbar\src\settings.rs:104
+skip     Edge: not present	plugins\purge\src\main.rs:179
+skip     OneDrive: not present	plugins\purge\src\main.rs:169
+skip   {0}: already disabled	plugins\debloat\src\main.rs:416
+skip   {0}: not present	plugins\debloat\src\main.rs:415
+skip   {t}: already disabled	plugins\debloat\src\main.rs:456
+skip   {value}: already {data}	plugins\debloat\src\main.rs:434
+skip   {value}: not a DWORD, left alone	plugins\debloat\src\main.rs:438
+skip   {WINGET_TASK}: already there	plugins\debloat\src\main.rs:467
+skip   {WINGET_TASK}: winget is not installed (App Installer from the Store)	plugins\debloat\src\main.rs:465
+skip   hosts: the block is already there	plugins\debloat\src\main.rs:519
+skip   nothing new to exclude	plugins\debloat\src\main.rs:491
+skipped: winget is not installed	plugins\debloat\src\main.rs:377
+Sleep after	plugins\rust-settings\src\main.rs:605
+Slots used:	plugins\rtaskmgr-win32\src\draw.rs:613
+Slows boot by	plugins\rtaskmgr-win32\src\model.rs:95
+Small icons	plugins\rust-explorer\src\main.rs:458
+Small	plugins\topbar\src\settings.rs:105
+Snip saved: {name}\nand copied to the clipboard	plugins\topbar\src\shot.rs:60
+Sockets:	plugins\rtaskmgr-win32\src\draw.rs:592
+Some files are still there	plugins\rust-search\src\bin\rs-launcher.rs:1037
+Sort icons by date	plugins\rust-explorer\src\main.rs:447
+Sort icons by name	plugins\rust-explorer\src\main.rs:446
+Sort icons by size	plugins\rust-explorer\src\main.rs:448
+Sound	plugins\rust-settings\src\main.rs:697
+Source: {}.{}	plugins\rtaskmgr-win32\src\model.rs:354
+Speed	plugins\rtaskmgr-win32\src\draw.rs:583
+Speed	plugins\rtaskmgr-win32\src\model.rs:33
+Speed:	plugins\rtaskmgr-win32\src\draw.rs:612
+Standby {}	plugins\rtaskmgr-win32\src\draw.rs:633
+Start menu shortcut '{n}' was not created, search will not find it	src\install\tools.rs:34
+Start menu shortcut 'Rust Explorer' was not created	src\install\explorer.rs:183
+Start menu shortcut was not created, search will not find the task manager	src\install\taskmgr.rs:31
+Start service	plugins\rtaskmgr-win32\src\app.rs:838
+Start with Windows	plugins\rtaskmgr-win32\src\app.rs:866
+Start with Windows	plugins\rtaskmgr-win32\src\draw.rs:453
+Start	plugins\rtaskmgr-win32\src\app.rs:168
+Start	plugins\topbar\src\main.rs:2495
+Started from {what}: {} - permanent programs usually live in Program Files or AppData\\Local\\Programs	plugins\rtaskmgr-win32\src\suspect.rs:85
+Startup folder (all users)	plugins\rtaskmgr-win32\src\startup.rs:27
+Startup folder (user)	plugins\rtaskmgr-win32\src\startup.rs:26
+Startup	plugins\rtaskmgr-win32\src\model.rs:25
+Status	plugins\rtaskmgr-win32\src\model.rs:76
+Status	plugins\rtaskmgr-win32\src\model.rs:93
+Status	plugins\rtaskmgr-win32\src\model.rs:94
+Status	plugins\rtaskmgr-win32\src\model.rs:95
+Status	plugins\rtaskmgr-win32\src\model.rs:97
+Status	plugins\rust-settings\src\main.rs:658
+Status	src\ui.rs:632
+Steam: browser cache	plugins\rs-du\src\clean.rs:70
+Sticky keys	plugins\topbar\src\fly.rs:1101
+Stop service	plugins\rtaskmgr-win32\src\app.rs:838
+Stop	plugins\rtaskmgr-win32\src\app.rs:168
+Stopped	plugins\rtaskmgr-win32\src\model.rs:326
+Stops Windows Update, BITS, Delivery Optimization, printing, telemetry; closes OneDrive, Teams, Dropbox, Google Drive, Phone Link, widgets. 'Disable' starts everything again.	plugins\rtaskmgr-win32\src\boost.rs:63
+Storage Sense (auto cleanup)	plugins\rust-settings\src\main.rs:607
+Storage	plugins\rust-settings\src\main.rs:606
+Straight to the tray, no window	plugins\rtaskmgr-win32\src\draw.rs:453
+Strong · {} K	plugins\rust-settings\src\main.rs:425
+stub	src\cli.rs:59
+Style	plugins\topbar\src\main.rs:443
+Su	plugins\topbar\src\fly.rs:156
+Suspend	plugins\rtaskmgr-win32\src\app.rs:824
+Suspended	plugins\rtaskmgr-win32\src\model.rs:215
+Suspended	plugins\rtaskmgr-win32\src\model.rs:313
+Suspending	plugins\rtaskmgr-win32\src\app.rs:1047
+Suspicious processes (high severity): {}. Hover the label in the 'Suspicious' column to see the reason.	plugins\rtaskmgr-win32\src\data.rs:555
+Suspicious	plugins\rtaskmgr-win32\src\model.rs:82
+svchost.exe was started not by services.exe but by the process '{}'	plugins\rtaskmgr-win32\src\suspect.rs:97
+Sync keeps working	src\ui.rs:679
+System disk:	plugins\rtaskmgr-win32\src\draw.rs:696
+System sounds	plugins\rust-settings\src\audio.rs:145
+System	plugins\rtaskmgr-win32\src\app.rs:852
+SYSTEM	plugins\rtaskmgr-win32\src\data.rs:354
+System	plugins\rtaskmgr-win32\src\draw.rs:269
+task {t}	plugins\purge\src\main.rs:163
+Task Manager (Rust)	plugins\rtaskmgr-win32\src\main.rs:161
+Task Manager	plugins\rtaskmgr-win32\src\app.rs:721
+Task Manager	plugins\rtaskmgr-win32\src\main.rs:144
+Task Manager	plugins\topbar\src\fly.rs:847
+Task Scheduler (at sign-in or boot)	plugins\rtaskmgr-win32\src\startup.rs:45
+Task View	plugins\topbar\src\main.rs:440
+Telegram: media cache	plugins\rs-du\src\clean.rs:64
+telemetry to the minimum	plugins\debloat\src\main.rs:45
+Template {}	plugins\topbar\src\settings.rs:210
+Templates	plugins\topbar\src\settings.rs:11
+Templates	plugins\topbar\src\settings.rs:202
+Temporary copies of pages and images for system programs.	plugins\rs-du\src\clean.rs:53
+Temporary files (older than a day)	plugins\rust-settings\src\main.rs:612
+Temporary files	plugins\rs-du\src\clean.rs:47
+Terminal	plugins\topbar\src\settings.rs:44
+Text	plugins\topbar\src\settings.rs:143
+Th	plugins\topbar\src\fly.rs:153
+The components are already running. No restart is needed.	src\ui.rs:627
+The device refused to pair	plugins\rust-settings\src\bt.rs:128
+The disk responds slowly: {:.0} ms per request at {:.0}% busy (an SSD normally takes a few ms). On an HDD apps and games load slowly; on an SSD check its health and free space.	plugins\rtaskmgr-win32\src\data.rs:569
+the Downloads folder	plugins\rtaskmgr-win32\src\suspect.rs:49
+The error is shown below. The rest is installed; go back to the options to try again.	src\ui.rs:623
+The file has no digital signature (publisher not verified) - normal for home-made and portable programs	plugins\rtaskmgr-win32\src\suspect.rs:91
+The file is unsigned and runs from a temporary or user folder	plugins\rtaskmgr-win32\src\suspect.rs:90
+The file's digital signature is invalid or not trusted	plugins\rtaskmgr-win32\src\suspect.rs:89
+The installed components will be reinstalled from this version of the installer. Settings are kept.	src\ui.rs:975
+The language of every WinRust program	plugins\topbar\src\settings.rs:73
+The name matches the system process '{}' but the file is not in the Windows folder: {}	plugins\rtaskmgr-win32\src\suspect.rs:78
+The process file is gone from disk - it was deleted after launch (malware does this, and sometimes installers)	plugins\rtaskmgr-win32\src\suspect.rs:81
+The program keeps collecting history and applying rules; bring the window back with Ctrl+Alt+T	plugins\rtaskmgr-win32\src\draw.rs:452
+The program will start with Windows (straight to the tray)	plugins\rtaskmgr-win32\src\app.rs:930
+the Recycle Bin	plugins\rtaskmgr-win32\src\suspect.rs:50
+The registry was not touched. Close the program using them and try again.	plugins\rust-search\src\bin\rs-launcher.rs:1036
+the session shell does not run as a normal user (SYSTEM or a service)	src\install\session.rs:180
+the shared Public folder	plugins\rtaskmgr-win32\src\suspect.rs:51
+The topbar checks memory every 10 s and drops the cache when less than 5% (at least 512 MB) is free and the cache holds over 1 GB; at most once a minute.	plugins\rtaskmgr-win32\src\boost.rs:66
+the Windows Search service (WSearch) does not exist on this system: step skipped	src\install\search.rs:57
+The Windows Start menu, widgets and Phone Link do not start (topbar replaces them). Notifications and text input are not touched.	plugins\rtaskmgr-win32\src\boost.rs:67
+Theme	plugins\rtaskmgr-win32\src\app.rs:852
+Theme	plugins\rtaskmgr-win32\src\draw.rs:451
+Theme	plugins\topbar\src\settings.rs:87
+Theme	plugins\topbar\src\settings.rs:9
+Theme, colors, bar. Templates stay	plugins\topbar\src\settings.rs:241
+They are rebuilt on the next build or npm install.	plugins\rs-du\src\clean.rs:241
+This device needs a PIN: pair it in Windows' own settings	plugins\rust-settings\src\bt.rs:129
+This folder is empty	plugins\rust-explorer\src\ui.rs:248
+This is a protected system location.	plugins\rust-search\src\bin\rs-launcher.rs:802
+This is a protected system location.	plugins\rust-search\src\bin\rs-launcher.rs:864
+This is the main display	plugins\rust-settings\src\main.rs:251
+This network signs in with a certificate: not supported	plugins\rust-settings\src\main.rs:1646
+This PC	plugins\rust-explorer\src\ui.rs:824
+This rule already exists ('Rules' page)	plugins\rtaskmgr-win32\src\app.rs:1091
+Threads	plugins\rtaskmgr-win32\src\draw.rs:585
+Throughput	plugins\rtaskmgr-win32\src\draw.rs:715
+Tick what should be installed. Unticking an installed component removes it.	src\ui.rs:504
+Tile the windows	plugins\topbar\src\settings.rs:15
+Tiling	plugins\topbar\src\settings.rs:46
+Time	plugins\rtaskmgr-win32\src\model.rs:96
+Times triggered	plugins\rtaskmgr-win32\src\model.rs:98
+To be installed: {}.	src\ui.rs:984
+To be removed: {} (the stock Windows parts come back).	src\ui.rs:990
+Today	plugins\rust-explorer\src\main.rs:147
+Today, {}	plugins\rust-explorer\src\ui.rs:207
+Top consumer	plugins\rtaskmgr-win32\src\model.rs:96
+topbar task was not created: it starts via Run, without administrator rights	src\install\topbar.rs:73
+Transfer rate	plugins\rtaskmgr-win32\src\draw.rs:681
+Transparency effects	plugins\rust-settings\src\main.rs:712
+Tu	plugins\topbar\src\fly.rs:151
+Turn screen off after	plugins\rust-settings\src\main.rs:604
+Turn Wi‑Fi on to see networks	plugins\topbar\src\fly.rs:1460
+Turned off	plugins\topbar\src\fly.rs:1409
+Type a name, publisher or PID to search	plugins\rtaskmgr-win32\src\main.rs:150
+Type a program, folder, document or website	plugins\rust-search\src\bin\rs-launcher.rs:1401
+Type the new name     \u{21B5} rename     Esc cancel	plugins\rust-search\src\bin\rs-launcher.rs:1454
+Type to search apps	plugins\topbar\src\fly.rs:1657
+Type	plugins\rust-explorer\src\main.rs:1578
+Type	plugins\rust-explorer\src\ui.rs:662
+Type:	plugins\rtaskmgr-win32\src\draw.rs:617
+Type:	plugins\rtaskmgr-win32\src\draw.rs:698
+UI and attachment cache. It will be recreated.	plugins\rs-du\src\clean.rs:66
+Unavailable: {s}	plugins\rtaskmgr-win32\src\model.rs:369
+uninstall is not available	src\install\mod.rs:152
+Uninstalling \"{}\"	plugins\rust-settings\src\main.rs:1396
+unknown group '{g}' (updaters, defender, ntfs, dns)	plugins\debloat\src\main.rs:606
+unknown plugin: {n}	src\cli.rs:115
+unknown plugin: {n}	src\cli.rs:120
+unknown plugin: {n}	src\cli.rs:71
+unpacking {n}: {e}	src\install\mod.rs:107
+Unpin from Quick access	plugins\rust-explorer\src\main.rs:387
+Unpin from Quick access	plugins\rust-explorer\src\ui.rs:750
+Unpin from the bar	plugins\topbar\src\main.rs:2216
+Up time	plugins\rtaskmgr-win32\src\draw.rs:587
+Up to date	plugins\rust-settings\src\main.rs:655
+Update WinRust?	src\ui.rs:974
+Update	plugins\rust-settings\src\main.rs:663
+Update	src\ui.rs:497
+Update	src\ui.rs:556
+Update	src\ui.rs:976
+updated	src\install\mod.rs:145
+updated	src\install\mod.rs:147
+Updated:	src\ui.rs:846
+Updates available: {}	plugins\rust-settings\src\main.rs:656
+Updates found: {}	plugins\rust-settings\src\wu.rs:79
+Updates installed	plugins\rust-settings\src\wu.rs:109
+Updates that are already installed. Windows re-downloads what it needs.	plugins\rs-du\src\clean.rs:51
+usage: plugin-launcher list | install <plugin>...|all --yes | update <plugin>|all | uninstall <plugin> | rollback --yes [--lang en|ru|ja|pt|zh]	src\cli.rs:55
+Use a proxy server	plugins\rust-settings\src\main.rs:543
+User name for \"{}\" (domain\\name)	plugins\rust-settings\src\main.rs:1163
+User	plugins\rtaskmgr-win32\src\model.rs:85
+Users	plugins\rtaskmgr-win32\src\model.rs:26
+Utilization	plugins\rtaskmgr-win32\src\draw.rs:582
+Utilization	plugins\rtaskmgr-win32\src\draw.rs:755
+Version	plugins\rust-settings\src\main.rs:724
+Video decode	plugins\rtaskmgr-win32\src\draw.rs:747
+Video encode	plugins\rtaskmgr-win32\src\draw.rs:746
+Videos	plugins\rust-explorer\src\ui.rs:815
+Virtual adapter	plugins\rtaskmgr-win32\src\draw.rs:534
+Virtualization:	plugins\rtaskmgr-win32\src\draw.rs:595
+Volume per app	plugins\rust-settings\src\main.rs:586
+Volume	plugins\rust-settings\src\main.rs:580
+VPN \"{}\" connected	plugins\rust-settings\src\main.rs:1416
+VPN \"{}\" disconnected	plugins\rust-settings\src\main.rs:1412
+VPN connections	plugins\rust-settings\src\main.rs:536
+Wallpaper changed	plugins\rust-settings\src\main.rs:1425
+WAP push message routing (telemetry helper)	plugins\debloat\src\main.rs:27
+We	plugins\topbar\src\fly.rs:152
+weekly winget upgrade --all	plugins\debloat\src\main.rs:375
+WEP key: 5 or 13 characters (or 10/26 hex digits)	plugins\rust-settings\src\wifi.rs:67
+What it does	plugins\rtaskmgr-win32\src\model.rs:97
+What	plugins\rtaskmgr-win32\src\model.rs:97
+What's slow	plugins\rtaskmgr-win32\src\model.rs:29
+Where it sits, its size and behavior	plugins\topbar\src\settings.rs:113
+White road	plugins\topbar\src\settings.rs:47
+Why flagged:	plugins\rtaskmgr-win32\src\model.rs:196
+Wi‑Fi · signal {q}%	plugins\topbar\src\main.rs:454
+Wi‑Fi connected, no internet	plugins\topbar\src\main.rs:455
+Wi-Fi is off by the hardware switch	plugins\rust-settings\src\main.rs:523
+Will be installed	src\ui.rs:532
+Will be removed	src\ui.rs:530
+Win+Space — next one	plugins\topbar\src\lang.rs:33
+Windows AI Fabric (Copilot+/Recall features)	plugins\debloat\src\main.rs:37
+Windows boot: {} s ({}), {} s to the desktop.	plugins\rtaskmgr-win32\src\data.rs:595
+Windows boot: last {} s ({}), {} s to the desktop. Before that: {} s.	plugins\rtaskmgr-win32\src\data.rs:593
+Windows cannot find '{}'. Make sure you typed the name correctly, and then try again.	plugins\rust-search\src\bin\rs-launcher.rs:356
+Windows did not accept that arrangement	plugins\rust-settings\src\main.rs:1890
+Windows Error Reporting	plugins\debloat\src\main.rs:30
+Windows Health and Optimized Experiences	plugins\debloat\src\main.rs:35
+Windows internet cache	plugins\rs-du\src\clean.rs:53
+Windows refused to save networks (policy)	plugins\rust-settings\src\wifi.rs:285
+Windows refused to save networks (policy)	plugins\rust-settings\src\wifi.rs:330
+Windows Search, the stock Task Manager, the taskbar and Explorer are back.	src\ui.rs:625
+Windows Settings	plugins\topbar\src\fly.rs:845
+Windows Update cache	plugins\rs-du\src\clean.rs:51
+Windows Update	plugins\rust-settings\src\main.rs:658
+Windows Update	plugins\rust-settings\src\main.rs:702
+Windows.old (previous Windows version)	plugins\rs-du\src\clean.rs:74
+WinRust has been removed	src\ui.rs:617
+WinRust setup has finished	src\ui.rs:618
+'Work' profile	plugins\rtaskmgr-win32\src\boost.rs:51
+Write speed	plugins\rtaskmgr-win32\src\draw.rs:690
+Yandex Browser	plugins\rs-du\src\clean.rs:56
+yes	common\src\lib.rs:227
+yes	common\src\lib.rs:229
+Yes	plugins\rtaskmgr-win32\src\draw.rs:696
+Yes	plugins\rtaskmgr-win32\src\draw.rs:697
+Yes, reset	plugins\topbar\src\settings.rs:240
+Yesterday	plugins\rust-explorer\src\main.rs:148
+Yesterday, {}	plugins\rust-explorer\src\ui.rs:208
+YOUR CHOICE ONLY: make sure you do not need this	plugins\rs-du\src\clean.rs:263
+Your own looks for any mood	plugins\topbar\src\settings.rs:202
+You're up to date	plugins\rust-settings\src\wu.rs:79
+You're up to date	plugins\rust-settings\src\wu.rs:95

@@ -162,6 +162,8 @@ thread_local! {
     static PV: RefCell<(Vec<HWND>, Vec<RECT>, Vec<isize>, Option<usize>)> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new(), None)) };
     static PV_BTN: Cell<i32> = const { Cell::new(NONE) };
     static PV_AWAY: Cell<u64> = const { Cell::new(0) };
+    /// The monitor the previews were opened on (the bar that asked for them may change under `CURRENT`).
+    static PV_MON: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) };
 }
 
 /// Shows the windows of app button `btn` as live previews above it. False when it has no windows (the caller shows the tip).
@@ -173,6 +175,7 @@ pub(crate) unsafe fn show_preview(btn: i32, cx: i32) -> bool {
     }
     PV_BTN.set(btn);
     PV_AWAY.set(0);
+    PV_MON.set(crate::bar_rect());
     layout(pv, wins, cx);
     SetTimer(pv, 1, 150, None); // hides it once the pointer has left both the button and the previews
     true
@@ -180,7 +183,8 @@ pub(crate) unsafe fn show_preview(btn: i32, cx: i32) -> bool {
 
 unsafe fn layout(pv: HWND, wins: Vec<HWND>, cx: i32) {
     let pad = sc(GAP);
-    let (scw, sch) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    let m = PV_MON.get();
+    let (scw, sch) = (m.right - m.left, m.bottom - m.top);
     let (mut rects, tw, th) = grid(wins.len(), scw - sc(16) - 2 * pad, sch / 2, sc(CARD_W), sc(CARD_H), sc(GAP));
     rects.iter_mut().for_each(|r| *r = RECT { left: r.left + pad, top: r.top + pad, right: r.right + pad, bottom: r.bottom + pad });
     let (w, h) = (tw + 2 * pad, th + 2 * pad);
@@ -189,11 +193,11 @@ unsafe fn layout(pv: HWND, wins: Vec<HWND>, cx: i32) {
     unregister(pv, &mut ids);
     SetWindowRgn(pv, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(18), rr(18)), 1);
     if vert() {
-        let y = (cx - h / 2).clamp(sc(4), sch - h - sc(4));
-        SetWindowPos(pv, HWND_TOPMOST, side_x(w), y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        let y = (cx - h / 2).clamp(m.top + sc(4), m.bottom - h - sc(4));
+        SetWindowPos(pv, HWND_TOPMOST, side_x_m(m, w), y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     } else {
-        let x = (cx - w / 2).clamp(sc(4), scw - w - sc(4));
-        SetWindowPos(pv, HWND_TOPMOST, x, if at_top() { bar_h() - bar_off() + sc(6) } else { bar_top() + bar_off() - h - sc(6) }, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        let x = (cx - w / 2).clamp(m.left + sc(4), m.right - w - sc(4));
+        SetWindowPos(pv, HWND_TOPMOST, x, if at_top() { m.top + bar_h() - bar_off() + sc(6) } else { bar_top_m(m) + bar_off() - h - sc(6) }, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
     let ids = register(pv, &wins, &rects);
     PV.set((wins, rects, ids, None));

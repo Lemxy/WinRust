@@ -1,0 +1,34 @@
+[package]
+name = "rs-notify-bridge"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "rs-notify-bridge"
+path = "src/main.rs"
+
+[dependencies]
+winrust-common = { path = "../../common" }
+# WinRT: the notification listener and the objects it returns.
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "ApplicationModel",
+    "UI_Notifications",
+    "UI_Notifications_Management",
+] }
+# The pipe writer, COM apartment, the single-instance mutex and hiding our own console at logon.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3"

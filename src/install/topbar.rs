@@ -46,11 +46,12 @@ pub(crate) fn shells_run(script: &str) -> Result<(), String> {
 }
 
 pub(crate) fn bar_install() -> Result<(), String> {
-    with_payload(&["topbar.exe", "rs-du.exe", "reshell.exe"], |d| {
+    with_payload(&["topbar.exe", "rs-notify.exe", "rs-du.exe", "reshell.exe"], |d| {
         let dst = bar_dir().join("topbar.exe");
         let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);
         fs::create_dir_all(bar_dir()).map_err(|e| e.to_string())?;
         put(&d.join("topbar.exe"), &dst)?;
+        put(&d.join("rs-notify.exe"), &bar_dir().join("rs-notify.exe"))?; // raises a toast through topbar's pipe
         fs::create_dir_all(tm_dir()).map_err(|e| e.to_string())?;
         put(&d.join("rs-du.exe"), &tm_dir().join("rs-du.exe"))?; // topbar menu "Чистильщик диска"
         let rsh = bar_dir().join("reshell.exe"); // Win+1/2/3 desktop hotkeys, no args = hotkeys

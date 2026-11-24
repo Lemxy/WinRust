@@ -1,4 +1,4 @@
-// Own flyouts instead of the stock Windows ones: Start (search + all apps + power), Wi-Fi, volume, battery
+﻿// Own flyouts instead of the stock Windows ones: Start (search + all apps + power), Wi-Fi, volume, battery
 // (+ brightness), calendar. One popup window; what it shows depends on `Kind`.
 use super::*;
 use std::sync::Mutex;
@@ -17,13 +17,14 @@ pub enum Kind {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Act {
+pub(crate) enum Act {
     VolSlide,
     BrightSlide,
     Mute,
     WifiSwitch,
     Tile(u8),
     WifiMore,
+    BluetoothMore, // the same corner button on the Bluetooth tile: opens Windows' own page, where devices are added
     Net(usize),
     NetOff, // the connected network's Disconnect button (shown on hover)
     Ctx(u8), // an item of the Wi-Fi panel's right-click menu
@@ -35,6 +36,10 @@ enum Act {
     App(usize), // index into the filtered list
     Power(u8),  // 0 lock, 1 sleep, 2 restart, 3 shut down
     Keyboard,   // the on-screen keyboard button in the Start search field
+    StartSettings, // the gear inside the Start panel: where it opens and its style
+    Place(u8),  // a known folder / settings page of the Windows 7 column
+    AllApps,    // the "All programs" bar
+    Pin(usize), // a pinned tile: same target as App(i) but its own hover, so the list and the grid never light together
 }
 
 /// The touch keyboard (TabTip), else the classic on-screen keyboard. Windows opens it by itself only for the Explorer shell.
@@ -106,7 +111,7 @@ thread_local! {
     static QUERY: RefCell<String> = const { RefCell::new(String::new()) };
     static SCROLL: Cell<usize> = const { Cell::new(0) };
     static SELALL: Cell<bool> = const { Cell::new(false) }; // Ctrl+A in the search: the next key replaces the query
-    static ICONS: RefCell<HashMap<Vec<u16>, HICON>> = RefCell::new(HashMap::new()); // by path: the app list is reloaded and reordered
+    static ICONS: RefCell<HashMap<(Vec<u16>, i32), HICON>> = RefCell::new(HashMap::new()); // by path and size: the app list is reloaded and reordered
     static SEL: Cell<usize> = const { Cell::new(0) }; // Start: the row Enter opens (arrow keys move it)
     static OVER: Cell<Option<Act>> = const { Cell::new(None) };
     static DRAG: Cell<u8> = const { Cell::new(0) }; // 0 none, 1 volume slider, 2 brightness slider
@@ -318,6 +323,12 @@ pub fn any_open() -> bool {
     FLY.get().is_some()
 }
 
+/// The monitor of the open panel: a menu opened from it belongs on the same screen.
+pub(crate) fn open_rect() -> Option<RECT> {
+    let r = FLY_MON.get();
+    (FLY.get().is_some() && r.right > r.left).then_some(r)
+}
+
 /// Short status line shown at the bottom of the open panel (Start: "Added to Start: ...").
 pub fn note(s: &str) {
     NOTE.set(s.to_string());
@@ -370,28 +381,101 @@ fn find_loose_exes(hw: HWND) {
     });
 }
 
+/// True when the style module for `style` is finished (then it draws the panel instead of the built-in list).
+fn style_ready(style: i32) -> bool {
+    match style {
+        0 => crate::start11::READY,
+        1 => crate::start10::READY,
+        _ => crate::start7::READY,
+    }
+}
+
+/// The size the pinned tiles draw at: the biggest of the Start icons (the rows use 24 or 20 and can only shrink one).
+fn tile_px() -> i32 {
+    sc(32)
+}
+
+/// The Windows icon of an executable: the same art the system shows, so our own programs can borrow it instead of
+/// painting their own logo where Windows shows Explorer or Settings. From the sharpest asset the shell has, at `px`.
+unsafe fn exe_icon(exe: &std::path::Path, px: i32) -> HICON {
+    let icon = i18n::icon::best(exe, px);
+    if !icon.is_null() {
+        return icon;
+    }
+    let w = wide(&exe.to_string_lossy());
+    let mut icon: HICON = null_mut();
+    ExtractIconExW(w.as_ptr(), 0, null_mut(), &mut icon, 1);
+    if icon.is_null() {
+        let mut sfi: SHFILEINFOW = zeroed();
+        SHGetFileInfoW(w.as_ptr(), 0, &mut sfi, size_of::<SHFILEINFOW>() as u32, SHGFI_ICON | SHGFI_LARGEICON);
+        icon = sfi.hIcon;
+    }
+    icon
+}
+
+/// When a Start entry stands for Explorer or Settings, the system's own executable supplies the icon.
+fn system_icon_path(name: &str, path: &[u16]) -> Option<std::path::PathBuf> {
+    let win = std::env::var_os("SystemRoot").map(std::path::PathBuf::from)?;
+    let n = name.to_lowercase();
+    let p = String::from_utf16_lossy(path).to_lowercase();
+    if p.contains("rust-explorer") || n == "explorer" || n == "file explorer" || n.starts_with("explorador") {
+        return Some(win.join("explorer.exe"));
+    }
+    if p.contains("rust-settings") || n == "settings" || n.starts_with("configuraci") {
+        return Some(win.join(r"ImmersiveControlPanel\SystemSettings.exe"));
+    }
+    None
+}
+
+/// The icon of a Start entry: the system's own for Explorer/Settings, else the one its shortcut points at, at `px`
+/// pixels (the tiles ask for 32, the rows for 24).
+unsafe fn row_icon(name: &str, path: &[u16], px: i32) -> HICON {
+    ICONS.with_borrow_mut(|m| {
+        if let Some(exe) = system_icon_path(name, path) {
+            let key = (wide(&exe.to_string_lossy()), px);
+            return *m.entry(key).or_insert_with(|| unsafe { exe_icon(&exe, px) });
+        }
+        *m.entry((path.to_vec(), px)).or_insert_with(|| {
+            let t = lnk_target(path);
+            lnk_icon_px(path, &t, px)
+        })
+    })
+}
+
+/// The app rows with their icons loaded, for the style modules.
+unsafe fn start_rows() -> Vec<crate::startctx::Row> {
+    let f = filtered();
+    let apps = APPS.lock().unwrap();
+    f.iter()
+        .enumerate()
+        .filter_map(|(i, &ai)| {
+            let (name, path) = apps.get(ai)?;
+            Some(crate::startctx::Row { label: name.clone(), icon: row_icon(name, path, icon_px()), act: Act::App(i) })
+        })
+        .collect()
+}
+
+/// What the user pinned: the right-hand tiles of the styles. They stay in the list on the left as well.
+unsafe fn start_pins() -> Vec<crate::startctx::Row> {
+    let f = filtered();
+    let pinned = PINNED.lock().unwrap().clone();
+    let apps = APPS.lock().unwrap();
+    let mut v = Vec::new();
+    for p in pinned {
+        let w: Vec<u16> = wide(&p);
+        let Some(pos) = f.iter().position(|&ai| apps.get(ai).is_some_and(|a| a.1 == w)) else { continue };
+        let Some((name, path)) = f.get(pos).and_then(|&ai| apps.get(ai)) else { continue };
+        v.push(crate::startctx::Row { label: name.clone(), icon: row_icon(name, path, tile_px()), act: Act::App(pos) });
+    }
+    v
+}
+
 fn filtered() -> Vec<usize> {
     let q = QUERY.with_borrow(|q| q.to_lowercase());
     let mut apps = APPS.lock().unwrap();
     if q.is_empty() {
-        let pinned = PINNED.lock().unwrap();
-        // nothing pinned yet: every app, A to Z, like Windows' "All apps" (an empty Start read as "no apps found", #72)
-        if pinned.is_empty() {
-            return (0..apps.len()).collect();
-        }
-        // nothing typed: only what the user pinned (an app that is not a Start menu shortcut joins the list on demand)
-        return pinned
-            .iter()
-            .map(|p| {
-                let w = wide(p);
-                apps.iter().position(|a| a.1 == w).unwrap_or_else(|| {
-                    let stem = std::path::Path::new(p).file_stem().unwrap_or_default().to_string_lossy().to_string();
-                    let name: String = stem.chars().take(1).flat_map(char::to_uppercase).chain(stem.chars().skip(1)).collect();
-                    apps.push((name, w));
-                    apps.len() - 1
-                })
-            })
-            .collect();
+        // every app, A to Z, like Windows' "All apps": pinning one must not take it out of the list
+        return (0..apps.len()).collect();
     }
     // typed in the wrong layout: those matches come after the direct ones
     let fq = flip_layout(&q);
@@ -625,7 +709,23 @@ fn size(k: Kind) -> (i32, i32) {
         Kind::Quick => (360, 252 + 44 * sliders()),
         Kind::Cal => (330, 340),
         Kind::Wifi => (360, wifi_rows().2),
-        Kind::Start => (560, 640),
+        Kind::Start => {
+            let (w, h) = if style_ready(winrust_common::look::start_style()) {
+                match winrust_common::look::start_style() {
+                    0 => crate::start11::size(),
+                    1 => crate::start10::size(),
+                    _ => crate::start7::size(),
+                }
+            } else {
+                match winrust_common::look::start_style() {
+                    1 => (620, 660), // Windows 10: wider, room for the tiles
+                    2 => (520, 620), // Windows 7: the classic two columns
+                    _ => (560, 640),
+                }
+            };
+            let s = winrust_common::look::start_scale();
+            (w * s / 100, h * s / 100)
+        },
         Kind::Menu => (MW, menu_rows().1),
     }
 }
@@ -688,13 +788,16 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
     let (w, h) = size(k);
     match k {
         Kind::Quick => {
-            // a 3x2 grid of tiles; the Wi-Fi tile has a round "more" button in its corner (found first: act_at searches backwards)
+            // a 3x2 grid of tiles; the Wi-Fi and Bluetooth tiles have a round "more" button in their corner (found first:
+            // act_at searches backwards)
             let mut v = vec![];
             for i in 0..6u8 {
                 let (tl, tt) = (16 + 112 * (i as i32 % 3), 16 + 84 * (i as i32 / 3));
                 v.push((r(tl, tt, tl + 104, tt + 76), Act::Tile(i)));
                 if i == 0 {
                     v.push((r(tl + 66, tt + 8, tl + 96, tt + 38), Act::WifiMore));
+                } else if i == 1 {
+                    v.push((r(tl + 66, tt + 8, tl + 96, tt + 38), Act::BluetoothMore));
                 }
             }
             let mut y = 188;
@@ -725,10 +828,33 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
             menu_rows().0.into_iter().enumerate().filter(|(i, _)| !heads[*i]).map(|(i, (t, b))| (r(6, t, w - 6, b), Act::Menu(i as u8))).collect()
         }
         Kind::Start => {
+            let style = winrust_common::look::start_style();
+            if style_ready(style) {
+                return unsafe {
+                    // the modules give their rects in design pixels: map them to the scaled panel
+                    let sc_ = winrust_common::look::start_scale();
+                    let (dw, dh) = ((w * 100 / sc_).max(1), (h * 100 / sc_).max(1));
+                    let rows = start_rows();
+                    let pins = start_pins();
+                    let q = QUERY.with_borrow(|q| q.clone());
+                    let c = crate::startctx::Ctx { w: dw, h: dh, dpi: 1.0, fonts: [null_mut(); 5], rows: &rows, pins: &pins, query: &q, hover: OVER.get(), card: card(), scroll: SCROLL.get() };
+                    let raw = match style {
+                        0 => crate::start11::rects(&c),
+                        1 => crate::start10::rects(&c),
+                        _ => crate::start7::rects(&c),
+                    };
+                    raw.into_iter()
+                        .map(|(r, a)| {
+                            (RECT { left: r.left * w / dw, top: r.top * h / dh, right: r.right * w / dw, bottom: r.bottom * h / dh }, a)
+                        })
+                        .collect()
+                };
+            }
             let f = filtered();
             let s = SCROLL.get();
             let mut v: Vec<_> = (0..ROWS).filter(|i| s + i < f.len()).map(|i| (r(12, 76 + 40 * i as i32, w - 12, 76 + 40 * (i as i32 + 1)), Act::App(s + i))).collect();
             v.extend((0..4u8).map(|i| (r(w - 16 - 4 * 44 + 44 * i as i32, h - 52, w - 16 - 4 * 44 + 44 * (i as i32 + 1) - 4, h - 12), Act::Power(i))));
+            v.push((r(w - 16 - 5 * 44, h - 52, w - 16 - 5 * 44 + 40, h - 12), Act::StartSettings));
             v.push((r(w - 58, 24, w - 26, 52), Act::Keyboard)); // inside the search field, at its right end
             v
         }
@@ -802,8 +928,11 @@ thread_local! {
     static MITEMS: RefCell<Vec<MItem>> = const { RefCell::new(Vec::new()) };
     static MHEAD: RefCell<Option<(HICON, &'static str, String, String)>> = const { RefCell::new(None) }; // icon (or a glyph when null), title, subtitle
     static MPICK: RefCell<Option<Pick>> = const { RefCell::new(None) };
+    /// Screen rect of the bar the open panel belongs to: its own window proc has no `CURRENT`, and one bar per monitor
+    /// must keep growing / re-anchoring on the monitor it was opened from.
+    static FLY_MON: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) };
 }
-const MW: i32 = 272; // menu width
+const MW: i32 = 300; // menu width
 const MROW: i32 = 38;
 const MHEAD_H: i32 = 58;
 
@@ -842,6 +971,7 @@ fn menu_rows() -> (Vec<(i32, i32)>, i32) {
 pub fn context_menu(x: i32) {
     let pu = crate::purge_installed();
     let mut items = vec![
+        MItem::new(t!("Настройки панели", "Bar settings", ja: "バーの設定", pt: "Configurações da barra", zh: "任务栏设置")).hint("›"),
         MItem::new(t!("Параметры Windows", "Windows Settings", ja: "Windows の設定", pt: "Configurações do Windows", zh: "Windows 设置")).hint("Win+I"),
         MItem::new(t!("Персонализация", "Personalization", ja: "個人用設定", pt: "Personalização", zh: "个性化")),
         MItem::new(t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器")).hint("Ctrl+Shift+Esc").sep(),
@@ -849,18 +979,32 @@ pub fn context_menu(x: i32) {
         MItem::new(t!("Закрыть панель", "Close the bar", ja: "バーを閉じる", pt: "Fechar a barra", zh: "关闭任务栏")).danger().sep(),
     ];
     if pu {
-        items.insert(4, MItem::new(t!("Удалить мусор Windows (необратимо)", "Remove Windows junk (irreversible)", ja: "Windows の不要なものを削除 (元に戻せません)", pt: "Remover lixo do Windows (irreversível)", zh: "删除 Windows 垃圾文件（不可恢复）")).danger());
+        items.insert(5, MItem::new(t!("Удалить мусор Windows (необратимо)", "Remove Windows junk (irreversible)", ja: "Windows の不要なものを削除 (元に戻せません)", pt: "Remover lixo do Windows (irreversível)", zh: "删除 Windows 垃圾文件（不可恢复）")).danger());
     }
     menu(x, None, items, move |i| unsafe {
-        let i = if pu && i == 4 { 99 } else { i };
+        let i = if pu && i == 5 { 99 } else { i };
         match i {
-            0 => open(&wide("ms-settings:")),
-            1 => open(&wide("ms-settings:personalization")),
+            0 => crate::settings::style_menu(),
+            1 => open(&wide("ms-settings:")),
+            2 => open(&wide("ms-settings:personalization")),
             // with rtaskmgr-win32 installed this is our task manager; a full path because explorer.exe does not search PATH
-            2 => open(&wide(&format!(r"{}\System32\taskmgr.exe", std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())))),
-            3 => open_cleaner(),
+            3 => open(&wide(&format!(r"{}\System32\taskmgr.exe", std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())))),
+            4 => open_cleaner(),
             99 => crate::open_purge(),
-            _ => _ = PostMessageW(FindWindowW(wide("topbar").as_ptr(), null()), WM_CLOSE, 0, 0), // quits the bar, brings the Windows taskbar back
+            _ => unsafe {
+                // Closing the bar only makes sense while Explorer is around to bring its own taskbar back. Under
+                // rs-shell there is no other shell on screen, so say so and let the user decide (the supervisor
+                // restarts the bar a few seconds later anyway).
+                let explorer = winrust_common::proc::list().iter().any(|(_, n)| n.eq_ignore_ascii_case("explorer.exe"));
+                let text = if explorer {
+                    t!("Закрыть панель? Вернётся панель Windows.", "Close the bar? The Windows taskbar comes back.", ja: "バーを閉じますか? Windows のタスクバーに戻ります。", pt: "Fechar a barra? A barra do Windows volta.", zh: "关闭任务栏？将恢复 Windows 任务栏。")
+                } else {
+                    t!("WinRust — это оболочка: другой панели нет.\n\nrs-shell перезапустит панель через несколько секунд. Закрыть?", "WinRust is the shell: there is no other taskbar.\n\nrs-shell restarts the bar in a few seconds. Close it anyway?", ja: "WinRust がシェルです。他のタスクバーはありません。\n\nrs-shell が数秒後にバーを再起動します。閉じますか?", pt: "O WinRust é o shell: não há outra barra.\n\nO rs-shell reinicia a barra em alguns segundos. Fechar mesmo assim?", zh: "WinRust 是外壳，没有其他任务栏。\n\nrs-shell 会在几秒后重启任务栏。仍要关闭吗？")
+                };
+                if MessageBoxW(null_mut(), wide(text).as_ptr(), wide("WinRust").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES {
+                    _ = PostMessageW(FindWindowW(wide("topbar").as_ptr(), null()), WM_CLOSE, 0, 0);
+                }
+            },
         }
     });
 }
@@ -887,7 +1031,7 @@ pub fn close_now() {
     unsafe { kill_ghost() };
 }
 
-unsafe fn kill_ghost() {
+pub(crate) unsafe fn kill_ghost() {
     let (g, _, _) = GHOST.replace((null_mut(), 0, (0, 0)));
     if !g.is_null() {
         DestroyWindow(g);
@@ -927,6 +1071,9 @@ pub fn toggle(k: Kind) {
     if FLY.get() == Some(k) && unsafe { IsWindow(FH.get()) } != 0 {
         return close();
     }
+    // A page opened from an open panel (Start settings, a menu page) keeps that panel's monitor, even when the bar's
+    // one-second timer has moved CURRENT to another bar meanwhile.
+    let anchored = if FLY.get().is_some() { FLY_MON.get() } else { RECT { left: 0, top: 0, right: 0, bottom: 0 } };
     // No debounce here: a Win press right after the panel closed (or while it is still fading out) must open it. The bar is
     // WS_EX_NOACTIVATE, so the click that closes the panel never comes back as a second toggle of its own.
     close();
@@ -961,16 +1108,31 @@ pub fn toggle(k: Kind) {
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
-        let sw = GetSystemMetrics(SM_CXSCREEN);
-        let x = if vert() { side_x(w) } else { match k {
-            Kind::Start => (sw - w) / 2,
-            Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
-            _ => sw - w - sc(8),
+        let br = if anchored.right > anchored.left { anchored } else { crate::bar_rect() };
+        FLY_MON.set(br); // this panel keeps anchoring to the bar it was opened from
+        let (left, sw) = (br.left, br.right - br.left);
+        let x = if vert() { side_x_m(br, w) } else { match k {
+            Kind::Start => left + if winrust_common::look::start_left() { sc(8) } else { (sw - w) / 2 },
+            Kind::Menu => MENU_X.get().min(left + sw - w - sc(8)).max(left + sc(8)),
+            _ => left + sw - w - sc(8),
         } };
         let class = wide("topbar_fly");
-        let fy = if vert() && k == Kind::Menu { (MENU_X.get() - h / 2).clamp(sc(8), GetSystemMetrics(SM_CYSCREEN) - h - sc(8)) } else { pop_y(h) }; // above the bar (below it at the top of the screen)
+        let fy = if vert() && k == Kind::Menu { (MENU_X.get() - h / 2).clamp(br.top + sc(8), br.bottom - h - sc(8)) } else { pop_y_m(br, h) }; // above the bar (below it at the top of the screen)
         let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, class.as_ptr(), null(), WS_POPUP, x, fy + sc(14), w, h, null_mut(), null_mut(), GetModuleHandleW(null()), null());
         SetLayeredWindowAttributes(hw, 0, 0, LWA_ALPHA); // starts invisible, anim_step fades it in
+        // invisible right now: what the screen shows there is what sits behind the panel
+        {
+            // a ghost of the flyout that just closed would be captured as if it were the desktop
+            kill_ghost();
+            let px = if winrust_common::look::menu_blur() {
+                // a big panel needs a wider radius or it looks like plain wallpaper behind glass
+                let radius = sc(winrust_common::look::menu_radius()).max(h / 22).max(sc(8));
+                crate::blur::capture_rect(RECT { left: x, top: fy, right: x + w, bottom: fy + h }, radius)
+            } else {
+                Vec::new()
+            };
+            FPX.set((w, h, px));
+        }
         if k == Kind::Start {
             // accept file drops (an app dragged onto the panel is added to Start); the bar may be elevated, so lift UIPI for them
             DragAcceptFiles(hw, 1);
@@ -1042,6 +1204,11 @@ unsafe fn app_menu(hw: HWND, i: usize, x: i32, y: i32) {
             AppendMenuW(m, MF_STRING, id, wide(label).as_ptr());
         }
     }
+    if file {
+        // removing the program is a separate, destructive group
+        AppendMenuW(m, MF_SEPARATOR, 0, null());
+        AppendMenuW(m, MF_STRING, 5, wide(t!("Удалить программу", "Uninstall", ja: "アンインストール", pt: "Desinstalar", zh: "卸载")).as_ptr());
+    }
     let mut pt = POINT { x, y };
     ClientToScreen(hw, &mut pt);
     let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hw, null());
@@ -1059,9 +1226,39 @@ unsafe fn app_menu(hw: HWND, i: usize, x: i32, y: i32) {
             start_toggle(&path);
             return; // stay open, the list just changed
         }
+        5 => uninstall_app(&path),
         _ => return,
     }
     close();
+}
+
+/// Runs the app's own uninstaller: the `Uninstall` registry entry whose DisplayIcon, InstallLocation or
+/// UninstallString points at the shortcut's target. Without one, opens Windows' "Installed apps" page.
+unsafe fn uninstall_app(target: &str) {
+    use std::os::windows::process::CommandExt;
+    let name = std::path::Path::new(target).file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let q = wide(&tf!("Удалить «{}»?", "Uninstall \"{}\"?", ja: "「{}」をアンインストールしますか?", pt: "Desinstalar \"{}\"?", zh: "卸载“{}”？", name));
+    let bar = crate::BAR.load(std::sync::atomic::Ordering::Relaxed) as HWND;
+    let yes = MessageBoxW(bar, q.as_ptr(), wide("WinRust").as_ptr(), MB_YESNO | MB_ICONWARNING);
+    if yes != 6 {
+        return; // IDYES
+    }
+    // the registry part is easier (and safer) through PowerShell: three hives, one match
+    let t = target.replace('\'', "''");
+    let script = format!(
+        r#"$t = '{t}'; $k = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'); $h = Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object {{ $d = "$($_.DisplayIcon)".ToLower(); $u = "$($_.UninstallString)".ToLower(); $l = "$($_.InstallLocation)".ToLower(); ($d -and $d.Contains($t)) -or ($l -and $t.StartsWith($l)) -or ($u -and $u.Contains($t)) }} | Select-Object -First 1; if ($h) {{ "$($h.UninstallString)" }}"#
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output();
+    let cmd = out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    if cmd.is_empty() {
+        open(&wide("ms-settings:appsfeatures"));
+        return;
+    }
+    // the uninstaller's own window still shows; the console stays hidden
+    let _ = std::process::Command::new("cmd").args(["/c", &cmd]).creation_flags(0x0800_0000).spawn();
 }
 
 unsafe fn run_act(a: Act, rect: RECT, x: i32) {
@@ -1072,6 +1269,11 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             slide(a, x, rect);
         }
         Act::WifiMore => toggle(Kind::Wifi),
+        Act::BluetoothMore => {
+            // a device is added in Windows' own page: our tile only switches the radio
+            close();
+            open(&wide("ms-settings:bluetooth"));
+        }
         Act::WifiSwitch => wifi_radio(WIFI.get() < 0 && NETS.with_borrow(|n| n.is_empty())),
         Act::Tile(i) => match i {
             0 => wifi_radio(WIFI.get() < 0),
@@ -1176,6 +1378,42 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
                 close();
             }
         }
+        Act::StartSettings => {
+            close();
+            crate::settings::start_page();
+        }
+        Act::Place(p) => {
+            close();
+            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            let target = match p {
+                0 => format!("{home}\\Documents"),
+                1 => format!("{home}\\Pictures"),
+                2 => format!("{home}\\Music"),
+                3 => "shell:Recent".to_string(),
+                4 => "shell:MyComputerFolder".to_string(),
+                5 => "control.exe".to_string(),
+                6 => "ms-settings:".to_string(),
+                7 => "ms-settings:printers".to_string(),
+                8 => "control.exe /name Microsoft.DefaultPrograms".to_string(),
+                9 => "ms-settings:help".to_string(),
+                _ => String::new(),
+            };
+            if target.is_empty() {
+                crate::run_box(); // Run
+            } else {
+                open(&wide(&target));
+            }
+        }
+        Act::AllApps => {}
+        Act::Pin(i) => {
+            // a pinned tile: the index points into the pinned rows, not into the filtered list
+            let pins = start_pins();
+            if let Some(Act::App(k)) = pins.get(i).map(|r| r.act) {
+                if launch(k) {
+                    close();
+                }
+            }
+        }
         Act::Power(p) => {
             if p >= 2 && CONFIRM.get() != p as i32 {
                 CONFIRM.set(p as i32); // first click only arms it
@@ -1246,6 +1484,11 @@ unsafe fn surface(dc: HDC, rc: RECT, base: u32, rad: i32) {
     fill(dc, RECT { left: rc.left + 1, top: rc.top + 1, right: rc.right - 1, bottom: rc.bottom - 1 }, base, rad - 2);
 }
 
+thread_local! {
+    /// The blurred screen behind the open flyout: captured once, when the window is still transparent.
+    static FPX: RefCell<(i32, i32, Vec<u32>)> = const { RefCell::new((0, 0, Vec::new())) };
+}
+
 fn inset(rc: RECT, d: i32) -> RECT {
     RECT { left: rc.left + d, top: rc.top + d, right: rc.right - d, bottom: rc.bottom - d }
 }
@@ -1258,9 +1501,28 @@ unsafe fn paint(hw: HWND, k: Kind) {
     BUSY.set(false);
     let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
     let old = SelectObject(dc, bmp);
-    fill(dc, cr, if style().light() { mix(pal().bg, pal().dim, 0.3) } else { mix(pal().bg, pal().text, 0.12) }, sc(16));
-    fill(dc, inset(cr, 1), pal().bg, sc(16));
-    winrust_common::style::backdrop(dc, inset(cr, 1), sc(100) as f32 / 100.0);
+    let inner = inset(cr, 1);
+    let drew = FPX.with_borrow(|(fw_, fh_, px)| {
+        if px.is_empty() || *fw_ != cr.right || *fh_ != cr.bottom {
+            return false;
+        }
+        // the same recipe as the desktop menu: the capture at its own size, clipped only at the rounded corners
+        let keep = SaveDC(dc);
+        let _ = BeginPath(dc);
+        let _ = RoundRect(dc, 0, 0, cr.right + 1, cr.bottom + 1, sc(16), sc(16));
+        let _ = EndPath(dc);
+        let _ = SelectClipPath(dc, RGN_AND);
+        // the panels keep a readability floor: below 62 % the wallpaper shows through and the text suffers
+        let a = (255 * winrust_common::look::menu_alpha().max(62) as u32 / 100) as u8;
+        crate::blur::paint_capture(dc, px, cr, pal().bg, a);
+        let _ = RestoreDC(dc, keep);
+        true
+    });
+
+    if !drew {
+        fill(dc, inner, pal().bg, sc(16));
+        winrust_common::style::backdrop(dc, inner, sc(100) as f32 / 100.0);
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
     let font = |f: &[u16], px: i32, wt: i32| CreateFontW(-sc(px), 0, 0, 0, wt, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr());
@@ -1315,13 +1577,21 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 if i == 0 {
                     // the same arcs as the bar: lit by the signal, a cross when not connected
                     wifi_glyph(dc, (badge.left + badge.right) / 2, (badge.top + badge.bottom) / 2 - sc(1), sc(15), if q >= 0 { arcs_lit(q) } else { 0 }, ink, mix(ink, if on { pal().accent } else { card }, 0.55), if q < 0 { 1 } else { 0 });
-                    let more = rs.iter().find(|(_, a)| *a == Act::WifiMore).unwrap().0;
-                    g(Act::WifiMore, more, base, mix(base, pal().text, 0.1), sc(30));
-                    SelectObject(dc, f_gs);
-                    text(dc, "\u{E76C}", more, pal().dim, DT_CENTER);
                 } else {
                     SelectObject(dc, f_glyph);
                     text(dc, glyph, badge, ink, DT_CENTER);
+                }
+                // the corner button of the Wi-Fi and Bluetooth tiles (their full pages hold more than a switch)
+                let more_act = match i {
+                    0 => Some(Act::WifiMore),
+                    1 => Some(Act::BluetoothMore),
+                    _ => None,
+                };
+                if let Some(ma) = more_act {
+                    let more = rs.iter().find(|(_, a)| *a == ma).unwrap().0;
+                    g(ma, more, base, mix(base, pal().text, 0.1), sc(30));
+                    SelectObject(dc, f_gs);
+                    text(dc, "\u{E76C}", more, pal().dim, DT_CENTER);
                 }
                 SelectObject(dc, f_label);
                 text(dc, label.as_str(), r(tl + 12, tt + 46, tl + 102, tt + 62), pal().text, DT_LEFT);
@@ -1585,7 +1855,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     let tile = r(14, 12, 48, 46);
                     fill(dc, tile, mix(pal().bg, pal().accent, 0.16), sc(10));
                     if !ic.is_null() {
-                        DrawIconEx(dc, tile.left + sc(5), tile.top + sc(5), *ic, sc(24), sc(24), 0, null_mut(), DI_NORMAL);
+                        i18n::icon::draw(dc, *ic, tile.left + sc(5), tile.top + sc(5), sc(24));
                     } else {
                         SelectObject(dc, f_glyph); // no app icon (Style, Language): the menu's own symbol
                         text(dc, glyph, tile, pal().accent, DT_CENTER);
@@ -1620,7 +1890,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     // plain text rows: a window's own icon is the only picture; the current choice gets an accent dot
                     let mut lx = rc.left + sc(14);
                     if !it.icon.is_null() {
-                        DrawIconEx(dc, lx, (rc.top + rc.bottom) / 2 - sc(8), it.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                        i18n::icon::draw(dc, it.icon, lx, (rc.top + rc.bottom) / 2 - sc(8), sc(16));
                         lx += sc(26);
                     }
                     if it.swatch != u32::MAX {
@@ -1646,6 +1916,31 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     text(dc, &it.label, RECT { left: lx, right: rx - match it.hint.chars().count() { 0 => 0, 1..=2 => sc(20), _ => sc(96) }, ..*rc }, if it.on { pal().accent } else { col }, DT_LEFT);
                 }
             });
+        }
+        Kind::Start if style_ready(winrust_common::look::start_style()) => {
+            // the modules lay out for their design size; the panel may be scaled (Small/Large), so draw through a
+            // mapping that turns design pixels into the real ones
+            let s = winrust_common::look::start_scale();
+            let (dw, dh) = ((w * 100 / s).max(1), (h * 100 / s).max(1));
+            let rows = start_rows();
+            let pins = start_pins();
+            let q = QUERY.with_borrow(|q| q.clone());
+            let c = crate::startctx::Ctx { w: dw, h: dh, dpi: 1.0, fonts: [f_txt, f_small, f_glyph, f_title, f_big], rows: &rows, pins: &pins, query: &q, hover: OVER.get(), card, scroll: SCROLL.get() };
+            {
+                use windows_sys::Win32::Graphics::Gdi::{SetMapMode, SetViewportExtEx, SetWindowExtEx, MM_ANISOTROPIC};
+                SetMapMode(dc, MM_ANISOTROPIC);
+                SetWindowExtEx(dc, dw, dh, std::ptr::null_mut());
+                SetViewportExtEx(dc, w, h, std::ptr::null_mut());
+            }
+            match winrust_common::look::start_style() {
+                0 => crate::start11::paint(dc, &c),
+                1 => crate::start10::paint(dc, &c),
+                _ => crate::start7::paint(dc, &c),
+            }
+            {
+                use windows_sys::Win32::Graphics::Gdi::{SetMapMode, MM_TEXT};
+                SetMapMode(dc, MM_TEXT);
+            }
         }
         Kind::Start => {
             surface(dc, r(20, 20, w - 20, 56), card, sc(36));
@@ -1696,13 +1991,13 @@ unsafe fn paint(hw: HWND, k: Kind) {
                             fill(dc, RECT { left: rc.left, top: rc.top + sc(10), right: rc.left + sc(3), bottom: rc.bottom - sc(10) }, pal().accent, sc(3));
                         }
                         let ic = ICONS.with_borrow_mut(|m| {
-                            *m.entry(app.1.clone()).or_insert_with(|| {
+                            *m.entry((app.1.clone(), icon_px())).or_insert_with(|| {
                                 let t = lnk_target(&app.1);
-                                lnk_icon(&app.1, &t)
+                                lnk_icon_px(&app.1, &t, icon_px()) // this row draws at exactly this size
                             })
                         });
                         if !ic.is_null() {
-                            DrawIconEx(dc, rc.left + sc(13), (rc.top + rc.bottom - icon_px()) / 2, ic, icon_px(), icon_px(), 0, null_mut(), DI_NORMAL); // at its loaded size: no stretching
+                            i18n::icon::draw(dc, ic, rc.left + sc(13), (rc.top + rc.bottom - icon_px()) / 2, icon_px());
                         }
                         let store = wstr(&app.1).starts_with("shell:");
                         text(dc, &app.0, RECT { left: rc.left + sc(52), top: rc.top, right: rc.right - sc(110), bottom: rc.bottom }, pal().text, DT_LEFT);
@@ -1710,6 +2005,11 @@ unsafe fn paint(hw: HWND, k: Kind) {
                         let kind = if sel && !q.is_empty() { "Enter ↵" } else if store { t!("Приложение", "App", ja: "アプリ", pt: "App", zh: "应用") } else { "" };
                         text(dc, kind, RECT { left: rc.right - sc(110), top: rc.top, right: rc.right - sc(14), bottom: rc.bottom }, pal().dim, DT_RIGHT);
                         SelectObject(dc, f_txt);
+                    }
+                    Act::StartSettings => {
+                        glow(dc, rc.top * 4096 + rc.left + 1_000_000, hot(*a), *rc, pal().bg, pal().hover, sc(8));
+                        SelectObject(dc, f_glyph);
+                        text(dc, "\u{E713}", *rc, pal().text, DT_CENTER);
                     }
                     Act::Power(p) => {
                         let armed = CONFIRM.get() == p as i32;
@@ -1790,7 +2090,7 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let (w, h) = (sc(size(k).0), sc(size(k).1));
                 // the panel hangs above the bar: keep its bottom edge where it is and grow / shrink upward
                 let (x, _) = FIN.get();
-                let y = pop_y(h);
+                let y = pop_y_m(FLY_MON.get(), h);
                 FIN.set((x, y));
                 SetWindowPos(hw, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
                 SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 1);
@@ -1823,6 +2123,13 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
         WM_RBUTTONUP => {
             match (k, act_at(k, x, y)) {
                 (Kind::Start, Some((_, Act::App(i)))) => app_menu(hw, i, x, y),
+                (Kind::Start, Some((_, Act::Pin(p)))) => {
+                    // a pinned tile: its menu is the same one its list row shows
+                    let pins = start_pins();
+                    if let Some(Act::App(i)) = pins.get(p).map(|r| r.act) {
+                        app_menu(hw, i, x, y);
+                    }
+                }
                 (Kind::Wifi, Some((_, Act::Net(_) | Act::NetOff))) if PASS.with_borrow(|p| p.is_none()) => {
                     let i = if let Some((_, Act::Net(i))) = act_at(k, x, y) { i } else { NETS.with_borrow(|n| n.iter().position(|n| n.connected)).unwrap_or(0) };
                     if let Some(ssid) = NETS.with_borrow(|n| n.get(i).map(|n| n.ssid.clone())) {

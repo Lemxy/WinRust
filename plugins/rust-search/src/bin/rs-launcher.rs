@@ -1,4 +1,4 @@
-// Alt+Space opens a search card; results come from the `rs --serve` services (one pipe per drive).
+﻿// Alt+Space opens a search card; results come from the `rs --serve` services (one pipe per drive).
 // Type to search, Up/Down (or mouse) to pick, Enter to open, Ctrl+Enter to show in Explorer, Esc to close.
 // `rs-launcher --autostart` registers it to start at logon.
 //
@@ -959,6 +959,15 @@ fn count_text(n: usize, ru: (&str, &str, &str), en: &str, ja: &str, pt: &str, zh
         winrust_common::Lang::Pt => format!("{n} {pt}"),
         winrust_common::Lang::Zh => format!("{n} {zh}"),
         winrust_common::Lang::En => format!("{n} {en}{}", if n == 1 { "" } else { "s" }),
+        winrust_common::Lang::Es => {
+            let (one, many) = match en {
+                "file" => ("archivo", "archivos"),
+                "item" => ("elemento", "elementos"),
+                "registry entry" => ("entrada del Registro", "entradas del Registro"),
+                _ => (en, ""),
+            };
+            format!("{n} {}", if n == 1 || many.is_empty() { one } else { many })
+        }
     }
 }
 

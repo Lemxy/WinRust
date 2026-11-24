@@ -1,18 +1,24 @@
-//! Bluetooth and airplane mode through Windows.Devices.Radios / Devices.Enumeration (no admin, no Settings app): the radio switch,
-//! paired devices with their connection state, pairing a nearby device and removing a paired one. The WinRT calls wait, so they
-//! run in a thread and leave their result in `STATE`, which the window reads on its next refresh.
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering::Relaxed},
+﻿//! Bluetooth and airplane mode through Windows.Devices.Radios / Devices.Enumeration (no admin, no Settings app): the radio switch,
+//! paired devices with their connection state, pairing a nearby device and removing a paired one. Classic (BluetoothDevice) and
+//! Bluetooth LE (BluetoothLEDevice) devices are both listed, as modern pads only exist on the LE side. The nearby list comes from
+//! a `DeviceWatcher` (a real discovery: a device in pairing mode has never been seen and is not in any cached list). The WinRT
+//! calls wait, so they run in a thread and leave their result in `STATE`, which the window reads on its next refresh.
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering::Relaxed},
+    },
+    time::Duration,
 };
 use windows::{
     Devices::{
-        Bluetooth::BluetoothDevice,
-        Enumeration::{DeviceInformation, DevicePairingKinds, DevicePairingResultStatus, DeviceUnpairingResultStatus},
+        Bluetooth::{BluetoothConnectionStatus, BluetoothDevice, BluetoothLEDevice},
+        Enumeration::{DeviceInformation, DeviceInformationUpdate, DevicePairingKinds, DevicePairingResultStatus, DeviceUnpairingResultStatus},
         Radios::{Radio, RadioKind, RadioState},
     },
     Foundation::TypedEventHandler,
-    core::HSTRING,
+    core::{HSTRING, Result},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,19 +71,206 @@ pub fn refresh(done: impl FnOnce() + Send + 'static) {
     });
 }
 
+/// True for an id of the Bluetooth LE stack (`BluetoothLE#BluetoothLE...`), false for the classic one
+/// (`Bluetooth#Bluetooth...`). The prefix says which API can open the device.
+fn is_le(id: &str) -> bool {
+    id.starts_with("BluetoothLE#")
+}
+
+/// Whether the device behind that interface id is connected right now. The id's prefix says which stack owns it:
+/// `BluetoothDevice` cannot open an LE id and `BluetoothLEDevice` knows nothing about a classic one, so a device that
+/// does not answer is just not connected — never an error that would hide the row.
+fn is_connected(id: &str) -> bool {
+    let h = HSTRING::from(id);
+    if is_le(id) {
+        // the LE object holds the device open until it is closed, and a closed reference lets a controller sleep again
+        let dev = BluetoothLEDevice::FromIdAsync(&h).and_then(|a| a.join());
+        let connected = dev.as_ref().ok().is_some_and(|d| d.ConnectionStatus().is_ok_and(|c| c == BluetoothConnectionStatus::Connected));
+        if let Ok(d) = &dev {
+            let _ = d.Close();
+        }
+        return connected;
+    }
+    BluetoothDevice::FromIdAsync(&h).and_then(|a| a.join()).and_then(|d| d.ConnectionStatus()).is_ok_and(|c| c == BluetoothConnectionStatus::Connected)
+}
+
+/// The same device can be listed by both stacks (a DualSense is classic and LE at once) under different ids: one row
+/// per device, matched by id, and by name across the two stacks.
+fn same_device(dev: &Dev, id: &str, name: &str) -> bool {
+    dev.id == id || (is_le(&dev.id) != is_le(id) && dev.name.eq_ignore_ascii_case(name))
+}
+
+/// The order the page shows: connected first, then by name (both lists and the live discovery use it).
+fn sort_rows(rows: &mut [Dev]) {
+    rows.sort_by(|a, b| b.connected.cmp(&a.connected).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+}
+
 fn list(paired: bool) -> Vec<Dev> {
-    let Ok(sel) = BluetoothDevice::GetDeviceSelectorFromPairingState(paired) else { return vec![] };
-    let Ok(all) = DeviceInformation::FindAllAsyncAqsFilter(&sel).and_then(|a| a.join()) else { return vec![] };
-    let mut out: Vec<Dev> = all
-        .into_iter()
-        .filter_map(|d| {
-            let (id, name) = (d.Id().ok()?.to_string(), d.Name().ok()?.to_string());
-            let connected = paired && BluetoothDevice::FromIdAsync(&HSTRING::from(&id)).and_then(|a| a.join()).and_then(|b| b.ConnectionStatus()).is_ok_and(|c| c.0 == 1);
-            (!name.trim().is_empty()).then_some(Dev { id, name, connected })
-        })
-        .collect();
-    out.sort_by(|a, b| b.connected.cmp(&a.connected).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    // Both selectors: headsets, car kits and older pads are classic, while modern pads and most accessories advertise
+    // over LE (and Windows' own Settings shows them from the LE list), so neither list alone has everything.
+    let selectors: [Result<HSTRING>; 2] = [
+        BluetoothDevice::GetDeviceSelectorFromPairingState(paired),
+        BluetoothLEDevice::GetDeviceSelectorFromPairingState(paired),
+    ];
+    let mut out: Vec<Dev> = Vec::new();
+    for sel in selectors.into_iter().flatten() {
+        let Ok(all) = DeviceInformation::FindAllAsyncAqsFilter(&sel).and_then(|a| a.join()) else { continue };
+        for d in all.into_iter() {
+            let (Ok(id), Ok(name)) = (d.Id(), d.Name()) else { continue };
+            let (id, name) = (id.to_string(), name.to_string());
+            if name.trim().is_empty() {
+                continue;
+            }
+            let connected = paired && is_connected(&id);
+            match out.iter_mut().find(|o| same_device(o, &id, &name)) {
+                Some(o) => o.connected |= connected, // the row already exists from the other stack
+                None => out.push(Dev { id, name, connected }),
+            }
+        }
+    }
+    sort_rows(&mut out);
     out
+}
+
+/// How long the watchers are left running: enough for a pad in pairing mode to answer on one of its advertising bursts,
+/// short enough for the page not to feel stuck.
+const SCAN: Duration = Duration::from_secs(8);
+
+/// The displayed name of a device, asked again by id: a watcher can announce a device before Windows has resolved its
+/// name, and the update that carries the name may come later (or never, for a device that has just answered).
+fn name_of(id: &str) -> String {
+    DeviceInformation::CreateFromIdAsync(&HSTRING::from(id))
+        .and_then(|a| a.join())
+        .and_then(|d| d.Name())
+        .map(|n| n.to_string())
+        .unwrap_or_default()
+}
+
+/// Repaint hook for `scan`: it is called from the watchers' own threads and more than once, so it is shared and behind a
+/// `Mutex` (the caller only promises `Fn() + Send`, which is not necessarily `Sync`). The window coalesces the nudges
+/// itself, so nudging once per change is cheap.
+#[derive(Clone)]
+struct Notify(Arc<Mutex<Box<dyn Fn() + Send>>>);
+
+impl Notify {
+    fn new(f: impl Fn() + Send + 'static) -> Self {
+        Self(Arc::new(Mutex::new(Box::new(f))))
+    }
+
+    fn ping(&self) {
+        if let Ok(f) = self.0.lock() {
+            (*f)()
+        }
+    }
+}
+
+/// Adds one discovered device to `nearby` (in place, connected first and sorted by name), unless it is already there or is
+/// paired: the same device can be announced by both stacks under different ids, and a paired one is not offered again.
+/// Returns whether the list changed, which is exactly when the window has to be nudged.
+fn publish(dev: Dev) -> bool {
+    with(|s| {
+        if s.paired.iter().any(|p| same_device(p, &dev.id, &dev.name)) {
+            return false;
+        }
+        let changed;
+        if let Some(d) = s.nearby.iter_mut().find(|d| same_device(d, &dev.id, &dev.name)) {
+            changed = dev.connected && !d.connected; // the row exists already from the other stack
+            d.connected |= dev.connected;
+        } else {
+            s.nearby.push(dev);
+            changed = true;
+        }
+        if changed {
+            sort_rows(&mut s.nearby);
+        }
+        changed
+    })
+    .unwrap_or(false)
+}
+
+/// Active discovery: a `DeviceWatcher` on the unpaired classic and LE selectors reports every device that answers while
+/// it runs, including one in pairing mode that Windows has never seen (which `FindAllAsyncAqsFilter` cannot return: that
+/// one only lists known devices). Each device goes to `nearby` from its own callback, so it shows up as it answers; the
+/// wait only bounds how long the watchers look. `false` when no watcher could be created or started, which leaves `scan`
+/// with the cached list.
+fn watch(notify: &Notify) -> bool {
+    let selectors: [Result<HSTRING>; 2] = [
+        BluetoothDevice::GetDeviceSelectorFromPairingState(false),
+        BluetoothLEDevice::GetDeviceSelectorFromPairingState(false),
+    ];
+    let seen: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut watchers = Vec::new();
+    for sel in selectors.into_iter().flatten() {
+        let Ok(w) = DeviceInformation::CreateWatcherAqsFilter(&sel) else { continue };
+        let added_seen = Arc::clone(&seen);
+        let added_notify = notify.clone();
+        if w.Added(&TypedEventHandler::new(move |_, d: windows::core::Ref<DeviceInformation>| {
+            if let Some(d) = d.as_ref() {
+                if let Ok(id) = d.Id() {
+                    let (id, name) = (id.to_string(), d.Name().map(|n| n.to_string()).unwrap_or_default());
+                    if let Ok(mut m) = added_seen.lock() {
+                        m.insert(id.clone(), name.clone());
+                    }
+                    // an empty name is not shown yet: `Updated` (or the sweep after the wait) brings it
+                    if !name.trim().is_empty() && publish(Dev { id, name, connected: false }) {
+                        added_notify.ping();
+                    }
+                }
+            }
+            Ok(())
+        }))
+        .is_err()
+        {
+            continue;
+        }
+        let updated_seen = Arc::clone(&seen);
+        let updated_notify = notify.clone();
+        let _ = w.Updated(&TypedEventHandler::new(move |_, u: windows::core::Ref<DeviceInformationUpdate>| {
+            if let Some(u) = u.as_ref() {
+                if let Ok(id) = u.Id() {
+                    let id = id.to_string();
+                    // a device announced before Windows resolved its name: ask again, then show it
+                    let missing = updated_seen.lock().ok().is_some_and(|m| m.get(&id).is_some_and(|n| n.trim().is_empty()));
+                    if missing {
+                        let name = name_of(&id);
+                        if !name.trim().is_empty() {
+                            if let Ok(mut m) = updated_seen.lock() {
+                                m.insert(id.clone(), name.clone());
+                            }
+                            if publish(Dev { id, name, connected: false }) {
+                                updated_notify.ping();
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }));
+        if w.Start().is_ok() {
+            watchers.push(w);
+        }
+    }
+    if watchers.is_empty() {
+        return false;
+    }
+    // the watchers (and their handlers) have to stay alive while they look: dropping them here would stop the discovery
+    std::thread::sleep(SCAN);
+    for w in &watchers {
+        let _ = w.Stop();
+    }
+    drop(watchers);
+    // devices whose name never arrived: ask for it once the enumeration has settled, then show them
+    let pending: Vec<String> = seen
+        .lock()
+        .map(|m| m.iter().filter(|(_, n)| n.trim().is_empty()).map(|(id, _)| id.clone()).collect())
+        .unwrap_or_default();
+    for id in pending {
+        let name = name_of(&id);
+        if !name.trim().is_empty() && publish(Dev { id, name, connected: false }) {
+            notify.ping();
+        }
+    }
+    true
 }
 
 /// Switches every radio of that kind (`None`: all radios, which is airplane mode) and re-reads the state.
@@ -109,15 +302,34 @@ pub fn set_airplane(on: bool, done: impl FnOnce() + Send + 'static) {
     });
 }
 
-/// Looks for devices in range (it takes about ten seconds).
-pub fn scan(done: impl FnOnce() + Send + 'static) {
+/// Looks for devices in range: the cached list is shown right away, then about eight seconds of active discovery (a pad in
+/// pairing mode answers on one of its advertising bursts, which is why it has to be watched for a while). Each device is
+/// published from its watcher callback and `notify` is called on every change, so it appears as soon as it is seen; the
+/// `scanning` flag stays on until the watchers stop.
+pub fn scan(notify: impl Fn() + Send + 'static) {
     if with(|s| std::mem::replace(&mut s.scanning, true)) != Some(false) {
         return;
     }
     std::thread::spawn(move || {
-        let found = list(false);
-        with(|s| (s.nearby, s.scanning) = (found, false));
-        done();
+        let notify = Notify::new(notify);
+        with(|s| s.note = t!("Ищем устройства…", "Searching…", ja: "検索中…", pt: "Procurando…", zh: "正在搜索…").into());
+        notify.ping(); // the page shows "searching…" while the cached list is read
+        // what Windows already knows, on screen before the discovery starts (the same filter the page always had)
+        let cached = list(false);
+        with(|s| {
+            s.nearby = cached.into_iter().filter(|d| !s.paired.iter().any(|p| same_device(p, &d.id, &d.name))).collect();
+            sort_rows(&mut s.nearby);
+        });
+        notify.ping();
+        // live discovery: every callback publishes its device and nudges the window at once; without a watcher the cached
+        // list is all there is, and the tail below still ends the scan
+        let _ = watch(&notify);
+        with(|s| {
+            let count = s.nearby.len();
+            s.scanning = false;
+            s.note = tf!("Найдено устройств: {}", "{} devices found", ja: "{} 台のデバイスが見つかりました", pt: "{} dispositivos encontrados", zh: "找到 {} 个设备", count);
+        });
+        notify.ping();
     });
 }
 

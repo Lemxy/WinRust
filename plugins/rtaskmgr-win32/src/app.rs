@@ -1,4 +1,4 @@
-//! Окно приложения: состояние интерфейса, раскладка, события, меню и действия.
+﻿//! Окно приложения: состояние интерфейса, раскладка, события, меню и действия.
 use crate::{data::*, draw::*, model::*, startup, store, sys, ui::*};
 use native_windows_gui as nwg;
 use std::{
@@ -9,6 +9,8 @@ use std::{
 };
 use winapi::shared::windef::{HMENU, HWND};
 use winapi::um::winuser::*;
+use winrust_common::frost;
+use windows_sys::Win32::Foundation::RECT as FRECT;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Btn {
@@ -149,11 +151,21 @@ pub struct App {
     pub edit_brush: Cell<isize>,
     pub search_rect: Cell<R>,
     pub last_tick: Cell<Instant>,
+    /// Lazy frost capture: the client area in screen coordinates plus the blurred desktop pixels.
+    pub frost_cache: RefCell<Option<(R, Vec<u32>)>>,
 }
 
 fn layout_log_path() -> Option<&'static std::ffi::OsString> {
     static P: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
     P.get_or_init(|| std::env::var_os("RTASKMGR_LAYOUT_LOG")).as_ref()
+}
+
+/// Whether the window background is frosted (the Mica-like blur).
+///
+/// `winrust-common` re-exports the shared blur switch through `frost`; revisions that name it
+/// `frost::enabled()` only need this body changed.
+fn frost_on() -> bool {
+    frost::menu_blur()
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -279,13 +291,18 @@ impl App {
                 let mem = winapi::um::wingdi::CreateCompatibleDC(hdc);
                 let bmp = winapi::um::wingdi::CreateCompatibleBitmap(hdc, w, h);
                 let old = winapi::um::wingdi::SelectObject(mem, bmp as *mut _);
-                let g = G { dc: mem, s: self.scale, th: ui.th, fonts: &self.fonts };
+                let mut g = G { dc: mem, s: self.scale, th: ui.th, fonts: &self.fonts, frost: false };
                 let lay = self.compute_layout(&g, &ui, &d, w, h);
                 // прокрутка не должна выходить за содержимое
                 let area_h = if ui.has_table() { lay.rows_area.h() } else { lay.body.h() } as f64;
                 let max_scroll = (self.content_height(&g, &ui, &lay, &d) - area_h).max(0.0);
                 ui.scroll = ui.scroll.clamp(0.0, max_scroll);
-                g.fill(lay.client, ui.th.bg);
+                // Background: the blurred desktop under the window (Mica) when frost is on, the plain
+                // theme colour otherwise. With frost on, the areas above use translucent fills.
+                g.frost = self.paint_frost(&g, hwnd, w, h);
+                if !g.frost {
+                    g.fill(lay.client, ui.th.bg);
+                }
                 match ui.page {
                     Page::Performance => self.draw_performance(&g, &ui, &d, &lay),
                     Page::Insights => self.draw_insights(&g, &ui, &d, &lay),
@@ -339,6 +356,41 @@ impl App {
         if let Some(h) = self.win.handle.hwnd() {
             unsafe { InvalidateRect(h, null(), 0) };
         }
+    }
+
+    /// Paints the window background from a blurred capture of the desktop behind the client area.
+    ///
+    /// The capture is lazy: it is kept until the client rect in screen coordinates changes (move,
+    /// resize, DPI change) or `drop_frost` is called (show/restore), never once per frame.
+    /// Returns false if frost is off or the capture failed, so the caller paints the solid colour.
+    fn paint_frost(&self, g: &G, hwnd: HWND, w: i32, h: i32) -> bool {
+        if !frost_on() {
+            return false;
+        }
+        // Client area in screen coordinates: exactly what the eye sees behind this window.
+        let mut corners = [winapi::shared::windef::POINT { x: 0, y: 0 }, winapi::shared::windef::POINT { x: w, y: h }];
+        unsafe { MapWindowPoints(hwnd, null_mut(), corners.as_mut_ptr(), 2) };
+        let screen = R::new(corners[0].x, corners[0].y, corners[1].x, corners[1].y);
+        let mut cache = self.frost_cache.borrow_mut();
+        let fresh = matches!(cache.as_ref(), Some((r, px)) if *r == screen && px.len() == (w * h) as usize);
+        if !fresh {
+            let rect = FRECT { left: screen.l, top: screen.t, right: screen.r, bottom: screen.b };
+            // the wallpaper under the rect, blurred: the window itself is never captured
+            let px = unsafe { frost::capture_desktop(rect, frost::radius_for(w, h)) };
+            if px.is_empty() {
+                *cache = None;
+                return false;
+            }
+            *cache = Some((screen, px));
+        }
+        let Some((_, px)) = cache.as_ref() else { return false };
+        let dest = FRECT { left: 0, top: 0, right: w, bottom: h };
+        unsafe { frost::paint_capture(g.dc as *mut std::ffi::c_void, px, dest, g.th.bg.c(), frost::tint_alpha()) }
+    }
+
+    /// Forgets the frost capture; the next paint takes a fresh one (move, resize, show).
+    pub fn drop_frost(&self) {
+        self.frost_cache.borrow_mut().take();
     }
 
     // ================= проверка попаданий =================
@@ -1234,6 +1286,8 @@ impl App {
     }
 
     pub fn show_window(&self) {
+        // the desktop behind the window may have changed while it sat in the tray
+        self.drop_frost();
         self.win.set_visible(true);
         if let Some(h) = self.win.handle.hwnd() {
             unsafe {

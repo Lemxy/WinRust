@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparse package ("package with external location") that gives rs-notify-bridge package identity.
+
+  The identity must match plugins\rs-notify-bridge\app.manifest exactly:
+    Identity\Name       = msix packageName
+    Identity\Publisher  = msix publisher
+    Applications\Application\Id = msix applicationId
+
+  tools\notify-bridge.ps1 packs this folder with makeappx, signs the .msix with a local self-signed certificate and
+  registers it with `Add-AppxPackage -ExternalLocation <InstallDir>`, where the exe and Assets\ live.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 rescap">
+
+  <Identity
+    Name="WinRust.NotifyBridge"
+    Publisher="CN=WinRust Notify Bridge"
+    Version="1.0.0.0"
+    ProcessorArchitecture="neutral" />
+
+  <Properties>
+    <DisplayName>WinRust Notification Bridge</DisplayName>
+    <PublisherDisplayName>WinRust</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26300.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <!--
+      The listener API. The docs call it a general-use capability, but the AppxManifest schema only accepts the name
+      under rescap; sideloading a restricted capability needs no Store approval, only Store submission does.
+    -->
+    <rescap:Capability Name="userNotificationListener" />
+    <!-- A medium-IL Win32 app always needs this one. -->
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <Application
+      Id="WinRustNotifyBridge"
+      Executable="rs-notify-bridge.exe"
+      uap10:TrustLevel="mediumIL"
+      uap10:RuntimeBehavior="win32App">
+      <!-- AppListEntry=none: no Start menu tile. The exe is started by the rs-notify-bridge task, with identity. -->
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="WinRust Notification Bridge"
+        Description="Forwards Windows notifications to the WinRust bar"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+</Package>

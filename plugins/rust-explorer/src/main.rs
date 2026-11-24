@@ -1,13 +1,14 @@
-// rust-explorer [path]  — file manager window (Explorer replacement).
+﻿// rust-explorer [path]  — file manager window (Explorer replacement).
 // Virtual list (LVS_OWNERDATA, only visible rows are asked for text/icon), system icons, tabs,
 // IFileOperation (recycle bin / undo / elevation prompts), real shell context menu with submenus, OLE drag and drop.
 // Keys: Enter open, Backspace up, F2 rename, Del recycle, Ctrl+C/X/V copy/cut/paste, Ctrl+N new folder,
-// Ctrl+T/W/Tab tabs, Ctrl+M thumbnails, Ctrl+L/F4 address bar, Ctrl+F or "? terms" in the bar = instant search through the rs service, right click / Menu key = shell context menu.
-// Look: topbar's palette, painted tabs / toolbar / address pill and status line (src/ui.rs), dark title bar and list.
+// Ctrl+T/W/Tab tabs, Ctrl+M icon grid/details, Ctrl+L/F4 address bar, Ctrl+F or "? terms" in the bar = instant search through the rs service, right click / Menu key = shell context menu.
+// Look: topbar's palette, painted title row (tabs + window buttons) / toolbar / address pill and status line (src/ui.rs),
+// dark frame and list.
 // Clipboard is the system one (Ctrl+C/X/V interoperate with Explorer). Also: Alt+Left/Right back/forward, Alt+Up up,
 // Alt+Enter properties, F5 refresh, Ctrl+H hidden files, click a column header to sort, right click on empty space = folder menu.
 // shortcuts: std::fs listing (not FindFirstFileEx large fetch), icons are extension-based (exe/lnk/ico/url/scr
-// per file) and synchronous (thumbnails: one background thread, 96px, no disk cache), internal copy/cut clipboard, silent rename errors,
+// per file) and synchronous (thumbnails: one background thread, 48px, no disk cache), internal copy/cut clipboard, silent rename errors,
 // search blocks the UI while it waits for the service (no async), the service pipe is admin-only so run as admin,
 // drops always land in the current folder (not on a folder row), tabs remember only the folder (no selection/scroll).
 // upgrade: each of those one at a time; then register as the folder-open handler.
@@ -19,17 +20,26 @@
 #![windows_subsystem = "windows"]
 use std::{cell::RefCell, env, fs, os::windows::fs::MetadataExt, path::{Path, PathBuf}, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed}};
 use winrust_common::{t, tf};
-use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{GetStockObject, InvalidateRect}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
+use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{GetStockObject, InvalidateRect, ScreenToClient}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
 
 mod zipx; // our own ZIP engine (deflate, inflate, container)
 mod jobs; // our own copier, ZIP packer, ZIP/7z unpacker (background, progress in the status line)
 mod shellwin; // registers the window as a shell window: "Show in folder" from other apps selects the file
 mod ui; // the look: palette, painted tabs / toolbar / address pill / status line, dark theme
+mod menu; // the context menu: rounded, blurred, with icons and shortcuts (the Win32 one has neither)
+mod openwith; // our own "Open with" picker: the Windows one never renders without explorer.exe
 
 static DESKTOP: AtomicBool = AtomicBool::new(false);
 fn desk() -> bool { DESKTOP.load(Relaxed) }
 const CLR_NONE: isize = 0xFFFF_FFFF; // list background / text background: let the parent's wallpaper show through
 thread_local! { static WALL: std::cell::Cell<(isize, i32, i32)> = const { std::cell::Cell::new((0, 0, 0)) }; } // (HBITMAP, w, h)
+thread_local! {
+    /// The desktop list's own icon list, as (ours, the shell's, px). The icons are the same size as the shell's, but each
+    /// one is rendered from the sharpest asset the shell has (`winrust_common::icon`) instead of the single bitmap
+    /// shell32 keeps for every list. px = 0: the shell's list is the one attached (small-icons mode).
+    static DESK_IL: std::cell::Cell<(isize, isize, i32)> = const { std::cell::Cell::new((0, 0, 0)) };
+    static DESK_ICON_AT: RefCell<std::collections::HashMap<String, i32>> = RefCell::new(std::collections::HashMap::new());
+}
 /// The virtual screen (every monitor): x, y, width, height. The desktop window covers it so each monitor gets its wallpaper.
 fn virt() -> (i32, i32, i32, i32) {
     unsafe { (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)) }
@@ -88,15 +98,294 @@ fn desk_bottom() -> i32 {
     let bar_up = unsafe { !FindWindowW(w("topbar").as_ptr(), ptr::null()).is_null() };
     if bar_up && winrust_common::style::style() == winrust_common::style::Style::Dock { ui::sc(52) } else { ui::sc(8) }
 }
-const THUMB: i32 = 96;
+const THUMB: i32 = 48; // the icon grid's cells (half of the old 96: icons, spacing and labels shrink together)
 const WM_THUMB: u32 = WM_APP + 2; // worker -> UI: wp = Box<(era, row, HBITMAP)>
 static GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0); // bumped on every new listing; stale thumbnails are dropped
 static TX: std::sync::OnceLock<std::sync::mpsc::Sender<(u32, usize, PathBuf)>> = std::sync::OnceLock::new();
 const WM_GO: u32 = WM_APP + 1; // address bar: Enter (wp 13) / Esc (wp 27)
 static EDIT_OLD: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static LABEL_OLD: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0); // the rename box (only one exists at a time)
+static LIST_OLD: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0); // the file list (wheel: the nav pane)
 
-struct Row { name: String, dir: bool, size: u64, time: u64, icon: i32, thumb: i32, hdr: bool } // time: FILETIME ticks; thumb: -2 not asked, -1 asked, >=0 image-list index
+struct Row {
+    name: String, // what the list shows
+    dir: bool,
+    size: u64,
+    time: u64, // FILETIME ticks
+    icon: i32, // image-list index; -1 = ask the shell
+    thumb: i32, // -2 not asked, -1 asked, >=0 image-list index
+    hdr: bool,
+    path: Option<PathBuf>, // absolute target when `name` is not a child of the folder shown (a drive in "This PC")
+    cap: Option<(u64, u64)>, // (free, total) bytes of a drive: the size column shows both instead of a file size
+    trash: Option<Trash>, // a row of the Recycle Bin: where its payload and metadata live
+}
+
+/// The two files Windows keeps for a deleted item: `$R...` is the payload, `$I...` the metadata (original path, size, date).
+#[derive(Clone)]
+struct Trash { r: PathBuf, i: PathBuf }
+
+impl Row {
+    /// Where the row really points: `dir.join(name)` in a folder, its own absolute path for a drive.
+    fn full(&self, dir: &Path) -> PathBuf { self.path.clone().unwrap_or_else(|| dir.join(&self.name)) }
+}
+
+/// "This PC" is a view, not a folder: a marker no real path can be (the shell's own CLSID for My Computer).
+const THIS_PC: &str = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+/// The Recycle Bin is a view too (CLSID_RecycleBin): its rows come from the `$Recycle.Bin` folders of every drive.
+const TRASH: &str = "::{645FF040-5081-101B-9F08-00AA002F954E}";
+
+fn this_pc() -> PathBuf { PathBuf::from(THIS_PC) }
+fn is_this_pc(p: &Path) -> bool { p.to_string_lossy().eq_ignore_ascii_case(THIS_PC) }
+fn trash_dir() -> PathBuf { PathBuf::from(TRASH) }
+fn is_trash(p: &Path) -> bool { p.to_string_lossy().eq_ignore_ascii_case(TRASH) }
+/// A view that is not a folder: the folder verbs (new, paste, delete, rename) do not apply to it.
+fn virtual_dir(p: &Path) -> bool { is_this_pc(p) || is_trash(p) }
+/// The current view is "This PC": a drive list, so the folder verbs (new, paste, delete, rename) do not apply.
+fn in_pc() -> bool { is_this_pc(&cur_dir()) }
+fn in_virtual() -> bool { virtual_dir(&cur_dir()) }
+
+/// What the address bar, the tab and the taskbar say for `dir`.
+fn display_dir(dir: &Path) -> String {
+    if is_this_pc(dir) { t!("Этот компьютер", "This PC", ja: "PC", pt: "Este Computador", zh: "此电脑").to_string() }
+    else if is_trash(dir) { t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira", zh: "回收站").to_string() }
+    else { dir.to_string_lossy().into_owned() }
+}
+
+/// The kind of drive behind `ty` (a GetDriveTypeW result), for drives without a volume label.
+fn drive_kind(ty: u32) -> String {
+    match ty {
+        2 => t!("Съемный диск", "Removable Disk", ja: "リムーバブル ディスク", pt: "Disco removível", zh: "可移动磁盘").to_string(),
+        3 => t!("Локальный диск", "Local Disk", ja: "ローカル ディスク", pt: "Disco local", zh: "本地磁盘").to_string(),
+        4 => t!("Сетевой диск", "Network Drive", ja: "ネットワーク ドライブ", pt: "Unidade de rede", zh: "网络驱动器").to_string(),
+        5 => t!("Компакт-диск", "CD Drive", ja: "CD ドライブ", pt: "Unidade de CD", zh: "光盘驱动器").to_string(),
+        _ => t!("Диск", "Drive", ja: "ドライブ", pt: "Unidade", zh: "驱动器").to_string(),
+    }
+}
+
+/// Shell icon index of a drive root: the real one (disk, CD, network share), not the generic folder icon.
+fn drive_icon(root: &str) -> i32 {
+    let mut fi: SHFILEINFOW = unsafe { std::mem::zeroed() };
+    unsafe { SHGetFileInfoW(w(root).as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_SMALLICON) };
+    fi.iIcon
+}
+
+/// Every drive Windows knows, as the rows of "This PC": label, icon, free and total space, no date.
+/// Volume label and space are asked only of local and removable disks: a dead network share would stall the window.
+fn drives() -> Vec<Row> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
+    let mut rows = vec![];
+    let mask = unsafe { GetLogicalDrives() };
+    for i in 0..26u32 {
+        if mask & (1 << i) == 0 { continue; }
+        let letter = (b'A' + i as u8) as char;
+        let root = format!("{letter}:\\");
+        let wide = w(&root);
+        let ty = unsafe { GetDriveTypeW(wide.as_ptr()) };
+        let mut label = [0u16; 128];
+        let local = matches!(ty, 2 | 3);
+        let named = local && unsafe { GetVolumeInformationW(wide.as_ptr(), label.as_mut_ptr(), 128, ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), 0) } != 0;
+        let (mut free, mut total) = (0u64, 0u64);
+        let cap = (local && unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, ptr::null_mut()) } != 0 && total > 0).then_some((free, total));
+        let vol = if named { wstr(label.as_ptr()) } else { String::new() };
+        let base = if vol.is_empty() { drive_kind(ty) } else { vol };
+        let name = format!("{base} ({letter}:)");
+        rows.push(Row { name, dir: true, size: 0, time: 0, icon: drive_icon(&root), thumb: -2, hdr: false, path: Some(PathBuf::from(&root)), cap, trash: None });
+    }
+    rows
+}
+
+/// The "Type" column of a row: a drive says what kind it is, everything else goes by its name.
+fn row_type(r: &Row) -> String {
+    match &r.path {
+        Some(p) if r.dir => drive_kind(unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(w(&p.to_string_lossy()).as_ptr()) }),
+        _ => type_text(&r.name, r.dir),
+    }
+}
+
+/// The "Size" column of a row: a drive shows how much is free of how much there is, a folder nothing.
+fn row_size(r: &Row) -> String {
+    match r.cap {
+        Some((free, total)) => tf!("{} свободно из {}", "{} free of {}", ja: "{} 空き / {}", pt: "{} livres de {}", zh: "{} 可用，共 {}", size_text(free), size_text(total)),
+        None if r.dir => String::new(),
+        None => size_text(r.size),
+    }
+}
+
+// ---------- Recycle Bin: a view of its own, filled from the $Recycle.Bin folders of every drive ----------
+
+static TRASH_LOADING: AtomicBool = AtomicBool::new(false);
+
+/// The `$Recycle.Bin` folder of every drive that has one (local and removable disks).
+fn trash_bins() -> Vec<PathBuf> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    let mut out = vec![];
+    let mask = unsafe { GetLogicalDrives() };
+    for i in 0..26u32 {
+        if mask & (1 << i) == 0 { continue; }
+        let root = format!("{}:\\", (b'A' + i as u8) as char);
+        if !matches!(unsafe { GetDriveTypeW(w(&root).as_ptr()) }, 2 | 3) { continue; }
+        let bin = PathBuf::from(format!("{root}$Recycle.Bin"));
+        if bin.is_dir() { out.push(bin); }
+    }
+    out
+}
+
+/// What a `$I` file says: (size at deletion, deletion time, original path). Version 2 stores the path length,
+/// version 1 (Vista / 7) a fixed 520-byte buffer; both are UTF-16.
+fn parse_trash_i(path: &Path) -> Option<(u64, u64, PathBuf)> {
+    let d = fs::read(path).ok()?;
+    let num = |at: usize| -> Option<u64> {
+        let b: [u8; 8] = d.get(at..at + 8)?.try_into().ok()?;
+        Some(u64::from_le_bytes(b))
+    };
+    let (ver, size, time) = (num(0)?, num(8)?, num(16)?);
+    let mut w: Vec<u16> = vec![];
+    if ver == 2 {
+        let n = u32::from_le_bytes(d.get(24..28)?.try_into().ok()?) as usize;
+        let bytes = d.get(28..28usize.checked_add(n.checked_mul(2)?)?)?; // n UTF-16 units
+        w.extend(bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])));
+    } else {
+        for c in d.get(24..)?.chunks_exact(2) {
+            let u = u16::from_le_bytes([c[0], c[1]]);
+            if u == 0 { break; }
+            w.push(u);
+        }
+    }
+    let s = String::from_utf16_lossy(&w);
+    if s.is_empty() { return None; }
+    Some((size, time, PathBuf::from(s)))
+}
+
+/// Every deleted item found: `$R` is the payload, `$I` its metadata; the row shows the original path (absolute, so the
+/// list shows its name and puts the folder it came from in the Type column, like a search hit).
+fn trash_rows() -> Vec<Row> {
+    let mut out = vec![];
+    for bin in trash_bins() {
+        let Ok(sids) = fs::read_dir(&bin) else { continue }; // the bin of another user may be closed to us: skip it
+        for sid in sids.flatten() {
+            let Ok(entries) = fs::read_dir(sid.path()) else { continue };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(id) = name.strip_prefix("$I") else { continue };
+                let i = e.path();
+                let r = i.with_file_name(format!("$R{id}"));
+                let Some((size, time, orig)) = parse_trash_i(&i) else { continue };
+                out.push(Row { name: orig.to_string_lossy().into_owned(), dir: false, size, time, icon: -1, thumb: -2, hdr: false, path: None, cap: None, trash: Some(Trash { r, i }) });
+                if out.len() >= 5000 { break; } // a bin with a million files must not fill the window
+            }
+        }
+    }
+    out.sort_by(|a, b| b.time.cmp(&a.time)); // most recently deleted first
+    out
+}
+
+/// Reads the bins on a worker thread and hands the rows to the window (WM_TRASH): a big or slow drive never blocks the UI.
+fn trash_scan(h: HWND) {
+    if TRASH_LOADING.swap(true, Relaxed) { return; }
+    let hwnd = h as isize;
+    std::thread::spawn(move || {
+        let rows = trash_rows();
+        TRASH_LOADING.store(false, Relaxed);
+        unsafe { PostMessageW(hwnd as HWND, WM_TRASH, Box::into_raw(Box::new(rows)) as usize, 0) };
+    });
+}
+
+/// (original path, payload, metadata) of the selected rows of the Recycle Bin view.
+fn selected_trash() -> Vec<(PathBuf, Trash)> {
+    ST.with_borrow(|st| {
+        let mut out = vec![];
+        let mut i = -1isize;
+        loop {
+            i = put(st.list, LVM_GETNEXTITEM, i as usize, LVNI_SELECTED as isize);
+            let Some(r) = usize::try_from(i).ok().and_then(|i| st.rows.get(i)) else { break };
+            if let Some(t) = &r.trash { out.push((PathBuf::from(&r.name), t.clone())); }
+        }
+        out
+    })
+}
+
+/// Puts the selected items back where they came from; the folders are made again if needed. A name that is taken by
+/// now gets the usual " (2)" suffix instead of overwriting anything.
+fn trash_restore(h: HWND) {
+    let picks = selected_trash();
+    if picks.is_empty() {
+        unsafe { ui::notice(h, t!("Выберите элементы для восстановления", "Select the items to restore", ja: "復元する項目を選択してください", pt: "Selecione os itens que deseja restaurar", zh: "请选择要还原的项目")) };
+        return;
+    }
+    let (mut ok, mut bad) = (0usize, 0usize);
+    for (orig, t) in picks {
+        let parent = orig.parent().map_or_else(|| PathBuf::from("C:\\"), |p| p.to_path_buf());
+        let _ = fs::create_dir_all(&parent);
+        let name = orig.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let dest = jobs::free_name(&parent, &name, false);
+        match fs::rename(&t.r, &dest) {
+            Ok(_) => { let _ = fs::remove_file(&t.i); ok += 1; }
+            Err(_) => bad += 1, // no permission, or the payload is gone: the item stays in the bin
+        }
+    }
+    reload(h); // the restored rows are gone from the bin; the message must not be wiped by that load
+    unsafe {
+        let msg = if bad > 0 {
+            tf!("восстановлено: {}, не удалось: {}", "restored: {}, failed: {}", ja: "復元: {} 件、失敗: {} 件", pt: "restaurados: {}, falhas: {}", zh: "已还原 {} 项，失败 {} 项", ok, bad)
+        } else {
+            tf!("восстановлено: {}", "restored: {}", ja: "復元: {} 件", pt: "restaurados: {}", zh: "已还原 {} 项", ok)
+        };
+        ui::notice(h, msg);
+    }
+}
+
+/// Deletes the payload and the metadata of every item in every bin, after a confirmation. Returns nothing; the outcome
+/// goes to the status line (count or failures).
+fn trash_empty(h: HWND) {
+    unsafe {
+        let q = t!("Удалить все элементы корзины безвозвратно?", "Permanently delete all items in the Recycle Bin?", ja: "ごみ箱のすべての項目を完全に削除しますか?", pt: "Excluir permanentemente todos os itens da Lixeira?", zh: "要永久删除回收站中的所有项目吗？");
+        let title = display_dir(&trash_dir());
+        if MessageBoxW(h, w(q).as_ptr(), w(&title).as_ptr(), MB_YESNO | MB_ICONWARNING) != IDYES { return; }
+    }
+    let (mut n, mut bad) = (0usize, 0usize);
+    for bin in trash_bins() {
+        let Ok(sids) = fs::read_dir(&bin) else { bad += 1; continue };
+        for sid in sids.flatten() {
+            let Ok(entries) = fs::read_dir(sid.path()) else { bad += 1; continue };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if !(name.starts_with("$I") || name.starts_with("$R")) { continue; }
+                let p = e.path();
+                let done = if p.is_dir() { fs::remove_dir_all(&p).is_ok() } else { fs::remove_file(&p).is_ok() };
+                if done { n += 1 } else { bad += 1 }
+            }
+        }
+    }
+    reload(h); // the bin is empty now; the message must not be wiped by that load
+    unsafe {
+        let msg = if bad > 0 {
+            tf!("корзина очищена: {}, ошибок: {}", "emptied: {}, failed: {}", ja: "削除: {} 件、失敗: {} 件", pt: "esvaziados: {}, falhas: {}", zh: "已清空 {} 项，失败 {} 项", n, bad)
+        } else {
+            tf!("корзина очищена: {}", "emptied: {}", ja: "削除: {} 件", pt: "esvaziados: {}", zh: "已清空 {} 项", n)
+        };
+        ui::notice(h, msg);
+    }
+}
+
+/// The Recycle Bin menu: on a row it offers Restore, everywhere Empty and Refresh. Our own menu, like the other ones.
+fn trash_menu(h: HWND, on_row: bool) {
+    use crate::menu::{Icon, Item};
+    let mut items = vec![];
+    if on_row {
+        items.push(Item::new(1, t!("Восстановить", "Restore", ja: "復元", pt: "Restaurar", zh: "还原")).icon(Icon::Glyph("\u{E777}")));
+    }
+    items.push(Item::new(2, t!("Очистить корзину", "Empty Recycle Bin", ja: "ごみ箱を空にする", pt: "Esvaziar Lixeira", zh: "清空回收站")).icon(Icon::Glyph("\u{E74D}")));
+    items.push(Item::new(3, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新")).icon(Icon::Glyph("\u{E72C}")).hint("F5"));
+    let mut pt: POINT = unsafe { std::mem::zeroed() };
+    unsafe { GetCursorPos(&mut pt) };
+    let id = unsafe { crate::menu::show(pt.x, pt.y, items) };
+    match id {
+        1 => trash_restore(h),
+        2 => trash_empty(h),
+        3 => reload(h),
+        _ => {}
+    }
+}
 
 /// Back / forward trail of visited folders (one for the whole window, not per tab).
 #[derive(Default)]
@@ -122,9 +411,10 @@ static SHOW_HIDDEN: AtomicBool = AtomicBool::new(false); // Ctrl+H
 static NAV: AtomicBool = AtomicBool::new(false); // loading from the back / forward trail: do not record it again
 const WM_NAV: u32 = WM_APP + 3; // wp: 1 back, 2 forward, 3 properties, 4 up (sent from the message loop for Alt+key)
 const WM_JOB: u32 = WM_APP + 5; // jobs.rs worker finished: wp = Box<Option<String>> (the error, if any)
+const WM_TRASH: u32 = WM_APP + 7; // Recycle Bin scan finished: wp = Box<Vec<Row>>
 
 fn row(name: String, m: Option<&fs::Metadata>) -> Row {
-    Row { name, dir: m.is_some_and(|m| m.is_dir()), size: m.map_or(0, |m| m.len()), time: m.map_or(0, |m| m.last_write_time()), icon: -1, thumb: -2, hdr: false }
+    Row { name, dir: m.is_some_and(|m| m.is_dir()), size: m.map_or(0, |m| m.len()), time: m.map_or(0, |m| m.last_write_time()), icon: -1, thumb: -2, hdr: false, path: None, cap: None, trash: None }
 }
 
 /// Folders always first; inside each group by the column (0 name, 1 size, 2 modified), ties by name.
@@ -197,7 +487,7 @@ fn add_headers(rows: &mut Vec<Row>) {
         let b = bucket(r.time);
         if b != last {
             last = b;
-            out.push(Row { name: format!("?{}", bucket_name(b as usize)), dir: false, size: 0, time: 0, icon: -1, thumb: -1, hdr: true });
+            out.push(Row { name: format!("?{}", bucket_name(b as usize)), dir: false, size: 0, time: 0, icon: -1, thumb: -1, hdr: true, path: None, cap: None, trash: None });
         }
         out.push(r);
     }
@@ -275,6 +565,7 @@ const MENU_ZIP: u32 = 0x9001;
 const MENU_EXTRACT: u32 = 0x9002;
 const MENU_PIN: u32 = 0x9003;
 const MENU_RENAME: u32 = 0x9004;
+const MENU_OPENWITH: u32 = 0x9005;
 
 /// True while the window shows the inside of a .zip: read-only, its rows are no files on disk.
 fn in_zip() -> bool { zipx::split_zip(&cur_dir()).is_some() }
@@ -320,6 +611,7 @@ fn real_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 
 /// Enter / double click on a row.
 unsafe fn activate(h: HWND, p: PathBuf, is_dir: bool) {
+    if is_trash(&cur_dir()) { return; } // bin rows: Restore from the menu, a double click does nothing
     // a file inside a zip: a real copy in the temp folder first
     let p = match zip_names(std::slice::from_ref(&p)) {
         Some((arc, names)) if !is_dir => match materialize(&arc, &names) {
@@ -332,10 +624,19 @@ unsafe fn activate(h: HWND, p: PathBuf, is_dir: bool) {
     else if is_dir { load(h, p) }
     else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) && p.is_file() { load(h, p) } // a zip opens like a folder; "Extract here" is in its menu
     else if let Some(exe) = tool("photoview").filter(|_| is_pic(&p)) { let _ = std::process::Command::new(exe).arg(&p).spawn(); }
+    else if !openwith::associated(&p) {
+        // No association: Windows' modern picker cannot render without explorer.exe (it starts at (-32000,-32000)
+        // with a 6x28 window and never shows), so ask with our own dialog instead.
+        unsafe { openwith::open(h, &p) };
+    }
     else {
         // like Explorer: the exe starts in its own folder (games look for files next to it)
         let dir = p.parent().map(|d| w(&d.to_string_lossy()));
-        unsafe { ShellExecuteW(h, ptr::null(), w(&p.to_string_lossy()).as_ptr(), ptr::null(), dir.as_ref().map_or(ptr::null(), |d| d.as_ptr()), SW_SHOWNORMAL) };
+        let r = unsafe { ShellExecuteW(h, ptr::null(), w(&p.to_string_lossy()).as_ptr(), ptr::null(), dir.as_ref().map_or(ptr::null(), |d| d.as_ptr()), SW_SHOWNORMAL) };
+        // an association that points nowhere (a removed app answers <= 32): the same picker beats the broken one
+        if r as isize <= 32 {
+            unsafe { openwith::open(h, &p) };
+        }
     }
 }
 
@@ -375,19 +676,33 @@ fn zip_menu(h: HWND, paths: &[PathBuf]) {
     }
 }
 
+/// Pins `p` to Quick access, or takes it out when it is already there.
+fn toggle_quick(p: &Path) {
+    if ui::quick_has(p) { ui::quick_unpin(p); } else { ui::quick_pin(p); }
+}
+
 /// The shell menu for the selection, with our "Compress to ZIP" / "Extract here" on top.
 fn item_menu(h: HWND, dir: &Path, paths: &[PathBuf]) {
+    if is_trash(dir) { return trash_menu(h, true); } // Restore / Empty instead of the shell verbs
+    if in_pc() { return; } // a drive is not a file: no shell verbs (delete, rename, properties) on it
     if zipx::split_zip(dir).is_some() { return zip_menu(h, paths); }
     let mut extra = vec![(MENU_ZIP, t!("Сжать в ZIP", "Compress to ZIP", ja: "ZIP に圧縮", pt: "Compactar em ZIP", zh: "压缩为 ZIP"))];
+    // our own picker: the shell's "Open with" goes to the Windows surface that cannot render without explorer.exe
+    if let [p] = paths {
+        if p.is_file() {
+            extra.insert(0, (MENU_OPENWITH, t!("Открыть с помощью…", "Open with…", ja: "プログラムから開く…", pt: "Abrir com…", zh: "打开方式…")));
+        }
+    }
     if paths.iter().all(|p| p.is_file() && jobs::is_archive(p)) {
         extra.insert(0, (MENU_EXTRACT, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处")));
     }
     // the shell menu has no Rename here (it needs the shell's own folder view to answer it): the same edit box as F2
     if paths.len() == 1 { extra.push((MENU_RENAME, t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名"))); }
-    if let [p] = paths { if p.is_dir() { extra.push((MENU_PIN, if ui::pins().contains(p) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问") })); } }
+    if let [p] = paths { if p.is_dir() { extra.push((MENU_PIN, if ui::quick_has(p) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问") })); } }
     let picked = sh::show(h, paths, if jobs::busy() { &[] } else { &extra }).ok().flatten();
     match picked {
-        Some(MENU_PIN) => ui::toggle_pin(&paths[0]),
+        Some(MENU_OPENWITH) => unsafe { openwith::open(h, &paths[0]) },
+        Some(MENU_PIN) => toggle_quick(&paths[0]),
         Some(MENU_RENAME) => unsafe {
             let (list, ..) = selected();
             let i = put(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
@@ -414,10 +729,54 @@ fn small_marker() -> PathBuf { icons_marker().with_file_name("small-icons") }
 unsafe fn apply_icon_size(list: HWND) {
     let small = small_marker().exists();
     let mut fi: SHFILEINFOW = std::mem::zeroed();
-    let il = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | if small { SHGFI_SMALLICON } else { SHGFI_LARGEICON });
-    put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, il as isize);
+    let shell = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | if small { SHGFI_SMALLICON } else { SHGFI_LARGEICON });
+    // Ours holds the big icons (same size, sharper source); with small icons the shell's own list is used.
+    let (ours, _, px) = DESK_IL.with(|c| c.get());
+    let use_ours = !small && ours != 0;
+    put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, if use_ours { ours } else { shell as isize });
+    DESK_IL.set((ours, shell as isize, if use_ours { px } else { 0 }));
+    // the indexes point into the list that was just attached: every row asks for its icon again
+    ST.with_borrow_mut(|st| st.rows.iter_mut().for_each(|r| r.icon = -1));
+    InvalidateRect(list, ptr::null(), 0);
     let (cx, cy) = if small { (76, 64) } else { (88, 96) };
     put(list, LVM_SETICONSPACING, 0, ((ui::sc(cy) as isize) << 16) | ui::sc(cx) as isize);
+}
+
+/// The icon index of a desktop item: our own list when it is attached, the shell's index otherwise. `icon::best` gives
+/// the same size the list wants, so the control never stretches anything; a path the shell has no icon for still gets
+/// the shell's (a document type, a drive), copied over from its list.
+fn desk_icon(path: &PathBuf, dir: bool) -> i32 {
+    let (ours, shell, px) = DESK_IL.with(|c| c.get());
+    if ours == 0 || px <= 0 { return icon_of(path, dir); }
+    let key = path.to_string_lossy().to_lowercase();
+    if let Some(i) = DESK_ICON_AT.with_borrow(|m| m.get(&key).copied()) { return i; }
+    let mut idx = unsafe {
+        let ic = winrust_common::icon::best(path, px);
+        if !ic.is_null() {
+            ImageList_ReplaceIcon(ours as _, -1, ic) // i = -1: append
+        } else {
+            let shell_ic = ImageList_GetIcon(shell as _, icon_of(path, dir), ILD_TRANSPARENT);
+            if shell_ic.is_null() {
+                -1
+            } else {
+                let i = ImageList_ReplaceIcon(ours as _, -1, shell_ic);
+                DestroyIcon(shell_ic); // the list keeps its own copy
+                i
+            }
+        }
+    };
+    // 0 = the first slot: a row with iImage -1 (I_IMAGECALLBACK) would be asked for on every paint, and the shell gives
+    // up on the same path each time
+    if idx < 0 { idx = 0; }
+    DESK_ICON_AT.with_borrow_mut(|m| { m.insert(key, idx); });
+    idx
+}
+
+/// The rows are gone: their indexes into the desktop's icon list go with them.
+fn reset_desk_icons() {
+    let ours = DESK_IL.with(|c| c.get()).0;
+    if ours != 0 { unsafe { ImageList_Remove(ours as _, -1) }; }
+    DESK_ICON_AT.with_borrow_mut(|m| m.clear());
 }
 fn icons_hidden() -> bool { icons_marker().exists() }
 fn set_icons_hidden(hide: bool) {
@@ -429,43 +788,58 @@ fn set_icons_hidden(hide: bool) {
 
 /// Right click on empty space: the folder's own menu.
 #[allow(unsafe_op_in_unsafe_fn)]
+/// Right click on empty space: the folder's own menu.
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn bg_menu(h: HWND) {
-    let m = CreatePopupMenu();
-    let items = [
-        (1usize, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹")),
-        (2, t!("Новый текстовый файл", "New text file", ja: "新しいテキスト ドキュメント", pt: "Novo arquivo de texto", zh: "新建文本文件")),
-        (3, t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴")),
-        (4, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新")),
-        (5, t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性")),
-    ];
-    for (id, lbl) in items { AppendMenuW(m, MF_STRING, id, w(lbl).as_ptr()); }
+    use crate::menu::{Icon, Item};
+    if is_trash(&cur_dir()) { return trash_menu(h, false); } // empty space in the bin: Empty / Refresh only
+    const DIR: u32 = 0x10; // FILE_ATTRIBUTE_DIRECTORY
+    const FILE: u32 = 0x80; // FILE_ATTRIBUTE_NORMAL
     let disk = tool("wiztree");
-    if disk.is_some() { AppendMenuW(m, MF_STRING, 6, w(t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）")).as_ptr()); }
+    let mut items = vec![
+        Item::new(1, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹")).icon(Icon::Shell("folder", DIR)).hint("Ctrl+N"),
+        Item::new(2, t!("Новый текстовый файл", "New text file", ja: "新しいテキスト ドキュメント", pt: "Novo arquivo de texto", zh: "新建文本文件")).icon(Icon::Shell("a.txt", FILE)),
+        Item::new(3, t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴")).icon(Icon::Glyph("\u{E77F}")).hint("Ctrl+V"),
+        Item::new(4, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新")).icon(Icon::Glyph("\u{E72C}")).hint("F5"),
+    ];
+    if disk.is_some() {
+        items.push(Item::new(6, t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）")).icon(Icon::Shell("C:\\", FILE)));
+    }
     if desk() {
-        let sort = [
-            (8usize, t!("Упорядочить значки по имени", "Sort icons by name", ja: "名前順にアイコンを並べ替え", pt: "Classificar ícones por nome", zh: "按名称排列图标")),
-            (9, t!("Упорядочить значки по дате", "Sort icons by date", ja: "日付順にアイコンを並べ替え", pt: "Classificar ícones por data", zh: "按日期排列图标")),
-            (10, t!("Упорядочить значки по размеру", "Sort icons by size", ja: "サイズ順にアイコンを並べ替え", pt: "Classificar ícones por tamanho", zh: "按大小排列图标")),
-            (11, t!("Выровнять значки", "Arrange icons", ja: "アイコンの整列", pt: "Alinhar ícones", zh: "排列图标")),
+        let sort = vec![
+            Item::new(8, t!("Упорядочить значки по имени", "Sort icons by name", ja: "名前順にアイコンを並べ替え", pt: "Classificar ícones por nome", zh: "按名称排列图标")),
+            Item::new(9, t!("Упорядочить значки по дате", "Sort icons by date", ja: "日付順にアイコンを並べ替え", pt: "Classificar ícones por data", zh: "按日期排列图标")),
+            Item::new(10, t!("Упорядочить значки по размеру", "Sort icons by size", ja: "サイズ順にアイコンを並べ替え", pt: "Classificar ícones por tamanho", zh: "按大小排列图标")),
         ];
-        for (id, lbl) in sort { AppendMenuW(m, MF_STRING, id, w(lbl).as_ptr()); }
+        items.push(Item::new(0, t!("Сортировать по", "Sort icons by", ja: "並べ替え", pt: "Classificar por", zh: "排序方式")).icon(Icon::Glyph("\u{E8CB}")).sub(sort));
+        items.push(Item::new(11, t!("Выровнять значки", "Arrange icons", ja: "アイコンの整列", pt: "Alinhar ícones", zh: "排列图标")).icon(Icon::Glyph("\u{E80A}")));
     }
     if !desk() {
         let lbl = if group_on() { t!("Без группировки", "No grouping", ja: "グループ化しない", pt: "Sem agrupamento", zh: "不分组") } else { t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组") };
-        AppendMenuW(m, MF_STRING, 13, w(lbl).as_ptr());
+        items.push(Item::new(13, lbl.to_string()).icon(Icon::Glyph("\u{E8CB}")));
     }
     if desk() {
-        let lbl = if small_marker().exists() { t!("Крупные значки", "Large icons", ja: "大きいアイコン", pt: "Ícones grandes", zh: "大图标") } else { t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标") };
-        AppendMenuW(m, MF_STRING, 12, w(lbl).as_ptr());
+        let small = small_marker().exists();
+        let lbl = if small { t!("Крупные значки", "Large icons", ja: "大きいアイコン", pt: "Ícones grandes", zh: "大图标") } else { t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标") };
+        items.push(Item::new(12, lbl.to_string()).icon(Icon::Glyph("\u{E71D}")).check(small));
+        let hidden = icons_hidden();
+        let lbl = if hidden { t!("Показать значки рабочего стола", "Show desktop icons", ja: "デスクトップ アイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标") } else { t!("Скрыть значки рабочего стола", "Hide desktop icons", ja: "デスクトップ アイコンを非表示", pt: "Ocultar ícones da área de trabalho", zh: "隐藏桌面图标") };
+        items.push(Item::new(7, lbl.to_string()).icon(Icon::Glyph("\u{E7B3}")).check(hidden));
     }
-    if desk() {
-        let lbl = if icons_hidden() { t!("Показать значки рабочего стола", "Show desktop icons", ja: "デスクトップ アイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标") } else { t!("Скрыть значки рабочего стола", "Hide desktop icons", ja: "デスクトップ アイコンを非表示", pt: "Ocultar ícones da área de trabalho", zh: "隐藏桌面图标") };
-        AppendMenuW(m, MF_STRING, 7, w(lbl).as_ptr());
+    // Windows keeps Properties at the very bottom, on its own group
+    if !desk() && !in_virtual() {
+        // pin the folder we are in (or take it out again)
+        let lbl = if ui::quick_has(&cur_dir()) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问") };
+        items.push(Item::new(14, lbl).icon(Icon::Glyph("\u{E718}")));
+    }
+    items.push(Item::new(5, t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性")).icon(Icon::Glyph("\u{E713}")));
+    if in_pc() {
+        // the drive list is not a folder: only a refresh makes sense here (no new / paste / properties)
+        items.retain(|it| it.id == 4);
     }
     let mut pt: POINT = std::mem::zeroed();
     GetCursorPos(&mut pt);
-    let id = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h, ptr::null());
-    DestroyMenu(m);
+    let id = crate::menu::show(pt.x, pt.y, items);
     let dir = cur_dir();
     match id {
         7 => set_icons_hidden(!icons_hidden()),
@@ -491,13 +865,15 @@ unsafe fn bg_menu(h: HWND) {
         2 => new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false),
         3 => paste(h, &dir),
         5 => properties(&dir),
+        14 => toggle_quick(&dir),
         _ => {}
     }
     if id != 0 { reload(h); }
 }
 
 /// Command line -> (folder to open, file to select there). Understands `/select,"C:\a\b.txt"` (what browsers and other
-/// apps pass for "show in folder"), a plain folder, or a plain file path (its folder, file selected).
+/// apps pass for "show in folder"), a plain folder, or a plain file path (its folder, file selected). No argument at all
+/// opens "This PC" (the drive list), like Explorer.
 fn start_target() -> (PathBuf, Option<String>) {
     let mut a = env::args().skip(1);
     let mut p = a.next().unwrap_or_default();
@@ -506,7 +882,7 @@ fn start_target() -> (PathBuf, Option<String>) {
         if p.is_empty() { p = a.next().unwrap_or_default(); }
     }
     let p = PathBuf::from(p.trim_matches('"'));
-    if p.as_os_str().is_empty() { return (PathBuf::from("C:\\"), None); }
+    if p.as_os_str().is_empty() { return (this_pc(), None); } // no argument: the drive list, like Explorer
     match (p.is_file(), p.parent()) {
         (true, Some(d)) => (d.to_path_buf(), p.file_name().map(|n| n.to_string_lossy().into_owned())),
         _ => (p, None),
@@ -587,15 +963,22 @@ fn shown_name(name: &str, desktop: bool) -> String {
 }
 
 fn label(dir: &PathBuf) -> String {
+    if is_this_pc(dir) { return display_dir(dir); }
     dir.file_name().map_or_else(|| dir.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())
 }
 
 /// Rows of `dir`, folders first. Desktop mode merges the public desktop (absolute names) and hides hidden files.
 /// None = `dir` itself is unreadable.
 fn rows_of(dir: &PathBuf) -> Option<Vec<Row>> {
+    if is_this_pc(dir) { // not a folder: every drive, sorted by its label
+        let mut rows = drives();
+        sort_rows(&mut rows, SORT_COL.load(Relaxed), SORT_ASC.load(Relaxed));
+        return Some(rows); // no date headings: drives have no date
+    }
+    if is_trash(dir) { return Some(vec![]); } // filled by the background scan (trash_scan / WM_TRASH)
     if !desk() {
         if let Some((arc, inner)) = zipx::split_zip(dir) { // inside a .zip: its entries are the rows
-            let mut rows: Vec<Row> = zipx::list_dir(&arc, &inner).ok()?.into_iter().map(|i| Row { name: i.name, dir: i.dir, size: i.size, time: zipx::dos_to_filetime(i.time), icon: -1, thumb: -2, hdr: false }).collect();
+            let mut rows: Vec<Row> = zipx::list_dir(&arc, &inner).ok()?.into_iter().map(|i| Row { name: i.name, dir: i.dir, size: i.size, time: zipx::dos_to_filetime(i.time), icon: -1, thumb: -2, hdr: false, path: None, cap: None, trash: None }).collect();
             sort_rows(&mut rows, SORT_COL.load(Relaxed), SORT_ASC.load(Relaxed));
             add_headers(&mut rows);
             return Some(rows);
@@ -622,21 +1005,30 @@ fn rows_of(dir: &PathBuf) -> Option<Vec<Row>> {
 /// Never call with ST borrowed: the list sends GETDISPINFO back into the window proc.
 fn load(h: HWND, dir: PathBuf) {
     let Some(rows) = rows_of(&dir) else { return };
-    if !desk() { unsafe { SetWindowTextW(h, w(&dir.to_string_lossy()).as_ptr()) }; }
+    let shown = display_dir(&dir); // "This PC" / "Recycle Bin" for the views, the path otherwise
+    let (pc, trash) = (is_this_pc(&dir), is_trash(&dir));
+    if !desk() { unsafe { SetWindowTextW(h, w(&shown).as_ptr()) }; }
     let (list, tab, edit, active, n) = ST.with_borrow_mut(|st| {
         if let Some(t) = st.tabs.get_mut(st.active) { *t = dir.clone(); }
         st.dir = dir.clone(); st.rows = rows;
         if !NAV.load(Relaxed) { st.hist.visit(dir.clone()); }
         (st.list, st.tab, st.edit, st.active, st.rows.len())
     });
-    unsafe { SetWindowTextW(edit, w(&dir.to_string_lossy()).as_ptr()) };
-    shellwin::navigated(&dir);
+    // the grid's cells: wider in This PC, where each drive carries a second line of text under its name
+    if !desk() && THUMBS.load(Relaxed) { ui::grid_spacing(list, pc); }
+    unsafe { SetWindowTextW(edit, w(&shown).as_ptr()) };
+    if !pc && !trash { shellwin::navigated(&dir); } // a shell window shows a folder, not a view
     ui::set_search(None); // a folder again: the pill shows its path
+    ui::clear_notice(); // a new place: the old status message goes
     tab_text(tab, active, &label(&dir), false);
     ui::nav_dirty(); // the pane highlights where we are
+    // "free of total" needs more room than a file size; a folder listing keeps its familiar width
+    put(list, LVM_SETCOLUMNWIDTH, 3, ui::sc(if pc { 190 } else { 96 }) as isize);
     reset_thumbs();
+    reset_desk_icons(); // the rows are replaced: their indexes into the desktop's icon list are stale
     put(list, LVM_DELETEALLITEMS, 0, 0);
     if desk() { desk::fill(list, n); } else { put(list, LVM_SETITEMCOUNT, n, 0); }
+    if trash { trash_scan(h); } // the bins are read on a worker: the list fills when WM_TRASH arrives
 }
 
 /// Asks the rust-search service of drive `d` (see plugins/rust-search): terms in, one path per line out.
@@ -737,7 +1129,7 @@ fn selected() -> (HWND, PathBuf, Vec<PathBuf>) {
         loop {
             i = put(st.list, LVM_GETNEXTITEM, i as usize, LVNI_SELECTED as isize);
             let Some(r) = usize::try_from(i).ok().and_then(|i| st.rows.get(i)) else { break };
-            if !r.hdr { sel.push(st.dir.join(&r.name)); }
+            if !r.hdr { sel.push(r.full(&st.dir)); }
         }
         (st.list, st.dir.clone(), sel)
     })
@@ -751,10 +1143,19 @@ fn col(list: HWND, i: i32, text: &str, width: i32, right: bool) {
     put(list, LVM_INSERTCOLUMNW, i as usize, &c as *const _ as isize);
 }
 
-/// Opens a new tab on the current folder.
-fn tab_new() {
-    let tab = ST.with_borrow_mut(|st| { st.tabs.push(st.dir.clone()); st.active = st.tabs.len() - 1; st.tab });
+/// Opens a new tab on This PC (the drive list), the way Explorer's "+" and Ctrl+T do.
+fn tab_new(h: HWND) {
+    let dir = this_pc();
+    let tab = ST.with_borrow_mut(|st| { st.tabs.push(dir.clone()); st.active = st.tabs.len() - 1; st.tab });
     tab_text(tab, 0, "", true);
+    load(h, dir);
+}
+
+/// Opens `dir` in a new tab: the network group and "Open in a new tab" in the left pane use it.
+fn tab_open(h: HWND, dir: PathBuf) {
+    let tab = ST.with_borrow_mut(|st| { st.tabs.push(dir.clone()); st.active = st.tabs.len() - 1; st.tab });
+    tab_text(tab, 0, "", true);
+    load(h, dir);
 }
 
 fn tab_select(h: HWND, i: usize) {
@@ -781,10 +1182,21 @@ fn tab_close_at(h: HWND, i: usize) {
 }
 
 fn toggle_view(h: HWND) {
-    let (list, on) = ST.with_borrow_mut(|st| { st.thumbs = !st.thumbs; (st.list, st.thumbs) });
-    THUMBS.store(on, Relaxed);
-    ui::row_height(list, !on);
-    put(list, LVM_SETVIEW, if on { LV_VIEW_ICON } else { LV_VIEW_DETAILS } as usize, 0);
+    set_view(h, !THUMBS.load(Relaxed));
+}
+
+/// The two views: the icon grid (the default: pictures, tight cells, small labels) and the details list.
+fn set_view(h: HWND, icons: bool) {
+    let list = ST.with_borrow(|st| st.list);
+    ST.with_borrow_mut(|st| st.thumbs = icons);
+    THUMBS.store(icons, Relaxed);
+    unsafe {
+        ui::row_height(list, !icons);
+        put(list, LVM_SETVIEW, if icons { LV_VIEW_ICON } else { LV_VIEW_DETAILS } as usize, 0);
+        if icons { ui::grid_spacing(list, ST.with_borrow(|st| is_this_pc(&st.dir))); }
+        // labels under an icon are smaller than the rows of the details list
+        put(list, WM_SETFONT, ui::font(if icons { 11 } else { 14 }, 400, ui::ui_face()) as usize, 1);
+    }
     reload(h);
 }
 
@@ -874,6 +1286,7 @@ mod wall {
 /// Shell integration through COM (windows crate): file operations, context menu, drag and drop.
 mod sh {
     use std::{cell::RefCell, ffi::c_void, os::windows::ffi::OsStrExt, path::PathBuf};
+    use winrust_common::tf;
     use windows::{core::*, Win32::{Foundation::*, System::{Com::*, DataExchange::RegisterClipboardFormatW, Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock}, Ole::*, SystemServices::MODIFIERKEYS_FLAGS}, UI::{Shell::{Common::ITEMIDLIST, *}, WindowsAndMessaging::*}}};
 
     #[derive(Clone, Copy)]
@@ -903,12 +1316,22 @@ mod sh {
 
     fn wide(p: &PathBuf) -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() }
 
+    fn wide_s(s: &str) -> Vec<u16> { s.encode_utf16().chain([0]).collect() }
+
     /// Copy / move into `to`, or recycle. Must not be called while ST is borrowed (the shell pumps messages).
     pub fn fileop(h: *mut c_void, op: Op, from: &[PathBuf], to: &PathBuf) -> Result<()> {
+        fileop_ex(h, op, from, to, true)
+    }
+
+    fn fileop_ex(h: *mut c_void, op: Op, from: &[PathBuf], to: &PathBuf, undo: bool) -> Result<()> {
         unsafe {
             let fo: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
             fo.SetOwnerWindow(HWND(h))?;
-            fo.SetOperationFlags(if matches!(op, Op::Delete) { FOF_ALLOWUNDO } else { FOF_RENAMEONCOLLISION })?;
+            fo.SetOperationFlags(match op {
+                Op::Delete if undo => FOF_ALLOWUNDO,
+                Op::Delete => FILEOPERATION_FLAGS(0),
+                _ => FOF_RENAMEONCOLLISION,
+            })?;
             let item = |p: &PathBuf| SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(wide(p).as_ptr()), None);
             let dest = if matches!(op, Op::Delete) { None } else { Some(item(to)?) };
             for p in from {
@@ -921,6 +1344,37 @@ mod sh {
             }
             fo.PerformOperations()
         }
+    }
+
+    /// Delete through the Recycle Bin; if that fails (an elevated shell cannot write to the user's Recycle Bin), say why
+    /// and offer a permanent delete instead of failing silently. Returns whether something was deleted.
+    pub fn delete(h: *mut c_void, from: &[PathBuf]) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO};
+        let none = PathBuf::new();
+        let err = match fileop_ex(h, Op::Delete, from, &none, true) {
+            Ok(()) => return true,
+            Err(e) => format!("{e:?}"),
+        };
+        // keep the evidence: which paths and which HRESULT (useful on Btrfs, locked files, long paths)
+        if let Some(p) = std::env::var_os("TEMP").map(|t| PathBuf::from(t).join("winrust-delete.log")) {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+                let _ = writeln!(f, "delete failed: {err}");
+                for x in from {
+                    let _ = writeln!(f, "  {}", x.display());
+                }
+            }
+        }
+        let msg = tf!(
+            "Не удалось переместить в корзину.\n\n{}\n\nУдалить навсегда?",
+            "Could not move to the Recycle Bin.\n\n{}\n\nDelete permanently?",
+            ja: "ごみ箱に移動できませんでした。\n\n{}\n\n完全に削除しますか?",
+            pt: "Não foi possível mover para a Lixeira.\n\n{}\n\nExcluir permanentemente?",
+            zh: "无法移到回收站。\n\n{}\n\n永久删除？",
+            err
+        );
+        let r = unsafe { MessageBoxW(h as _, wide_s(&msg).as_ptr(), wide_s("WinRust").as_ptr(), MB_YESNO | MB_ICONWARNING) };
+        r == IDYES && fileop_ex(h, Op::Delete, from, &none, false).is_ok()
     }
 
     /// Background thumbnail loader: GetImage for each (era, row, path) asked for, result posted to the main window.
@@ -1503,6 +1957,14 @@ unsafe fn delete_word(h: HWND) {
 }
 
 /// Rename box subclass: only Ctrl+Backspace is ours.
+/// The list keeps the wheel for itself. While the pointer is over the nav pane the pane should scroll instead.
+unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if m == WM_MOUSEWHEEL && ui::wheel_to_nav(wp, lp) {
+        return 0;
+    }
+    CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(LIST_OLD.load(std::sync::atomic::Ordering::Relaxed)), h, m, wp, lp)
+}
+
 unsafe extern "system" fn label_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if m == WM_CHAR && wp == 0x7F { delete_word(h); return 0; }
@@ -1539,13 +2001,14 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     ui::dark_title(h);
                     // the chrome (tabs, toolbar, address pill) is one painted window; the address box is a real edit inside its pill
                     tab = CreateWindowExW(0, w("RxChrome").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, 0, 0, 0, 0, h, 0 as _, inst, ptr::null());
-                    ui::nav_init(CreateWindowExW(0, w("RxNav").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, h, 0 as _, inst, ptr::null()));
+                    ui::nav_refresh(CreateWindowExW(0, w("RxNav").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, h, 0 as _, inst, ptr::null()));
                     edit = CreateWindowExW(0, w("EDIT").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL as u32, 0, 0, 0, 0, tab, 0 as _, inst, ptr::null());
                     put(edit, WM_SETFONT, ui::font(14, 400, ui::ui_face()) as usize, 1);
                     EDIT_OLD.store(SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as *const () as isize), std::sync::atomic::Ordering::Relaxed);
                 }
                 let view = if desk() { LVS_ICON } else { LVS_REPORT };
                 let list = CreateWindowExW(0, w("SysListView32").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE | view | if desk() { 0 } else { LVS_OWNERDATA } | LVS_EDITLABELS | LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS, 0, 0, 0, 0, h, 0 as _, inst, ptr::null());
+                LIST_OLD.store(SetWindowLongPtrW(list, GWLP_WNDPROC, list_proc as *const () as isize), std::sync::atomic::Ordering::Relaxed); // wheel over the nav pane scrolls it
                 put(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as isize);
                 let mut fi: SHFILEINFOW = std::mem::zeroed();
                 let il = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_SMALLICON);
@@ -1554,6 +2017,17 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     // system large icons; indexes are shared with the small list, so icon_of() works unchanged
                     let big = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_LARGEICON);
                     put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, big as isize);
+                    // Our own list of the same size: the shell's one bitmap per icon is replaced by the sharpest asset of
+                    // each file (`icon::best`). It also stays the fallback for the paths that have no icon of their own.
+                    let (mut icx, mut icy) = (0i32, 0i32);
+                    let mut ours: HIMAGELIST = 0;
+                    if ImageList_GetIconSize(big as _, &mut icx, &mut icy) != 0 && icx > 0 {
+                        ours = ImageList_Create(icx, icy, ILC_COLOR32, 32, 32);
+                    }
+                    if ours != 0 {
+                        put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, ours as isize);
+                        DESK_IL.set((ours as isize, big as isize, icx));
+                    }
                     apply_icon_size(list);
                     // transparent background (the desktop paints it) and shadowed labels, readable on light wallpapers too
                     let ex = LVS_EX_TRANSPARENTBKGND | 0x0080_0000; // LVS_EX_TRANSPARENTSHADOWTEXT
@@ -1569,7 +2043,6 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 } else {
                     let himl = ImageList_Create(THUMB, THUMB, ILC_COLOR32, 64, 64);
                     put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, himl as isize);
-                    put(list, LVM_SETICONSPACING, 0, ((THUMB as isize + 34) << 16) | (THUMB as isize + 24));
                     let _ = TX.set(sh::start_thumbs(h as isize));
                     ST.with_borrow_mut(|st| st.himl = himl as isize);
                     // the same columns, in the same order, as Explorer's details view
@@ -1587,15 +2060,23 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 // and walks up from there to the desktop window: it must accept the drop too
                 if desk() { let _ = sh::register_drop(h as _, h as isize); }
                 let (start, pick) = if desk() { (sh::desktop_dirs().into_iter().next().unwrap_or_default(), None) } else { start_target() };
+                if !desk() {
+                    // the icon grid is the default look; the toolbar button and Ctrl+M switch to the details list
+                    ST.with_borrow_mut(|st| st.thumbs = true);
+                    THUMBS.store(true, Relaxed);
+                    ui::row_height(list, false);
+                    put(list, LVM_SETVIEW, LV_VIEW_ICON as usize, 0);
+                    put(list, WM_SETFONT, ui::font(11, 400, ui::ui_face()) as usize, 1);
+                }
                 load(h, start);
                 if let Some(name) = pick { select_row(&name); }
                 if desk() {
                     use windows::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos};
                     let mut dirs: Vec<PathBuf> = [&FOLDERID_Desktop, &FOLDERID_Downloads, &FOLDERID_Documents, &FOLDERID_Pictures, &FOLDERID_Music, &FOLDERID_Videos].iter().filter_map(|id| sh::known_dir(id)).collect();
-                    dirs.extend(ui::pins());
+                    dirs.extend(ui::quick_items());
                     shellwin::register_resident(&dirs);
                 } else {
-                    shellwin::navigated(&cur_dir());
+                    if !in_pc() { shellwin::navigated(&cur_dir()); }
                     shellwin::register(h as isize);
                 }
                 0
@@ -1614,6 +2095,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             }
             // mouse buttons 4 / 5 (and keyboard media keys) arrive as APPCOMMAND_BROWSER_BACKWARD / _FORWARD
             0x0319 if !desk() && matches!((lp >> 16) & 0x7FF, 1 | 2) => { nav(h, (lp >> 16) & 0x7FF == 1); 1 }
+            // the frosted background under the window is a capture of the desktop: retake it where the window is now
+            WM_MOVE if !desk() => { ui::frost_moved(); 0 }
             WM_SIZE => {
                 let list = ST.with_borrow(|st| st.list);
                 let (cw, ch) = ((lp & 0xFFFF) as i32, ((lp >> 16) & 0xFFFF) as i32);
@@ -1631,7 +2114,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 match wp {
                     1 => { let n = ST.with_borrow(|st| st.tabs.len()); if (lp as usize) < n { tab_select(h, lp as usize); } }
                     2 => tab_close_at(h, lp as usize),
-                    3 => tab_new(),
+                    3 => tab_new(h),
                     4 => nav(h, true),
                     5 => nav(h, false),
                     6 => { if let Some(p) = cur_dir().parent() { load(h, p.to_path_buf()) } }
@@ -1641,21 +2124,55 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     10..=14 => {
                         let (list, dir, paths) = selected();
                         match wp {
-                            10 | 11 if !paths.is_empty() => match real_paths(&paths) { Ok(p) => { let _ = sh::clip_set(h, &p, wp == 10 && !in_zip()); } Err(e) => warn(h, &e) },
-                            12 => { paste(h, &dir); reload(h); }
-                            13 if !in_zip() => {
+                            10 | 11 if !paths.is_empty() && !in_virtual() => match real_paths(&paths) { Ok(p) => { let _ = sh::clip_set(h, &p, wp == 10 && !in_zip()); } Err(e) => warn(h, &e) },
+                            12 if !in_virtual() => { paste(h, &dir); reload(h); }
+                            13 if !in_zip() && !in_virtual() => {
                                 let i = put(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
                                 if i >= 0 { SetFocus(list); put(list, LVM_EDITLABELW, i as usize, 0); }
                             }
-                            14 if !paths.is_empty() && !in_zip() => { let _ = sh::fileop(h, sh::Op::Delete, &paths, &dir); reload(h); }
+                            14 if !paths.is_empty() && !in_zip() && !in_virtual() => { sh::delete(h, &paths); reload(h); }
                             _ => {}
                         }
                     }
                     20 => { if let Some(p) = ui::nav_path(lp as usize) { load(h, p); } } // a folder in the left pane
                     21 => { if let Some(p) = ui::crumb_path(lp as usize) { load(h, p); } } // a part of the path in the address pill
+                    // the window buttons at the right end of the title row
+                    22 => { PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE as usize, 0); }
+                    23 => { let cmd = if IsZoomed(h) != 0 { SC_RESTORE } else { SC_MAXIMIZE }; PostMessageW(h, WM_SYSCOMMAND, cmd as usize, 0); }
+                    24 => { PostMessageW(h, WM_SYSCOMMAND, SC_CLOSE as usize, 0); }
+                    // "open in a new tab": lp = Box<PathBuf> (left pane, network shares, Quick access)
+                    25 => { let p = *Box::from_raw(lp as *mut PathBuf); tab_open(h, p); }
                     _ => {}
                 }
                 0
+            }
+            // the native caption is gone: only the resize frame stays around the client area, so the title row (tabs,
+            // window buttons) is ordinary client content painted by the chrome window
+            WM_NCCALCSIZE if !desk() => {
+                let bx = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                let by = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                if wp == 0 {
+                    let r = &mut *(lp as *mut RECT);
+                    r.left += bx; r.right -= bx; r.top += by; r.bottom -= by;
+                } else {
+                    let p = &mut *(lp as *mut NCCALCSIZE_PARAMS);
+                    p.rgrc[0].left += bx; p.rgrc[0].right -= bx;
+                    p.rgrc[0].top += by; p.rgrc[0].bottom -= by;
+                }
+                0
+            }
+            // inside our client area there is no caption any more (DefWindowProc would still call the top strip one);
+            // the frame ring is left to DefWindowProc, so the native resize borders keep working
+            WM_NCHITTEST if !desk() => {
+                let mut p = POINT { x: (lp & 0xFFFF) as i16 as i32, y: ((lp >> 16) & 0xFFFF) as i16 as i32 };
+                ScreenToClient(h, &mut p);
+                let mut cr: RECT = std::mem::zeroed();
+                GetClientRect(h, &mut cr);
+                if p.x >= 0 && p.y >= 0 && p.x < cr.right && p.y < cr.bottom {
+                    if ui::caption_at(p.x, p.y) { return HTCAPTION as LRESULT; }
+                    return HTCLIENT as LRESULT;
+                }
+                DefWindowProcW(h, m, wp, lp)
             }
             WM_ERASEBKGND if desk() && desk::erase(wp as _, h) => 1,
             WM_WINDOWPOSCHANGING if desk() => { // the desktop never rises above other windows
@@ -1694,7 +2211,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             let Some(i) = usize::try_from(it.iItem).ok() else { return };
                             let Some(r) = rows.get_mut(i) else { return };
                             if it.mask & LVIF_TEXT != 0 && it.cchTextMax > 0 {
-                                let s = if r.hdr { if it.iSubItem == 0 { r.name[1..].to_string() } else { String::new() } } else { match it.iSubItem { 0 => shown_name(&r.name, desk()), 1 => date_text(r.time), 2 => type_text(&r.name, r.dir), _ if r.dir => String::new(), _ => size_text(r.size) } };
+                                let s = if r.hdr { if it.iSubItem == 0 { r.name[1..].to_string() } else { String::new() } } else { match it.iSubItem { 0 => shown_name(&r.name, desk()), 1 => date_text(r.time), 2 => row_type(r), _ => row_size(r) } };
                                 let u: Vec<u16> = s.encode_utf16().take(it.cchTextMax as usize - 1).collect();
                                 ptr::copy_nonoverlapping(u.as_ptr(), it.pszText, u.len());
                                 *it.pszText.add(u.len()) = 0;
@@ -1703,18 +2220,22 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             if it.mask & LVIF_IMAGE != 0 && *thumbs {
                                 if r.thumb == -2 {
                                     r.thumb = -1;
-                                    if let Some(tx) = TX.get() { let _ = tx.send((GEN.load(std::sync::atomic::Ordering::Relaxed), i, dir.join(&r.name))); }
+                                    if let Some(tx) = TX.get() { let _ = tx.send((GEN.load(std::sync::atomic::Ordering::Relaxed), i, r.full(dir))); }
                                 }
                                 it.iImage = if r.thumb >= 0 { r.thumb } else { I_IMAGENONE };
                             } else if it.mask & LVIF_IMAGE != 0 {
-                                if r.icon < 0 { r.icon = icon_of(&dir.join(&r.name), r.dir); }
+                                if r.icon < 0 {
+                                    let p = r.full(dir);
+                                    // the desktop's list holds our own copies: render the icon at its size, not at 16 px
+                                    r.icon = if desk() { desk_icon(&p, r.dir) } else { icon_of(&p, r.dir) };
+                                }
                                 it.iImage = r.icon;
                             }
                         });
                     }
                     LVN_ITEMACTIVATE => {
                         let i = (*(lp as *const NMITEMACTIVATE)).iItem;
-                        let hit = ST.with_borrow(|st| usize::try_from(i).ok().and_then(|i| st.rows.get(i)).filter(|r| !r.hdr).map(|r| (st.dir.join(&r.name), r.dir)));
+                        let hit = ST.with_borrow(|st| usize::try_from(i).ok().and_then(|i| st.rows.get(i)).filter(|r| !r.hdr).map(|r| (r.full(&st.dir), r.dir)));
                         if let Some((p, is_dir)) = hit { activate(h, p, is_dir); }
                     }
                     NM_RCLICK if nm.hwndFrom == list => {
@@ -1726,10 +2247,11 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                         let asc = if SORT_COL.load(Relaxed) == c { !SORT_ASC.load(Relaxed) } else { true };
                         SORT_COL.store(c, Relaxed);
                         SORT_ASC.store(asc, Relaxed);
+                        let pc = in_pc(); // drives have no date: no date headings in the "This PC" list
                         let n = ST.with_borrow_mut(|st| {
                             st.rows.retain(|r| !r.hdr);
                             sort_rows(&mut st.rows, c, asc);
-                            add_headers(&mut st.rows);
+                            if !pc { add_headers(&mut st.rows); }
                             st.rows.iter_mut().for_each(|r| r.thumb = -2); // rows moved: thumbnails are asked for again
                             st.rows.len()
                         });
@@ -1737,6 +2259,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                         put(list, LVM_REDRAWITEMS, 0, n as isize - 1);
                     }
                     LVN_BEGINDRAG => {
+                        if in_virtual() { return 0; } // a drive or a bin row is not dragged around
                         let (_, _, paths) = selected();
                         let paths = match real_paths(&paths) { Ok(p) => p, Err(e) => { warn(h, &e); return 0; } }; // out of a zip: real files first
                         drag_log(&format!("BEGINDRAG desk={} selected={}", desk(), paths.len()));
@@ -1758,10 +2281,10 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                         match vk {
                             0x08 => if let Some(p) = dir.parent() { load(h, p.to_path_buf()) },
                             0x1B if jobs::busy() => { jobs::cancel(); return 0; } // Esc stops packing / unpacking
-                            0x2E if !paths.is_empty() && !in_zip() => { let _ = sh::fileop(h, sh::Op::Delete, &paths, &dir); }
+                            0x2E if !paths.is_empty() && !in_zip() && !in_virtual() => { sh::delete(h, &paths); }
                             // Space: a quick look. Pictures open in photoview, videos / text / anything else in its default app
                             0x20 if !desk() => if let Some(p) = paths.first().filter(|p| p.is_file()) { activate(h, p.clone(), false); },
-                            0x71 if !in_zip() => {
+                            0x71 if !in_zip() && !in_virtual() => {
                                 let i = put(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
                                 if i >= 0 { put(list, LVM_EDITLABELW, i as usize, 0); }
                             }
@@ -1784,12 +2307,12 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 put(list, LVM_SETITEMSTATE, usize::MAX, &it as *const _ as isize);
                                 return 0;
                             }
-                            0x56 if ctrl => paste(h, &dir),
-                            0x4E if ctrl => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
+                            0x56 if ctrl && !in_virtual() => paste(h, &dir),
+                            0x4E if ctrl && !in_virtual() => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
                             0x48 if ctrl => { SHOW_HIDDEN.fetch_xor(true, Relaxed); } // Ctrl+H: hidden files
-                            0x74 => {} // F5: just the reload below
+                            0x74 => { ui::net_rescan(); ui::nav_refresh(ui::nav_window()); } // F5: the pane reads the drives and the network again
                             0x4D if ctrl => { toggle_view(h); return 0; } // Ctrl+M: details <-> thumbnails
-                            0x54 if ctrl => tab_new(),
+                            0x54 if ctrl => tab_new(h),
                             0x57 if ctrl => { tab_close(h); return 0; }
                             0x09 if ctrl => {
                                 let next = ST.with_borrow(|st| (st.active + 1) % st.tabs.len());
@@ -1802,7 +2325,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     }
                     LVN_BEGINLABELEDITW => {
                         let hdr = ST.with_borrow(|st| usize::try_from((*(lp as *const NMLVDISPINFOW)).item.iItem).ok().and_then(|i| st.rows.get(i)).is_some_and(|r| r.hdr));
-                        if hdr { return 1; } // a heading cannot be renamed
+                        if hdr || in_virtual() { return 1; } // a heading or a drive cannot be renamed
                         let e = SendMessageW(ST.with_borrow(|st| st.list), LVM_GETEDITCONTROL, 0, 0) as HWND;
                         if e != 0 as HWND { LABEL_OLD.store(SetWindowLongPtrW(e, GWLP_WNDPROC, label_proc as *const () as isize), std::sync::atomic::Ordering::Relaxed); }
                     }
@@ -1812,7 +2335,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             let new = wstr(it.pszText);
                             // reject separators so a rename can never move the item
                             if !new.is_empty() && !new.contains(['\\', '/', ':']) {
-                                ST.with_borrow(|st| if let Some(r) = usize::try_from(it.iItem).ok().and_then(|i| st.rows.get(i)) { let _ = fs::rename(st.dir.join(&r.name), st.dir.join(&new)); });
+                                ST.with_borrow(|st| if let Some(r) = usize::try_from(it.iItem).ok().and_then(|i| st.rows.get(i)) { let _ = fs::rename(r.full(&st.dir), st.dir.join(&new)); });
                                 PostMessageW(h, WM_APP, 0, 0); // reload after the edit control is gone
                             }
                         }
@@ -1831,11 +2354,35 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 if let Some(e) = err { MessageBoxW(h, w(&e).as_ptr(), w("WinRust Explorer").as_ptr(), MB_ICONWARNING); }
                 0
             }
+            // a USB stick came or went, a volume changed: the pane lists the drives again, the drive list follows
+            WM_DEVICECHANGE if !desk() => {
+                ui::nav_refresh(ui::nav_window());
+                if is_this_pc(&cur_dir()) { reload(h); }
+                0
+            }
+            // the network scan finished (on a worker thread): the pane lists what it found
+            ui::WM_NET => {
+                ui::net_take(lp);
+                ui::nav_refresh(ui::nav_window());
+                0
+            }
+            // the Recycle Bin scan finished (on a worker thread)
+            WM_TRASH => {
+                let rows = *Box::from_raw(wp as *mut Vec<Row>);
+                if is_trash(&cur_dir()) {
+                    let (list, n) = ST.with_borrow_mut(|st| { st.rows = rows; (st.list, st.rows.len()) });
+                    reset_thumbs();
+                    put(list, LVM_DELETEALLITEMS, 0, 0);
+                    put(list, LVM_SETITEMCOUNT, n, 0);
+                    ui::status_dirty(h);
+                }
+                0
+            }
             WM_NAV => {
                 match wp {
                     1 => nav(h, true),
                     2 => nav(h, false),
-                    3 => { let (_, dir, sel) = selected(); properties(&sel.first().cloned().unwrap_or(dir)); }
+                    3 => { if !is_trash(&cur_dir()) { let (_, dir, sel) = selected(); properties(&sel.first().cloned().unwrap_or(dir)); } }
                     _ => if let Some(p) = cur_dir().parent() { load(h, p.to_path_buf()) },
                 }
                 0
@@ -1860,9 +2407,13 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     let text = String::from_utf16_lossy(&buf[..n]);
                     if let Some(q) = text.trim().strip_prefix('?') {
                         if !q.trim().is_empty() { search(h, q.trim()); SetFocus(list); return 0; } // keep the query in the bar
+                    } else if is_this_pc(&p) || text.trim().eq_ignore_ascii_case(&display_dir(&this_pc())) {
+                        load(h, this_pc()); // "This PC" typed (or the marker): the drive list
+                    } else if is_trash(&p) || text.trim().eq_ignore_ascii_case(&display_dir(&trash_dir())) {
+                        load(h, trash_dir()); // "Recycle Bin" typed (or the marker)
                     } else if p.is_dir() || zipx::split_zip(&p).is_some() { load(h, p); } // also a path inside a .zip
                 }
-                SetWindowTextW(edit, w(&cur_dir().to_string_lossy()).as_ptr()); // also undoes a bad path / Esc
+                SetWindowTextW(edit, w(&display_dir(&cur_dir())).as_ptr()); // also undoes a bad path / Esc
                 SetFocus(list);
                 0
             }
@@ -1918,8 +2469,8 @@ fn main() {
         // desktop without a wallpaper file shows black, not window white
         // desktop: COLOR_BACKGROUND, the user's solid colour when there is no picture, never black (#108, #111)
         let bg = if desktop { windows_sys::Win32::Graphics::Gdi::GetSysColorBrush(1) as _ } else { windows_sys::Win32::Graphics::Gdi::CreateSolidBrush(ui::pal().bg) };
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(ui::proc), hInstance: inst, lpszClassName: w("RxChrome").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(ui::nav_proc), hInstance: inst, lpszClassName: w("RxNav").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
+        RegisterClassW(&WNDCLASSW { style: CS_DBLCLKS, lpfnWndProc: Some(ui::proc), hInstance: inst, lpszClassName: w("RxChrome").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
+        RegisterClassW(&WNDCLASSW { style: CS_DBLCLKS, lpfnWndProc: Some(ui::nav_proc), hInstance: inst, lpszClassName: w("RxNav").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst, lpszClassName: cls.as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), hIcon: LoadIconW(inst, 1 as _), hbrBackground: bg, ..std::mem::zeroed() });
         if desktop {
             DESKTOP.store(true, Relaxed);
@@ -2017,7 +2568,7 @@ mod tests {
 
     use super::*;
 
-    fn r(name: &str, dir: bool, size: u64, time: u64) -> Row { Row { name: name.into(), dir, size, time, icon: -1, thumb: -2 , hdr: false } }
+    fn r(name: &str, dir: bool, size: u64, time: u64) -> Row { Row { name: name.into(), dir, size, time, icon: -1, thumb: -2 , hdr: false, path: None, cap: None, trash: None } }
     fn names(v: &[Row]) -> Vec<&str> { v.iter().map(|r| r.name.as_str()).collect() }
 
     #[test]

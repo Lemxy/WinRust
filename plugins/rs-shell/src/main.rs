@@ -261,12 +261,20 @@ fn hotkey_loop() {
     }
 }
 
-/// Keeps topbar alive; if it will not stay up, hands the session to explorer.exe and ends the shell.
+/// Keeps topbar and the desktop alive; if the bar will not stay up, hands the session to explorer.exe and ends the shell.
 fn supervise() {
-    let (mut starts, mut since, mut misses) = (0, Instant::now(), 0);
+    let (mut starts, mut since, mut misses, mut dmiss) = (0, Instant::now(), 0, 0);
+    let desktop = dir().join("rust-explorer.exe");
+    let desk_up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
     loop {
         unsafe { EnumWindows(Some(park), 0) };
         if bar_up() { misses = 0; } else { misses += 1; }
+        // without explorer there is nobody else to draw the wallpaper and the icons: bring the desktop back
+        dmiss = if desktop.exists() && !desk_up() { dmiss + 1 } else { 0 };
+        if dmiss >= 3 {
+            log(&format!("desktop respawn -> {:?}", quiet(&desktop).arg("--desktop").spawn().map(|_| ())));
+            dmiss = 0;
+        }
         if misses >= 6 { // ~6 s: the loop ticks every second now
             if since.elapsed() > Duration::from_secs(120) { (starts, since) = (0, Instant::now()); }
             starts += 1;
