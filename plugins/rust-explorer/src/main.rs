@@ -811,14 +811,18 @@ fn toggle_view(h: HWND) {
     reload(h);
 }
 
-/// Address box in search mode ("? terms").
+/// Address box in search mode: empty, a grey hint says what typing does (a "?" in front still works, for those used to it).
 fn search_focus() {
     let edit = ST.with_borrow(|st| st.edit);
+    ui::set_asking(true);
+    let hint = w(t!("Поиск файлов на всех дисках", "Search files on every drive", ja: "すべてのドライブのファイルを検索", pt: "Pesquisar arquivos em todas as unidades", zh: "在所有驱动器中搜索文件", es: "Buscar archivos en todos los discos"));
     unsafe {
-        SetWindowTextW(edit, w("? ").as_ptr());
+        SetWindowTextW(edit, w("").as_ptr());
+        SendMessageW(edit, 0x1501, 1, hint.as_ptr() as isize); // EM_SETCUEBANNER, shown while focused too
         SetFocus(edit);
     }
-    put(edit, EM_SETSEL, 2, 2);
+    ui::set_asking(true); // SetFocus ran the focus handlers; the box is still taking a search
+    unsafe { InvalidateRect(ST.with_borrow(|st| st.tab), ptr::null(), 0) }; // the pill's magnifier
 }
 
 /// Wallpaper for the desktop window.
@@ -1961,7 +1965,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     let n = GetWindowTextW(edit, buf.as_mut_ptr(), buf.len() as i32) as usize;
                     let p = PathBuf::from(String::from_utf16_lossy(&buf[..n]).trim().trim_matches('"'));
                     let text = String::from_utf16_lossy(&buf[..n]);
-                    if let Some(q) = text.trim().strip_prefix('?') {
+                    let query = if ui::asking() { Some(text.trim().trim_start_matches('?')) } else { text.trim().strip_prefix('?') };
+                    if let Some(q) = query {
                         if !q.trim().is_empty() { search(h, q.trim()); SetFocus(list); return 0; } // keep the query in the bar
                     } else if p.is_dir() || zipx::split_zip(&p).is_some() { load(h, p); } // also a path inside a .zip
                 }

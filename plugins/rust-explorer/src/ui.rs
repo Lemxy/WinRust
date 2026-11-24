@@ -45,6 +45,11 @@ thread_local! {
 /// The list shows search hits for `q` (None: a folder again); the pill says so instead of showing the path.
 pub fn set_search(q: Option<String>) { SEARCHING.set(q); }
 
+thread_local! { static ASKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+/// The address box is taking a search (Ctrl+F, the magnifier button): what is typed is a query, not a path.
+pub fn set_asking(on: bool) { ASKING.set(on); }
+pub fn asking() -> bool { ASKING.get() }
+
 /// Folder of the path part `i` of the address pill.
 pub fn crumb_path(i: usize) -> Option<PathBuf> { CRUMBS.with_borrow(|c| c.get(i).map(|x| x.1.clone())) }
 
@@ -583,7 +588,7 @@ unsafe fn paint_chrome(hwnd: HWND) {
     fill(dc, rc(l.pill.left + 1, l.pill.top + 1, l.pill.right - 1, l.pill.bottom - 1), pill(), sc(17));
     SelectObject(dc, f_glyph);
     let searching = SEARCHING.with_borrow(|s| s.clone());
-    text(dc, if searching.is_some() { "\u{E721}" } else { "\u{E838}" }, rc(l.pill.left + sc(10), l.pill.top, l.pill.left + sc(38), l.pill.bottom), mix(pal().dim, pal().accent, f), DT_CENTER);
+    text(dc, if searching.is_some() || asking() { "\u{E721}" } else { "\u{E838}" }, rc(l.pill.left + sc(10), l.pill.top, l.pill.left + sc(38), l.pill.bottom), mix(pal().dim, pal().accent, f), DT_CENTER);
     // not being edited: the path as clickable parts, like Windows 11 Explorer ("C: > Users > me"); the edit box is hidden
     let mut crumbs = vec![];
     if !focused {
@@ -755,6 +760,10 @@ pub unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
         WM_COMMAND if (wp >> 16) == 0x0100 || (wp >> 16) == 0x0200 => {
             // edit got / lost focus: shown only while typing (the path parts otherwise), outline colour
             ShowWindow(lp as HWND, if (wp >> 16) == 0x0100 { SW_SHOW } else { SW_HIDE });
+            if (wp >> 16) == 0x0200 {
+                set_asking(false); // left without a search: the box is an address again
+                SendMessageW(lp as HWND, 0x1501, 0, w("").as_ptr() as isize); // EM_SETCUEBANNER: no hint
+            }
             InvalidateRect(h, ptr::null(), 0);
         }
         WM_CTLCOLOREDIT => {
