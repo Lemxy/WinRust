@@ -42,11 +42,11 @@ pub fn status_text() -> Option<String> {
     let secs = p.started.elapsed().as_secs_f64().max(0.1);
     let mut s = p.what.clone();
     if tf > 0 {
-        let count = tf!("файлов: {} из {}", "{} of {} files", ja: "{} 個中 {}", pt: "{} de {} arquivos", zh: "第 {} 个文件，共 {} 个", f, tf);
+        let count = tf!("файлов: {} из {}", "{} of {} files", ja: "{} 個中 {}", pt: "{} de {} arquivos", zh: "第 {} 个文件，共 {} 个", es: "{} de {} archivos", f, tf);
         s += &format!("  \u{00B7}  {count}");
     }
     if tb > 0 {
-        s += &format!("  \u{00B7}  {}", tf!("{} из {} ({}%)  \u{00B7}  {}/с", "{} of {} ({}%)  \u{00B7}  {}/s", ja: "{}/{} ({}%)  \u{00B7}  {}/秒", pt: "{} de {} ({}%)  \u{00B7}  {}/s", zh: "{} / {}（{}%）  \u{00B7}  {}/秒", super::size_text(b), super::size_text(tb), b * 100 / tb.max(1), super::size_text((b as f64 / secs) as u64)));
+        s += &format!("  \u{00B7}  {}", tf!("{} из {} ({}%)  \u{00B7}  {}/с", "{} of {} ({}%)  \u{00B7}  {}/s", ja: "{}/{} ({}%)  \u{00B7}  {}/秒", pt: "{} de {} ({}%)  \u{00B7}  {}/s", zh: "{} / {}（{}%）  \u{00B7}  {}/秒", es: "{} de {} ({}%)  \u{00B7}  {}/s", super::size_text(b), super::size_text(tb), b * 100 / tb.max(1), super::size_text((b as f64 / secs) as u64)));
     }
     Some(s + "\u{2026}")
 }
@@ -184,14 +184,14 @@ fn copy_file(src: &Path, dst: &Path, size: u64, p: &Progress) -> std::io::Result
 /// Copies `from` into `to` (names that exist there get " (2)"); `then_delete` = a move across drives: the sources go away
 /// only when every file arrived.
 pub fn copy(h: isize, from: Vec<PathBuf>, to: PathBuf, then_delete: bool) -> bool {
-    let what = if then_delete { t!("Перемещение", "Moving", ja: "移動中", pt: "Movendo", zh: "正在移动") } else { t!("Копирование", "Copying", ja: "コピー中", pt: "Copiando", zh: "正在复制") }.to_string();
+    let what = if then_delete { t!("Перемещение", "Moving", ja: "移動中", pt: "Movendo", zh: "正在移动", es: "Moviendo") } else { t!("Копирование", "Copying", ja: "コピー中", pt: "Copiando", zh: "正在复制", es: "Copiando") }.to_string();
     spawn(h, what, move |p| copy_now(&from, &to, then_delete, p))
 }
 
 fn copy_now(from: &[PathBuf], to: &Path, then_delete: bool, p: &Progress) -> Result<(), String> {
     let mut entries = vec![];
     for src in from {
-        let name = src.file_name().ok_or_else(|| format!("{}: no name", src.display()))?.to_string_lossy().into_owned();
+        let name = src.file_name().ok_or_else(|| tf!("{}: нет имени", "{}: no name", ja: "{}: 名前がありません", pt: "{}: sem nome", zh: "{}：没有名称", es: "{}: sin nombre", src.display()))?.to_string_lossy().into_owned();
         let top = free_name(to, &name, src.is_dir());
         walk(src, PathBuf::from(top.file_name().unwrap()), &mut entries).map_err(|e| format!("{}: {e}", src.display()))?;
     }
@@ -229,7 +229,7 @@ fn copy_now(from: &[PathBuf], to: &Path, then_delete: bool, p: &Progress) -> Res
     if then_delete {
         for src in from {
             let r = if fs::symlink_metadata(src).is_ok_and(|m| m.is_dir()) { fs::remove_dir_all(src) } else { fs::remove_file(src) };
-            r.map_err(|e| format!("Copied, but {} could not be removed: {e}", src.display()))?;
+            r.map_err(|e| tf!("Скопировано, но {} не удалось удалить: {e}", "Copied, but {} could not be removed: {e}", ja: "コピーしましたが、{} を削除できませんでした: {e}", pt: "Copiado, mas não foi possível remover {}: {e}", zh: "已复制，但无法删除 {}：{e}", es: "Copiado, pero no se pudo quitar {}: {e}", src.display()))?;
         }
     }
     Ok(())
@@ -241,7 +241,7 @@ fn copy_now(from: &[PathBuf], to: &Path, then_delete: bool, p: &Progress) -> Res
 const PAR_MAX: u64 = 64 << 20;
 
 pub fn zip(h: isize, from: Vec<PathBuf>, dest: PathBuf) -> bool {
-    let what = tf!("Упаковка {}", "Packing {}", ja: "{} を圧縮中", pt: "Compactando {}", zh: "正在压缩 {}", dest.file_name().unwrap_or_default().to_string_lossy());
+    let what = tf!("Упаковка {}", "Packing {}", ja: "{} を圧縮中", pt: "Compactando {}", zh: "正在压缩 {}", es: "Comprimiendo {}", dest.file_name().unwrap_or_default().to_string_lossy());
     spawn(h, what, move |p| zip_now(&from, &dest, p).inspect_err(|_| _ = fs::remove_file(&dest)).or_else(|e| if p.cancelled() { Ok(()) } else { Err(e) }))
 }
 
@@ -254,7 +254,7 @@ fn zip_now(from: &[PathBuf], dest: &Path, p: &Progress) -> Result<(), String> {
     use crate::zipx::{self, Prepared, Writer};
     let mut entries = vec![];
     for src in from {
-        let name = src.file_name().ok_or_else(|| format!("{}: no name", src.display()))?;
+        let name = src.file_name().ok_or_else(|| tf!("{}: нет имени", "{}: no name", ja: "{}: 名前がありません", pt: "{}: sem nome", zh: "{}：没有名称", es: "{}: sin nombre", src.display()))?;
         walk(src, PathBuf::from(name), &mut entries).map_err(|e| format!("{}: {e}", src.display()))?;
     }
     entries.retain(|e| e.0 != dest); // packing the folder the archive is written into
@@ -288,7 +288,7 @@ fn zip_now(from: &[PathBuf], dest: &Path, p: &Progress) -> Result<(), String> {
         drop(tx);
         for r in rx {
             if p.cancelled() {
-                return Err(t!("Отменено", "Cancelled", ja: "キャンセルされました", pt: "Cancelado", zh: "已取消").to_string());
+                return Err(t!("Отменено", "Cancelled", ja: "キャンセルされました", pt: "Cancelado", zh: "已取消", es: "Cancelado").to_string());
             }
             let f = r?;
             let n = f.uncompressed_size();
@@ -313,7 +313,7 @@ pub fn is_archive(p: &Path) -> bool {
 
 /// Unpacks each archive into a new folder named after it, next to it.
 pub fn extract(h: isize, archives: Vec<PathBuf>, dir: PathBuf) -> bool {
-    let what = tf!("Распаковка {}", "Extracting {}", ja: "{} を展開中", pt: "Extraindo {}", zh: "正在解压 {}", archives.iter().map(|a| a.file_name().unwrap_or_default().to_string_lossy()).collect::<Vec<_>>().join(", "));
+    let what = tf!("Распаковка {}", "Extracting {}", ja: "{} を展開中", pt: "Extraindo {}", zh: "正在解压 {}", es: "Extrayendo {}", archives.iter().map(|a| a.file_name().unwrap_or_default().to_string_lossy()).collect::<Vec<_>>().join(", "));
     spawn(h, what, move |p| {
         p.total_files.store(archives.len() as u64, Relaxed);
         for a in &archives {

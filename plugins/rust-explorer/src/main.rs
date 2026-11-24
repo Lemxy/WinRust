@@ -144,14 +144,14 @@ const DAY: i64 = 864_000_000_000; // FILETIME ticks per day
 /// The date headings of "Group by date", in bucket order: shown above the rows of each group.
 fn bucket_name(i: usize) -> &'static str {
     [
-        t!("Сегодня", "Today", ja: "今日", pt: "Hoje", zh: "今天"),
-        t!("Вчера", "Yesterday", ja: "昨日", pt: "Ontem", zh: "昨天"),
-        t!("Ранее на этой неделе", "Earlier this week", ja: "今週", pt: "No início desta semana", zh: "本周早些时候"),
-        t!("На прошлой неделе", "Last week", ja: "先週", pt: "Semana passada", zh: "上周"),
-        t!("Ранее в этом месяце", "Earlier this month", ja: "今月", pt: "No início deste mês", zh: "本月早些时候"),
-        t!("В прошлом месяце", "Last month", ja: "先月", pt: "Mês passado", zh: "上个月"),
-        t!("Ранее в этом году", "Earlier this year", ja: "今年", pt: "No início deste ano", zh: "今年早些时候"),
-        t!("Давно", "A long time ago", ja: "ずっと前", pt: "Há muito tempo", zh: "很久以前"),
+        t!("Сегодня", "Today", ja: "今日", pt: "Hoje", zh: "今天", es: "Hoy"),
+        t!("Вчера", "Yesterday", ja: "昨日", pt: "Ontem", zh: "昨天", es: "Ayer"),
+        t!("Ранее на этой неделе", "Earlier this week", ja: "今週", pt: "No início desta semana", zh: "本周早些时候", es: "Anteriormente esta semana"),
+        t!("На прошлой неделе", "Last week", ja: "先週", pt: "Semana passada", zh: "上周", es: "La semana pasada"),
+        t!("Ранее в этом месяце", "Earlier this month", ja: "今月", pt: "No início deste mês", zh: "本月早些时候", es: "Anteriormente este mes"),
+        t!("В прошлом месяце", "Last month", ja: "先月", pt: "Mês passado", zh: "上个月", es: "El mes pasado"),
+        t!("Ранее в этом году", "Earlier this year", ja: "今年", pt: "No início deste ano", zh: "今年早些时候", es: "Anteriormente este año"),
+        t!("Давно", "A long time ago", ja: "ずっと前", pt: "Há muito tempo", zh: "很久以前", es: "Hace mucho tiempo"),
     ][i]
 }
 
@@ -206,9 +206,9 @@ fn add_headers(rows: &mut Vec<Row>) {
 
 /// Explorer's "Type" column in short form: "File folder", "TXT file", "File".
 fn type_text(name: &str, dir: bool) -> String {
-    if dir { return t!("Папка с файлами", "File folder", ja: "ファイル フォルダー", pt: "Pasta de arquivos", zh: "文件夹").into(); }
+    if dir { return t!("Папка с файлами", "File folder", ja: "ファイル フォルダー", pt: "Pasta de arquivos", zh: "文件夹", es: "Carpeta de archivos").into(); }
     let file = name.rsplit('\\').next().unwrap_or(name);
-    match file.rsplit_once('.') { Some((stem, e)) if !stem.is_empty() && !e.is_empty() => tf!("Файл {}", "{} file", ja: "{} ファイル", pt: "Arquivo {}", zh: "{} 文件", e.to_uppercase()), _ => t!("Файл", "File", ja: "ファイル", pt: "Arquivo", zh: "文件").into() }
+    match file.rsplit_once('.') { Some((stem, e)) if !stem.is_empty() && !e.is_empty() => tf!("Файл {}", "{} file", ja: "{} ファイル", pt: "Arquivo {}", zh: "{} 文件", es: "Archivo {}", e.to_uppercase()), _ => t!("Файл", "File", ja: "ファイル", pt: "Arquivo", zh: "文件", es: "Archivo").into() }
 }
 
 /// Explorer shows file sizes in KB; the bigger ones read better in MB / GB.
@@ -344,9 +344,9 @@ fn zip_menu(h: HWND, paths: &[PathBuf]) {
     let id = unsafe {
         let m = CreatePopupMenu();
         let items = [
-            (1usize, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")),
-            (2, t!("Копировать", "Copy", ja: "コピー", pt: "Copiar", zh: "复制")),
-            (3, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处")),
+            (1usize, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开", es: "Abrir")),
+            (2, t!("Копировать", "Copy", ja: "コピー", pt: "Copiar", zh: "复制", es: "Copia")),
+            (3, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处", es: "Extraer aquí")),
         ];
         for (i, lbl) in items { AppendMenuW(m, MF_STRING, i, w(lbl).as_ptr()); }
         let mut pt: POINT = std::mem::zeroed();
@@ -378,13 +378,13 @@ fn zip_menu(h: HWND, paths: &[PathBuf]) {
 /// The shell menu for the selection, with our "Compress to ZIP" / "Extract here" on top.
 fn item_menu(h: HWND, dir: &Path, paths: &[PathBuf]) {
     if zipx::split_zip(dir).is_some() { return zip_menu(h, paths); }
-    let mut extra = vec![(MENU_ZIP, t!("Сжать в ZIP", "Compress to ZIP", ja: "ZIP に圧縮", pt: "Compactar em ZIP", zh: "压缩为 ZIP"))];
+    let mut extra = vec![(MENU_ZIP, t!("Сжать в ZIP", "Compress to ZIP", ja: "ZIP に圧縮", pt: "Compactar em ZIP", zh: "压缩为 ZIP", es: "Comprimir en ZIP"))];
     if paths.iter().all(|p| p.is_file() && jobs::is_archive(p)) {
-        extra.insert(0, (MENU_EXTRACT, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处")));
+        extra.insert(0, (MENU_EXTRACT, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处", es: "Extraer aquí")));
     }
     // the shell menu has no Rename here (it needs the shell's own folder view to answer it): the same edit box as F2
-    if paths.len() == 1 { extra.push((MENU_RENAME, t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名"))); }
-    if let [p] = paths { if p.is_dir() { extra.push((MENU_PIN, if ui::pins().contains(p) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问") })); } }
+    if paths.len() == 1 { extra.push((MENU_RENAME, t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名", es: "Cambiar nombre"))); }
+    if let [p] = paths { if p.is_dir() { extra.push((MENU_PIN, if ui::pins().contains(p) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定", es: "Desanclar de Acceso rápido") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问", es: "Anclar a Acceso rápido") })); } }
     let picked = sh::show(h, paths, if jobs::busy() { &[] } else { &extra }).ok().flatten();
     match picked {
         Some(MENU_PIN) => ui::toggle_pin(&paths[0]),
@@ -432,34 +432,34 @@ fn set_icons_hidden(hide: bool) {
 unsafe fn bg_menu(h: HWND) {
     let m = CreatePopupMenu();
     let items = [
-        (1usize, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹")),
-        (2, t!("Новый текстовый файл", "New text file", ja: "新しいテキスト ドキュメント", pt: "Novo arquivo de texto", zh: "新建文本文件")),
-        (3, t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴")),
-        (4, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新")),
-        (5, t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性")),
+        (1usize, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹", es: "Nueva carpeta")),
+        (2, t!("Новый текстовый файл", "New text file", ja: "新しいテキスト ドキュメント", pt: "Novo arquivo de texto", zh: "新建文本文件", es: "Nuevo archivo de texto")),
+        (3, t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴", es: "Pegar")),
+        (4, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新", es: "Actualizar")),
+        (5, t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性", es: "Propiedades")),
     ];
     for (id, lbl) in items { AppendMenuW(m, MF_STRING, id, w(lbl).as_ptr()); }
     let disk = tool("wiztree");
-    if disk.is_some() { AppendMenuW(m, MF_STRING, 6, w(t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）")).as_ptr()); }
+    if disk.is_some() { AppendMenuW(m, MF_STRING, 6, w(t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）", es: "Uso del disco (WinRust Disk)")).as_ptr()); }
     if desk() {
         let sort = [
-            (8usize, t!("Упорядочить значки по имени", "Sort icons by name", ja: "名前順にアイコンを並べ替え", pt: "Classificar ícones por nome", zh: "按名称排列图标")),
-            (9, t!("Упорядочить значки по дате", "Sort icons by date", ja: "日付順にアイコンを並べ替え", pt: "Classificar ícones por data", zh: "按日期排列图标")),
-            (10, t!("Упорядочить значки по размеру", "Sort icons by size", ja: "サイズ順にアイコンを並べ替え", pt: "Classificar ícones por tamanho", zh: "按大小排列图标")),
-            (11, t!("Выровнять значки", "Arrange icons", ja: "アイコンの整列", pt: "Alinhar ícones", zh: "排列图标")),
+            (8usize, t!("Упорядочить значки по имени", "Sort icons by name", ja: "名前順にアイコンを並べ替え", pt: "Classificar ícones por nome", zh: "按名称排列图标", es: "Ordenar íconos por nombre")),
+            (9, t!("Упорядочить значки по дате", "Sort icons by date", ja: "日付順にアイコンを並べ替え", pt: "Classificar ícones por data", zh: "按日期排列图标", es: "Ordenar íconos por fecha")),
+            (10, t!("Упорядочить значки по размеру", "Sort icons by size", ja: "サイズ順にアイコンを並べ替え", pt: "Classificar ícones por tamanho", zh: "按大小排列图标", es: "Ordenar íconos por tamaño")),
+            (11, t!("Выровнять значки", "Arrange icons", ja: "アイコンの整列", pt: "Alinhar ícones", zh: "排列图标", es: "Organizar íconos")),
         ];
         for (id, lbl) in sort { AppendMenuW(m, MF_STRING, id, w(lbl).as_ptr()); }
     }
     if !desk() {
-        let lbl = if group_on() { t!("Без группировки", "No grouping", ja: "グループ化しない", pt: "Sem agrupamento", zh: "不分组") } else { t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组") };
+        let lbl = if group_on() { t!("Без группировки", "No grouping", ja: "グループ化しない", pt: "Sem agrupamento", zh: "不分组", es: "Sin agrupar") } else { t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组", es: "Agrupar por fecha") };
         AppendMenuW(m, MF_STRING, 13, w(lbl).as_ptr());
     }
     if desk() {
-        let lbl = if small_marker().exists() { t!("Крупные значки", "Large icons", ja: "大きいアイコン", pt: "Ícones grandes", zh: "大图标") } else { t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标") };
+        let lbl = if small_marker().exists() { t!("Крупные значки", "Large icons", ja: "大きいアイコン", pt: "Ícones grandes", zh: "大图标", es: "Íconos grandes") } else { t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标", es: "Íconos pequeños") };
         AppendMenuW(m, MF_STRING, 12, w(lbl).as_ptr());
     }
     if desk() {
-        let lbl = if icons_hidden() { t!("Показать значки рабочего стола", "Show desktop icons", ja: "デスクトップ アイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标") } else { t!("Скрыть значки рабочего стола", "Hide desktop icons", ja: "デスクトップ アイコンを非表示", pt: "Ocultar ícones da área de trabalho", zh: "隐藏桌面图标") };
+        let lbl = if icons_hidden() { t!("Показать значки рабочего стола", "Show desktop icons", ja: "デスクトップ アイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标", es: "Mostrar íconos del escritorio") } else { t!("Скрыть значки рабочего стола", "Hide desktop icons", ja: "デスクトップ アイコンを非表示", pt: "Ocultar ícones da área de trabalho", zh: "隐藏桌面图标", es: "Ocultar íconos del escritorio") };
         AppendMenuW(m, MF_STRING, 7, w(lbl).as_ptr());
     }
     let mut pt: POINT = std::mem::zeroed();
@@ -487,8 +487,8 @@ unsafe fn bg_menu(h: HWND) {
             let drive: String = dir.to_string_lossy().chars().take(2).collect();
             if let Some(exe) = disk { let _ = std::process::Command::new(exe).arg(drive).spawn(); }
         }
-        1 => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
-        2 => new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false),
+        1 => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹", es: "Nueva carpeta"), true),
+        2 => new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt", es: "Nuevo documento de texto.txt"), false),
         3 => paste(h, &dir),
         5 => properties(&dir),
         _ => {}
@@ -670,16 +670,16 @@ fn search(h: HWND, q: &str) {
     if !indexed {
         // no rust-search installed: look through the current folder and below instead
         let (local, cut, flipped) = local_search(&cur_dir(), q);
-        if flipped { more = tf!(" для «{}»", " for \u{201C}{}\u{201D}", ja: "「{}」として", pt: " para \u{201C}{}\u{201D}", zh: "（按「{}」）", flip_layout(q)); } // typed in the wrong layout: shown what was meant
+        if flipped { more = tf!(" для «{}»", " for \u{201C}{}\u{201D}", ja: "「{}」として", pt: " para \u{201C}{}\u{201D}", zh: "（按「{}」）", es: " para «{}»", flip_layout(q)); } // typed in the wrong layout: shown what was meant
         rows = local;
-        if cut { more += t!(", остановлено: уточните запрос", ", stopped early: narrow the search", ja: "、中断: 検索範囲を狭めてください", pt: ", interrompido: refine a pesquisa", zh: "，已提前停止：请缩小搜索范围"); }
+        if cut { more += t!(", остановлено: уточните запрос", ", stopped early: narrow the search", ja: "、中断: 検索範囲を狭めてください", pt: ", interrompido: refine a pesquisa", zh: "，已提前停止：请缩小搜索范围", es: ", se detuvo antes: afina la búsqueda"); }
     }
     let n = rows.len();
-    let where_ = if indexed { "" } else { t!(" в этой папке", " in this folder", ja: "（このフォルダー内）", pt: " nesta pasta", zh: "（仅此文件夹）") };
+    let where_ = if indexed { "" } else { t!(" в этой папке", " in this folder", ja: "（このフォルダー内）", pt: " nesta pasta", zh: "（仅此文件夹）", es: " en esta carpeta") };
     let title = if n == 0 {
-        tf!("поиск: {} - ничего не найдено{}{}", "search: {} - nothing{}{}", ja: "検索: {} - 見つかりません{}{}", pt: "pesquisa: {} - nada encontrado{}{}", zh: "搜索：{} - 无结果{}{}", q, where_, "")
+        tf!("поиск: {} - ничего не найдено{}{}", "search: {} - nothing{}{}", ja: "検索: {} - 見つかりません{}{}", pt: "pesquisa: {} - nada encontrado{}{}", zh: "搜索：{} - 无结果{}{}", es: "búsqueda: {} - nada{}{}", q, where_, "")
     } else {
-        tf!("поиск: {} - совпадений: {}{}{}", "search: {} - {} hits{}{}", ja: "検索: {} - {} 件{}{}", pt: "pesquisa: {} - {} resultados{}{}", zh: "搜索：{} - {} 个结果{}{}", q, n, where_, more)
+        tf!("поиск: {} - совпадений: {}{}{}", "search: {} - {} hits{}{}", ja: "検索: {} - {} 件{}{}", pt: "pesquisa: {} - {} resultados{}{}", zh: "搜索：{} - {} 个结果{}{}", es: "búsqueda: {} - {} resultados{}{}", q, n, where_, more)
     };
     ui::set_search(Some(q.to_string()));
     unsafe { SetWindowTextW(h, w(&title).as_ptr()) };
@@ -743,6 +743,29 @@ fn selected() -> (HWND, PathBuf, Vec<PathBuf>) {
     })
 }
 
+/// The details columns, in the same order as Explorer's.
+fn col_title(i: usize) -> &'static str {
+    match i {
+        0 => t!("Имя", "Name", ja: "名前", pt: "Nome", zh: "名称", es: "Nombre"),
+        1 => t!("Дата изменения", "Date modified", ja: "更新日時", pt: "Data de modificação", zh: "修改日期", es: "Fecha de modificación"),
+        2 => t!("Тип", "Type", ja: "種類", pt: "Tipo", zh: "类型", es: "Tipo"),
+        _ => t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小", es: "Tamaño"),
+    }
+}
+
+/// The language changed while the window was open: the texts the list and the pane were made with, again.
+fn relabel() {
+    let list = ST.with_borrow(|st| st.list);
+    for i in 0..4 {
+        let mut t = w(col_title(i));
+        let mut c: LVCOLUMNW = unsafe { std::mem::zeroed() };
+        c.mask = LVCF_TEXT;
+        c.pszText = t.as_mut_ptr();
+        put(list, LVM_SETCOLUMNW, i, &c as *const _ as isize);
+    }
+    ui::nav_relabel();
+}
+
 fn col(list: HWND, i: i32, text: &str, width: i32, right: bool) {
     let mut t = w(text);
     let mut c: LVCOLUMNW = unsafe { std::mem::zeroed() };
@@ -788,14 +811,18 @@ fn toggle_view(h: HWND) {
     reload(h);
 }
 
-/// Address box in search mode ("? terms").
+/// Address box in search mode: empty, a grey hint says what typing does (a "?" in front still works, for those used to it).
 fn search_focus() {
     let edit = ST.with_borrow(|st| st.edit);
+    ui::set_asking(true);
+    let hint = w(t!("Поиск файлов на всех дисках", "Search files on every drive", ja: "すべてのドライブのファイルを検索", pt: "Pesquisar arquivos em todas as unidades", zh: "在所有驱动器中搜索文件", es: "Buscar archivos en todos los discos"));
     unsafe {
-        SetWindowTextW(edit, w("? ").as_ptr());
+        SetWindowTextW(edit, w("").as_ptr());
+        SendMessageW(edit, 0x1501, 1, hint.as_ptr() as isize); // EM_SETCUEBANNER, shown while focused too
         SetFocus(edit);
     }
-    put(edit, EM_SETSEL, 2, 2);
+    ui::set_asking(true); // SetFocus ran the focus handlers; the box is still taking a search
+    unsafe { InvalidateRect(ST.with_borrow(|st| st.tab), ptr::null(), 0) }; // the pill's magnifier
 }
 
 /// Wallpaper for the desktop window.
@@ -1217,6 +1244,70 @@ mod sh {
         let t: IDropTarget = DropT { main }.into();
         unsafe { RegisterDragDrop(HWND(list), &t) }
     }
+
+    /// Files dropped onto a tab go into that tab's folder; held over another tab for a moment, that tab opens, so they
+    /// can be dropped into its list (or a second window's) instead.
+    #[implement(IDropTarget)]
+    struct TabDrop { main: isize, chrome: isize }
+
+    thread_local! { static OVER: std::cell::Cell<Option<(usize, std::time::Instant)>> = const { std::cell::Cell::new(None) }; }
+
+    impl TabDrop {
+        /// The tab under the drag and its folder, when something can be dropped there (not into an open archive).
+        fn target(&self, pt: &POINTL) -> Option<(usize, PathBuf)> {
+            let mut p = windows_sys::Win32::Foundation::POINT { x: pt.x, y: pt.y };
+            let i = unsafe {
+                windows_sys::Win32::Graphics::Gdi::ScreenToClient(self.chrome as _, &mut p);
+                super::ui::tab_at(self.chrome as _, p.x, p.y)?
+            };
+            let dir = super::ST.with(|c| c.try_borrow().ok().and_then(|s| s.tabs.get(i).cloned()))?;
+            dir.is_dir().then_some((i, dir))
+        }
+
+        fn over(&self, k: MODIFIERKEYS_FLAGS, pt: &POINTL) -> DROPEFFECT {
+            let Some((i, _)) = self.target(pt) else {
+                OVER.set(None);
+                return DROPEFFECT_NONE;
+            };
+            let active = super::ST.with(|c| c.try_borrow().map_or(i, |s| s.active));
+            match OVER.get() {
+                Some((j, since)) if j == i => {
+                    if i != active && since.elapsed().as_millis() > 700 {
+                        // the tab opens under the pointer, like a browser's
+                        unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), super::ui::WM_UI, WPARAM(1), LPARAM(i as isize)); }
+                        OVER.set(None);
+                    }
+                }
+                _ => OVER.set(Some((i, std::time::Instant::now()))),
+            }
+            effect(k)
+        }
+    }
+
+    impl IDropTarget_Impl for TabDrop_Impl {
+        fn DragEnter(&self, _o: Ref<'_, IDataObject>, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> { unsafe { *e = self.over(k, pt) }; Ok(()) }
+        fn DragOver(&self, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> { unsafe { *e = self.over(k, pt) }; Ok(()) }
+        fn DragLeave(&self) -> Result<()> { OVER.set(None); Ok(()) }
+        fn Drop(&self, o: Ref<'_, IDataObject>, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> {
+            OVER.set(None);
+            unsafe { *e = DROPEFFECT_NONE };
+            let Some((_, to)) = self.target(pt) else { return Ok(()) };
+            // already there, or a folder into itself: nothing to move
+            let paths: Vec<PathBuf> = hdrop_paths(o.ok()?)?.into_iter().filter(|p| p.parent() != Some(to.as_path()) && !to.starts_with(p)).collect();
+            if paths.is_empty() { return Ok(()); }
+            // like the list: same drive moves, other drive copies, Ctrl forces copy
+            let copy = k.0 & 8 != 0 || paths.first().and_then(|p| p.components().next()) != to.components().next();
+            unsafe { *e = if copy { DROPEFFECT_COPY } else { DROPEFFECT_MOVE } };
+            let _ = fileop(self.main as *mut c_void, if copy { Op::Copy } else { Op::Move }, &paths, &to);
+            unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), WM_APP, WPARAM(0), LPARAM(0)); }
+            Ok(())
+        }
+    }
+
+    pub fn register_tab_drop(chrome: *mut c_void, main: isize) -> Result<()> {
+        let t: IDropTarget = TabDrop { main, chrome: chrome as isize }.into();
+        unsafe { RegisterDragDrop(HWND(chrome), &t) }
+    }
 }
 
 
@@ -1524,10 +1615,23 @@ unsafe extern "system" fn edit_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> 
 
 unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        if !desk() {
+            // the chrome child decides what of the tab row is caption (HTTRANSPARENT): here nothing else is interactive
+            if let Some(r) = winrust_common::caption::handle(h, m, wp, lp, ui::CAP, |_, _| false) {
+                return r;
+            }
+        }
         if m == winrust_common::style::msg() {
-            // the topbar switched the WinRust style: take it now (the desktop's list keeps its see-through colours)
+            // the topbar switched the WinRust style, or a WinRust window the language: take it now (the desktop's list keeps
+            // its see-through colours)
+            let was = winrust_common::lang();
             winrust_common::style::reload();
-            if desk() { InvalidateRect(h, ptr::null(), 1); } else { ui::restyle(h); }
+            if desk() {
+                InvalidateRect(h, ptr::null(), 1);
+            } else {
+                if winrust_common::lang() != was { relabel(); }
+                ui::restyle(h);
+            }
             return 0;
         }
         match m {
@@ -1573,15 +1677,15 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     let _ = TX.set(sh::start_thumbs(h as isize));
                     ST.with_borrow_mut(|st| st.himl = himl as isize);
                     // the same columns, in the same order, as Explorer's details view
-                    col(list, 0, t!("Имя", "Name", ja: "名前", pt: "Nome", zh: "名称"), ui::sc(360), false);
-                    col(list, 1, t!("Дата изменения", "Date modified", ja: "更新日時", pt: "Data de modificação", zh: "修改日期"), ui::sc(160), false);
-                    col(list, 2, t!("Тип", "Type", ja: "種類", pt: "Tipo", zh: "类型"), ui::sc(140), false);
-                    col(list, 3, t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小"), ui::sc(96), true);
+                    for (i, (width, right)) in [(360, false), (160, false), (140, false), (96, true)].into_iter().enumerate() {
+                        col(list, i as i32, col_title(i), ui::sc(width), right);
+                    }
                     ui::style_list(list);
                 }
                 ST.with_borrow_mut(|st| { st.list = list; st.tab = tab; st.edit = edit; st.tabs = vec![PathBuf::new()]; });
                 if !desk() { ui::place_edit(tab); }
                 let _ = sh::register_drop(list as _, h as isize);
+                if !desk() { let _ = sh::register_tab_drop(tab as _, h as isize); } // files dropped onto a tab go to its folder
                 if desk() && icons_hidden() { ShowWindow(list, SW_HIDE); }
                 // live wallpaper: the list is see-through (colour key), so over empty desktop OLE finds the wallpaper window under it,
                 // and walks up from there to the desktop window: it must accept the drop too
@@ -1753,6 +1857,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     LVN_KEYDOWN => {
                         let vk = (*(lp as *const NMLVKEYDOWN)).wVKey as u32;
                         let ctrl = GetKeyState(VK_CONTROL as i32) < 0;
+                        let shift = GetKeyState(0x10) < 0; // VK_SHIFT
                         if desk() && matches!(vk, 0x08 | 0x46 | 0x4D | 0x54 | 0x57 | 0x09 | 0x4C | 0x73) { return 0; } // browsing keys make no sense on the desktop
                         let (list, dir, paths) = selected();
                         match vk {
@@ -1785,7 +1890,9 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 return 0;
                             }
                             0x56 if ctrl => paste(h, &dir),
-                            0x4E if ctrl => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
+                            // Ctrl+N: another tab, like the + button; Ctrl+Shift+N: a new folder, as in Explorer (the desktop has no tabs)
+                            0x4E if ctrl && !shift && !desk() => tab_new(),
+                            0x4E if ctrl => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹", es: "Nueva carpeta"), true),
                             0x48 if ctrl => { SHOW_HIDDEN.fetch_xor(true, Relaxed); } // Ctrl+H: hidden files
                             0x74 => {} // F5: just the reload below
                             0x4D if ctrl => { toggle_view(h); return 0; } // Ctrl+M: details <-> thumbnails
@@ -1858,7 +1965,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     let n = GetWindowTextW(edit, buf.as_mut_ptr(), buf.len() as i32) as usize;
                     let p = PathBuf::from(String::from_utf16_lossy(&buf[..n]).trim().trim_matches('"'));
                     let text = String::from_utf16_lossy(&buf[..n]);
-                    if let Some(q) = text.trim().strip_prefix('?') {
+                    let query = if ui::asking() { Some(text.trim().trim_start_matches('?')) } else { text.trim().strip_prefix('?') };
+                    if let Some(q) = query {
                         if !q.trim().is_empty() { search(h, q.trim()); SetFocus(list); return 0; } // keep the query in the bar
                     } else if p.is_dir() || zipx::split_zip(&p).is_some() { load(h, p); } // also a path inside a .zip
                 }
@@ -1937,6 +2045,7 @@ fn main() {
         } else {
             // where it was last closed, maximized again if it was (#71); a first start gets the default size
             let win = CreateWindowExW(0, cls.as_ptr(), ptr::null(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, ui::sc(1000), ui::sc(660), 0 as _, 0 as _, inst, ptr::null());
+            winrust_common::caption::install(win);
             match saved_place() {
                 // the same API that saved it: rcNormalPosition is in work-area coordinates, which CreateWindow does not use
                 Some((max, r)) => {
