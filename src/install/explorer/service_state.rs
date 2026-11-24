@@ -28,17 +28,18 @@ pub(crate) fn restore_start_and_state(
     // without stopping it before installing rust-explorer.
     const DISABLED: u32 = 4;
     if start == DISABLED && state == ServiceState::Running {
-        if needs_temporary_enable()? {
-            const MANUAL: u32 = 3;
-            let started = set_start(MANUAL).and_then(|_| set_state(state));
-            let disabled = set_start(DISABLED);
-            return match (started, disabled) {
-                (Err(start), Err(mode)) => Err(format!("{start}; {mode}")),
-                (result, mode) => result.and(mode),
-            };
-        }
-        set_state(state)?;
-        return set_start(start);
+        let started = needs_temporary_enable().and_then(|enable| {
+            if enable {
+                const MANUAL: u32 = 3;
+                set_start(MANUAL)?;
+            }
+            set_state(state)
+        });
+        let disabled = set_start(DISABLED);
+        return match (started, disabled) {
+            (Err(start), Err(mode)) => Err(format!("{start}; {mode}")),
+            (result, mode) => result.and(mode),
+        };
     }
 
     set_start(start)?;
@@ -74,13 +75,19 @@ mod tests {
     }
 
     #[test]
-    fn takes_no_follow_up_action_when_a_step_fails() {
+    fn failed_startup_restore_prevents_runtime_change() {
         let failed = restore_start_and_state(3, ServiceState::Running, || Ok(false),
             |_| Err("cannot restore startup mode".into()), |_| panic!("service state changed"));
         assert_eq!(failed, Err("cannot restore startup mode".into()));
+    }
+
+    #[test]
+    fn restores_disabled_mode_when_start_fails_without_temporary_enable() {
+        let start = Cell::new(3);
         let failed = restore_start_and_state(4, ServiceState::Running, || Ok(false),
-            |_| panic!("disabled service after start failure"), |_| Err("cannot start service".into()));
+            |mode| { start.set(mode); Ok(()) }, |_| Err("cannot start service".into()));
         assert_eq!(failed, Err("cannot start service".into()));
+        assert_eq!(start.get(), 4);
     }
 
     #[test]
