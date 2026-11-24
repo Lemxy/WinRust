@@ -78,3 +78,29 @@ pub fn subkeys(root: HKEY, key: &str) -> Vec<String> {
     }
     out
 }
+
+/// The current wallpaper's file name ("" when none or a solid colour).
+pub fn wallpaper_name() -> String {
+    let p = string_long(HKEY_CURRENT_USER, r"Control Panel\Desktop", "WallPaper").unwrap_or_default();
+    p.rsplit('\\').next().unwrap_or_default().to_string()
+}
+
+/// Lets the user pick a picture and sets it as the wallpaper. Err(()) when cancelled or refused.
+pub fn pick_wallpaper(owner: HWND) -> Result<(), ()> {
+    use windows_sys::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+    let mut file = [0u16; 1024];
+    let filter: Vec<u16> = "Images\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.webp\0\0".encode_utf16().collect();
+    let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    ofn.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = filter.as_ptr();
+    ofn.lpstrFile = file.as_mut_ptr();
+    ofn.nMaxFile = file.len() as u32;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if unsafe { GetOpenFileNameW(&mut ofn) } == 0 {
+        return Err(());
+    }
+    // SPI_SETDESKWALLPAPER writes the registry value and tells the desktop (rust-explorer follows it like explorer)
+    let ok = unsafe { SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, file.as_mut_ptr() as _, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE) };
+    if ok != 0 { Ok(()) } else { Err(()) }
+}

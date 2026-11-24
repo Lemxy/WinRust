@@ -18,6 +18,7 @@
 //   drag-to-position / auto-arrange, items from the public desktop can't be renamed.
 #![windows_subsystem = "windows"]
 use std::{cell::RefCell, env, fs, os::windows::fs::MetadataExt, path::{Path, PathBuf}, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed}};
+use winrust_common::{t, tf};
 use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{GetStockObject, InvalidateRect}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
 
 mod zipx; // our own ZIP engine (deflate, inflate, container)
@@ -140,7 +141,19 @@ fn sort_rows(rows: &mut [Row], col: usize, asc: bool) {
 // ---------- grouping by date ("Group by date" in the folder's menu): Today, Yesterday, Earlier this week, ... ----------
 
 const DAY: i64 = 864_000_000_000; // FILETIME ticks per day
-const BUCKETS: [&str; 8] = ["Today", "Yesterday", "Earlier this week", "Last week", "Earlier this month", "Last month", "Earlier this year", "A long time ago"];
+/// The date headings of "Group by date", in bucket order: shown above the rows of each group.
+fn bucket_name(i: usize) -> &'static str {
+    [
+        t!("Сегодня", "Today", ja: "今日", pt: "Hoje", zh: "今天"),
+        t!("Вчера", "Yesterday", ja: "昨日", pt: "Ontem", zh: "昨天"),
+        t!("Ранее на этой неделе", "Earlier this week", ja: "今週", pt: "No início desta semana", zh: "本周早些时候"),
+        t!("На прошлой неделе", "Last week", ja: "先週", pt: "Semana passada", zh: "上周"),
+        t!("Ранее в этом месяце", "Earlier this month", ja: "今月", pt: "No início deste mês", zh: "本月早些时候"),
+        t!("В прошлом месяце", "Last month", ja: "先月", pt: "Mês passado", zh: "上个月"),
+        t!("Ранее в этом году", "Earlier this year", ja: "今年", pt: "No início deste ano", zh: "今年早些时候"),
+        t!("Давно", "A long time ago", ja: "ずっと前", pt: "Há muito tempo", zh: "很久以前"),
+    ][i]
+}
 
 thread_local! {
     static BCTX: std::cell::Cell<(i64, i64)> = const { std::cell::Cell::new((0, 0)) }; // (today's local day number, local - UTC in ticks)
@@ -184,7 +197,7 @@ fn add_headers(rows: &mut Vec<Row>) {
         let b = bucket(r.time);
         if b != last {
             last = b;
-            out.push(Row { name: format!("?{}", BUCKETS[b as usize]), dir: false, size: 0, time: 0, icon: -1, thumb: -1, hdr: true });
+            out.push(Row { name: format!("?{}", bucket_name(b as usize)), dir: false, size: 0, time: 0, icon: -1, thumb: -1, hdr: true });
         }
         out.push(r);
     }
@@ -193,9 +206,9 @@ fn add_headers(rows: &mut Vec<Row>) {
 
 /// Explorer's "Type" column in short form: "File folder", "TXT file", "File".
 fn type_text(name: &str, dir: bool) -> String {
-    if dir { return "File folder".into(); }
+    if dir { return t!("Папка с файлами", "File folder", ja: "ファイル フォルダー", pt: "Pasta de arquivos", zh: "文件夹").into(); }
     let file = name.rsplit('\\').next().unwrap_or(name);
-    match file.rsplit_once('.') { Some((stem, e)) if !stem.is_empty() && !e.is_empty() => format!("{} file", e.to_uppercase()), _ => "File".into() }
+    match file.rsplit_once('.') { Some((stem, e)) if !stem.is_empty() && !e.is_empty() => tf!("Файл {}", "{} file", ja: "{} ファイル", pt: "Arquivo {}", zh: "{} 文件", e.to_uppercase()), _ => t!("Файл", "File", ja: "ファイル", pt: "Arquivo", zh: "文件").into() }
 }
 
 /// Explorer shows file sizes in KB; the bigger ones read better in MB / GB.
@@ -330,7 +343,12 @@ unsafe fn activate(h: HWND, p: PathBuf, is_dir: bool) {
 fn zip_menu(h: HWND, paths: &[PathBuf]) {
     let id = unsafe {
         let m = CreatePopupMenu();
-        for (i, t) in [(1usize, "Open"), (2, "Copy"), (3, "Extract here")] { AppendMenuW(m, MF_STRING, i, w(t).as_ptr()); }
+        let items = [
+            (1usize, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")),
+            (2, t!("Копировать", "Copy", ja: "コピー", pt: "Copiar", zh: "复制")),
+            (3, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处")),
+        ];
+        for (i, lbl) in items { AppendMenuW(m, MF_STRING, i, w(lbl).as_ptr()); }
         let mut pt: POINT = std::mem::zeroed();
         GetCursorPos(&mut pt);
         let id = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h, ptr::null());
@@ -360,13 +378,13 @@ fn zip_menu(h: HWND, paths: &[PathBuf]) {
 /// The shell menu for the selection, with our "Compress to ZIP" / "Extract here" on top.
 fn item_menu(h: HWND, dir: &Path, paths: &[PathBuf]) {
     if zipx::split_zip(dir).is_some() { return zip_menu(h, paths); }
-    let mut extra = vec![(MENU_ZIP, "Compress to ZIP")];
+    let mut extra = vec![(MENU_ZIP, t!("Сжать в ZIP", "Compress to ZIP", ja: "ZIP に圧縮", pt: "Compactar em ZIP", zh: "压缩为 ZIP"))];
     if paths.iter().all(|p| p.is_file() && jobs::is_archive(p)) {
-        extra.insert(0, (MENU_EXTRACT, "Extract here"));
+        extra.insert(0, (MENU_EXTRACT, t!("Извлечь сюда", "Extract here", ja: "ここに展開", pt: "Extrair aqui", zh: "解压到此处")));
     }
     // the shell menu has no Rename here (it needs the shell's own folder view to answer it): the same edit box as F2
-    if paths.len() == 1 { extra.push((MENU_RENAME, "Rename")); }
-    if let [p] = paths { if p.is_dir() { extra.push((MENU_PIN, if ui::pins().contains(p) { "Unpin from Quick access" } else { "Pin to Quick access" })); } }
+    if paths.len() == 1 { extra.push((MENU_RENAME, t!("Переименовать", "Rename", ja: "名前の変更", pt: "Renomear", zh: "重命名"))); }
+    if let [p] = paths { if p.is_dir() { extra.push((MENU_PIN, if ui::pins().contains(p) { t!("Открепить от быстрого доступа", "Unpin from Quick access", ja: "クイック アクセスからピン留めを解除", pt: "Desafixar do Acesso rápido", zh: "从快速访问取消固定") } else { t!("Закрепить в быстром доступе", "Pin to Quick access", ja: "クイック アクセスにピン留め", pt: "Fixar no Acesso rápido", zh: "固定到快速访问") })); } }
     let picked = sh::show(h, paths, if jobs::busy() { &[] } else { &extra }).ok().flatten();
     match picked {
         Some(MENU_PIN) => ui::toggle_pin(&paths[0]),
@@ -413,13 +431,37 @@ fn set_icons_hidden(hide: bool) {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn bg_menu(h: HWND) {
     let m = CreatePopupMenu();
-    for (id, t) in [(1usize, "New folder"), (2, "New text file"), (3, "Paste"), (4, "Refresh"), (5, "Properties")] { AppendMenuW(m, MF_STRING, id, w(t).as_ptr()); }
+    let items = [
+        (1usize, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹")),
+        (2, t!("Новый текстовый файл", "New text file", ja: "新しいテキスト ドキュメント", pt: "Novo arquivo de texto", zh: "新建文本文件")),
+        (3, t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴")),
+        (4, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新")),
+        (5, t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性")),
+    ];
+    for (id, lbl) in items { AppendMenuW(m, MF_STRING, id, w(lbl).as_ptr()); }
     let disk = tool("wiztree");
-    if disk.is_some() { AppendMenuW(m, MF_STRING, 6, w("Disk usage (WinRust Disk)").as_ptr()); }
-    if desk() { for (id, l) in [(8usize, "Sort icons by name"), (9, "Sort icons by date"), (10, "Sort icons by size"), (11, "Arrange icons")] { AppendMenuW(m, MF_STRING, id, w(l).as_ptr()); } }
-    if !desk() { AppendMenuW(m, MF_STRING, 13, w(if group_on() { "No grouping" } else { "Group by date" }).as_ptr()); }
-    if desk() { AppendMenuW(m, MF_STRING, 12, w(if small_marker().exists() { "Large icons" } else { "Small icons" }).as_ptr()); }
-    if desk() { AppendMenuW(m, MF_STRING, 7, w(if icons_hidden() { "Show desktop icons" } else { "Hide desktop icons" }).as_ptr()); }
+    if disk.is_some() { AppendMenuW(m, MF_STRING, 6, w(t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）")).as_ptr()); }
+    if desk() {
+        let sort = [
+            (8usize, t!("Упорядочить значки по имени", "Sort icons by name", ja: "名前順にアイコンを並べ替え", pt: "Classificar ícones por nome", zh: "按名称排列图标")),
+            (9, t!("Упорядочить значки по дате", "Sort icons by date", ja: "日付順にアイコンを並べ替え", pt: "Classificar ícones por data", zh: "按日期排列图标")),
+            (10, t!("Упорядочить значки по размеру", "Sort icons by size", ja: "サイズ順にアイコンを並べ替え", pt: "Classificar ícones por tamanho", zh: "按大小排列图标")),
+            (11, t!("Выровнять значки", "Arrange icons", ja: "アイコンの整列", pt: "Alinhar ícones", zh: "排列图标")),
+        ];
+        for (id, lbl) in sort { AppendMenuW(m, MF_STRING, id, w(lbl).as_ptr()); }
+    }
+    if !desk() {
+        let lbl = if group_on() { t!("Без группировки", "No grouping", ja: "グループ化しない", pt: "Sem agrupamento", zh: "不分组") } else { t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组") };
+        AppendMenuW(m, MF_STRING, 13, w(lbl).as_ptr());
+    }
+    if desk() {
+        let lbl = if small_marker().exists() { t!("Крупные значки", "Large icons", ja: "大きいアイコン", pt: "Ícones grandes", zh: "大图标") } else { t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标") };
+        AppendMenuW(m, MF_STRING, 12, w(lbl).as_ptr());
+    }
+    if desk() {
+        let lbl = if icons_hidden() { t!("Показать значки рабочего стола", "Show desktop icons", ja: "デスクトップ アイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标") } else { t!("Скрыть значки рабочего стола", "Hide desktop icons", ja: "デスクトップ アイコンを非表示", pt: "Ocultar ícones da área de trabalho", zh: "隐藏桌面图标") };
+        AppendMenuW(m, MF_STRING, 7, w(lbl).as_ptr());
+    }
     let mut pt: POINT = std::mem::zeroed();
     GetCursorPos(&mut pt);
     let id = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h, ptr::null());
@@ -445,8 +487,8 @@ unsafe fn bg_menu(h: HWND) {
             let drive: String = dir.to_string_lossy().chars().take(2).collect();
             if let Some(exe) = disk { let _ = std::process::Command::new(exe).arg(drive).spawn(); }
         }
-        1 => new_entry(&dir, "New folder", true),
-        2 => new_entry(&dir, "New text document.txt", false),
+        1 => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
+        2 => new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false),
         3 => paste(h, &dir),
         5 => properties(&dir),
         _ => {}
@@ -628,13 +670,17 @@ fn search(h: HWND, q: &str) {
     if !indexed {
         // no rust-search installed: look through the current folder and below instead
         let (local, cut, flipped) = local_search(&cur_dir(), q);
-        if flipped { more = format!(" for \u{201C}{}\u{201D}", flip_layout(q)); } // typed in the wrong layout: shown what was meant
+        if flipped { more = tf!(" для «{}»", " for \u{201C}{}\u{201D}", ja: "「{}」として", pt: " para \u{201C}{}\u{201D}", zh: "（按「{}」）", flip_layout(q)); } // typed in the wrong layout: shown what was meant
         rows = local;
-        if cut { more += ", stopped early: narrow the search"; }
+        if cut { more += t!(", остановлено: уточните запрос", ", stopped early: narrow the search", ja: "、中断: 検索範囲を狭めてください", pt: ", interrompido: refine a pesquisa", zh: "，已提前停止：请缩小搜索范围"); }
     }
     let n = rows.len();
-    let where_ = if indexed { "" } else { " in this folder" };
-    let title = if n == 0 { format!("search: {q} - nothing{where_}") } else { format!("search: {q} - {n} hits{where_}{more}") };
+    let where_ = if indexed { "" } else { t!(" в этой папке", " in this folder", ja: "（このフォルダー内）", pt: " nesta pasta", zh: "（仅此文件夹）") };
+    let title = if n == 0 {
+        tf!("поиск: {} - ничего не найдено{}{}", "search: {} - nothing{}{}", ja: "検索: {} - 見つかりません{}{}", pt: "pesquisa: {} - nada encontrado{}{}", zh: "搜索：{} - 无结果{}{}", q, where_, "")
+    } else {
+        tf!("поиск: {} - совпадений: {}{}{}", "search: {} - {} hits{}{}", ja: "検索: {} - {} 件{}{}", pt: "pesquisa: {} - {} resultados{}{}", zh: "搜索：{} - {} 个结果{}{}", q, n, where_, more)
+    };
     ui::set_search(Some(q.to_string()));
     unsafe { SetWindowTextW(h, w(&title).as_ptr()) };
     let list = ST.with_borrow_mut(|st| { st.rows = rows; st.list });
@@ -1527,7 +1573,10 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     let _ = TX.set(sh::start_thumbs(h as isize));
                     ST.with_borrow_mut(|st| st.himl = himl as isize);
                     // the same columns, in the same order, as Explorer's details view
-                    col(list, 0, "Name", ui::sc(360), false); col(list, 1, "Date modified", ui::sc(160), false); col(list, 2, "Type", ui::sc(140), false); col(list, 3, "Size", ui::sc(96), true);
+                    col(list, 0, t!("Имя", "Name", ja: "名前", pt: "Nome", zh: "名称"), ui::sc(360), false);
+                    col(list, 1, t!("Дата изменения", "Date modified", ja: "更新日時", pt: "Data de modificação", zh: "修改日期"), ui::sc(160), false);
+                    col(list, 2, t!("Тип", "Type", ja: "種類", pt: "Tipo", zh: "类型"), ui::sc(140), false);
+                    col(list, 3, t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小"), ui::sc(96), true);
                     ui::style_list(list);
                 }
                 ST.with_borrow_mut(|st| { st.list = list; st.tab = tab; st.edit = edit; st.tabs = vec![PathBuf::new()]; });
@@ -1736,7 +1785,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 return 0;
                             }
                             0x56 if ctrl => paste(h, &dir),
-                            0x4E if ctrl => new_entry(&dir, "New folder", true),
+                            0x4E if ctrl => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
                             0x48 if ctrl => { SHOW_HIDDEN.fetch_xor(true, Relaxed); } // Ctrl+H: hidden files
                             0x74 => {} // F5: just the reload below
                             0x4D if ctrl => { toggle_view(h); return 0; } // Ctrl+M: details <-> thumbnails
@@ -2014,11 +2063,12 @@ mod tests {
 
     #[test]
     fn type_and_size_read_like_explorers() {
-        assert_eq!(type_text("x", true), "File folder");
-        assert_eq!(type_text("a.txt", false), "TXT file");
-        assert_eq!(type_text("C:\\d\\b.tar.gz", false), "GZ file");
-        assert_eq!(type_text(".gitignore", false), "File"); // a dot file has no extension
-        assert_eq!(type_text("Makefile", false), "File");
+        // the tests run in Russian (lang!() in a test build), like Explorer's own Type column
+        assert_eq!(type_text("x", true), "Папка с файлами");
+        assert_eq!(type_text("a.txt", false), "Файл TXT");
+        assert_eq!(type_text("C:\\d\\b.tar.gz", false), "Файл GZ");
+        assert_eq!(type_text(".gitignore", false), "Файл"); // a dot file has no extension
+        assert_eq!(type_text("Makefile", false), "Файл");
         assert_eq!(size_text(1), "1 KB");
         assert_eq!(size_text(2048), "2 KB");
         assert_eq!(size_text(5 << 20), "5.0 MB");
