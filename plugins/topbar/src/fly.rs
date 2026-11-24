@@ -803,6 +803,8 @@ thread_local! {
     static MITEMS: RefCell<Vec<MItem>> = const { RefCell::new(Vec::new()) };
     static MHEAD: RefCell<Option<(HICON, &'static str, String, String)>> = const { RefCell::new(None) }; // icon (or a glyph when null), title, subtitle
     static MPICK: RefCell<Option<Pick>> = const { RefCell::new(None) };
+    static REPLACING: Cell<bool> = const { Cell::new(false) }; // a menu pick is running: a menu it opens takes this one's place
+    static REUSED: Cell<bool> = const { Cell::new(false) }; // ...and it did: the window on screen now shows that menu
 }
 const MW: i32 = 272; // menu width
 const MROW: i32 = 38;
@@ -811,6 +813,23 @@ const MHEAD_H: i32 = 58;
 /// Menu flyout above the bar, centered on screen x `cx`. `pick` gets the index of the chosen item (not called on cancel).
 /// A right click while a menu is open replaces it.
 pub fn menu(cx: i32, head: Option<(HICON, &'static str, String, String)>, items: Vec<MItem>, pick: impl FnOnce(usize) + 'static) {
+    // opened from a pick of the menu on screen (the next settings page, the same page with a switch flipped): the same
+    // window shows the new items where it is, resized, redrawn at once. No new window: a new one, however quick, is blank
+    // for a frame, and closing and opening again made the menu blink on every click
+    if REPLACING.get() && is_open(Kind::Menu) {
+        let same_page = MHEAD.with_borrow(|h| h.as_ref().map(|h| h.2.clone())) == head.as_ref().map(|h| h.2.clone());
+        MITEMS.set(items);
+        MHEAD.set(head);
+        MPICK.set(Some(Box::new(pick)));
+        MENU_X.set(if vert() { cx } else { cx - sc(MW) / 2 });
+        if !same_page {
+            SCROLL.set(0);
+            SEL.set(0);
+        }
+        REUSED.set(true);
+        unsafe { reflow_menu() };
+        return;
+    }
     if is_open(Kind::Menu) {
         close_now();
     }
@@ -819,6 +838,20 @@ pub fn menu(cx: i32, head: Option<(HICON, &'static str, String, String)>, items:
     MPICK.set(Some(Box::new(pick)));
     MENU_X.set(if vert() { cx } else { cx - sc(MW) / 2 }); // along a side bar it holds the anchor y
     toggle(Kind::Menu);
+}
+
+/// The open menu's window fitted to its new items: size, place above the bar, rounded corners; painted before it returns.
+unsafe fn reflow_menu() {
+    let hw = FH.get();
+    let (w, h) = (sc(size(Kind::Menu).0), sc(size(Kind::Menu).1));
+    let sw = GetSystemMetrics(SM_CXSCREEN);
+    let x = if vert() { side_x(w) } else { MENU_X.get().min(sw - w - sc(8)).max(sc(8)) };
+    let fy = if vert() { (MENU_X.get() - h / 2).clamp(sc(8), GetSystemMetrics(SM_CYSCREEN) - h - sc(8)) } else { pop_y(h) };
+    FIN.set((x, fy));
+    SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 0);
+    SetWindowPos(hw, null_mut(), x, fy, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    InvalidateRect(hw, null(), 0);
+    UpdateWindow(hw);
 }
 
 /// (top, bottom) of each menu item in logical px, and the panel height.
@@ -1123,9 +1156,14 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
         },
         Act::Mute => toggle_mute(),
         Act::Menu(i) => {
-            close();
+            REUSED.set(false);
             if let Some(pick) = MPICK.take() {
+                REPLACING.set(true);
                 pick(i as usize);
+                REPLACING.set(false);
+            }
+            if !REUSED.get() {
+                close(); // the pick opened no other menu: this one fades out as usual
             }
         }
         Act::Settings(u) => {

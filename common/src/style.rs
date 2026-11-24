@@ -202,6 +202,27 @@ pub fn set_tray_all(on: bool) {
     TRAY_ALL.set(on);
 }
 
+static SEARCH_BTN: Flag = Flag::new("bar-search.txt");
+static TASKVIEW_BTN: Flag = Flag::new("bar-taskview.txt");
+
+/// The bar's search button (left of Start). On unless switched off.
+pub fn show_search() -> bool {
+    SEARCH_BTN.get(|| true)
+}
+
+pub fn set_show_search(on: bool) {
+    SEARCH_BTN.set(on);
+}
+
+/// The bar's Task View button (virtual desktops, Win+Tab). On unless switched off.
+pub fn show_taskview() -> bool {
+    TASKVIEW_BTN.get(|| true)
+}
+
+pub fn set_show_taskview(on: bool) {
+    TASKVIEW_BTN.set(on);
+}
+
 static BLUR: Flag = Flag::new("bar-blur.txt");
 
 /// Windows' own blur behind the bar (the one its taskbar uses). Shows through a see-through bar. Off unless switched on.
