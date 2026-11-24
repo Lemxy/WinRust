@@ -305,67 +305,62 @@ fn selected_trash() -> Vec<(PathBuf, Trash)> {
     })
 }
 
-/// Puts the selected items back where they came from; the folders are made again if needed. A name that is taken by
-/// now gets the usual " (2)" suffix instead of overwriting anything.
+/// Outcome of a background Recycle Bin restore / empty (WM_TRASH_DONE, lp): `emptied` picks the message.
+struct TrashDone { emptied: bool, ok: usize, bad: usize }
+
+/// Puts the selected items back where they came from on a worker thread; the folders are made again if needed. A name
+/// that is taken by now gets the usual " (2)" suffix instead of overwriting anything. The result arrives as WM_TRASH_DONE.
 fn trash_restore(h: HWND) {
     let picks = selected_trash();
     if picks.is_empty() {
         unsafe { ui::notice(h, t!("Выберите элементы для восстановления", "Select the items to restore", ja: "復元する項目を選択してください", pt: "Selecione os itens que deseja restaurar", zh: "请选择要还原的项目")) };
         return;
     }
-    let (mut ok, mut bad) = (0usize, 0usize);
-    for (orig, t) in picks {
-        let parent = orig.parent().map_or_else(|| PathBuf::from("C:\\"), |p| p.to_path_buf());
-        let _ = fs::create_dir_all(&parent);
-        let name = orig.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let dest = jobs::free_name(&parent, &name, false);
-        match fs::rename(&t.r, &dest) {
-            Ok(_) => { let _ = fs::remove_file(&t.i); ok += 1; }
-            Err(_) => bad += 1, // no permission, or the payload is gone: the item stays in the bin
+    let hwnd = h as isize;
+    std::thread::spawn(move || {
+        let (mut ok, mut bad) = (0usize, 0usize);
+        for (orig, t) in picks {
+            let parent = orig.parent().map_or_else(|| PathBuf::from("C:\\"), |p| p.to_path_buf());
+            let _ = fs::create_dir_all(&parent);
+            let name = orig.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let dest = jobs::free_name(&parent, &name, false);
+            match fs::rename(&t.r, &dest) {
+                Ok(_) => { let _ = fs::remove_file(&t.i); ok += 1; }
+                Err(_) => bad += 1, // no permission, or the payload is gone: the item stays in the bin
+            }
         }
-    }
-    reload(h); // the restored rows are gone from the bin; the message must not be wiped by that load
-    unsafe {
-        let msg = if bad > 0 {
-            tf!("восстановлено: {}, не удалось: {}", "restored: {}, failed: {}", ja: "復元: {} 件、失敗: {} 件", pt: "restaurados: {}, falhas: {}", zh: "已还原 {} 项，失败 {} 项", ok, bad)
-        } else {
-            tf!("восстановлено: {}", "restored: {}", ja: "復元: {} 件", pt: "restaurados: {}", zh: "已还原 {} 项", ok)
-        };
-        ui::notice(h, msg);
-    }
+        let done = Box::new(TrashDone { emptied: false, ok, bad });
+        unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
+    });
 }
 
-/// Deletes the payload and the metadata of every item in every bin, after a confirmation. Returns nothing; the outcome
-/// goes to the status line (count or failures).
+/// Deletes the payload and the metadata of every item in every bin, after a confirmation. The walk runs on a worker (a
+/// bin with 200 GB in it would freeze the window); the outcome comes back as WM_TRASH_DONE and goes to the status line.
 fn trash_empty(h: HWND) {
     unsafe {
         let q = t!("Удалить все элементы корзины безвозвратно?", "Permanently delete all items in the Recycle Bin?", ja: "ごみ箱のすべての項目を完全に削除しますか?", pt: "Excluir permanentemente todos os itens da Lixeira?", zh: "要永久删除回收站中的所有项目吗？");
         let title = display_dir(&trash_dir());
         if MessageBoxW(h, w(q).as_ptr(), w(&title).as_ptr(), MB_YESNO | MB_ICONWARNING) != IDYES { return; }
     }
-    let (mut n, mut bad) = (0usize, 0usize);
-    for bin in trash_bins() {
-        let Ok(sids) = fs::read_dir(&bin) else { bad += 1; continue };
-        for sid in sids.flatten() {
-            let Ok(entries) = fs::read_dir(sid.path()) else { bad += 1; continue };
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if !(name.starts_with("$I") || name.starts_with("$R")) { continue; }
-                let p = e.path();
-                let done = if p.is_dir() { fs::remove_dir_all(&p).is_ok() } else { fs::remove_file(&p).is_ok() };
-                if done { n += 1 } else { bad += 1 }
+    let hwnd = h as isize;
+    std::thread::spawn(move || {
+        let (mut n, mut bad) = (0usize, 0usize);
+        for bin in trash_bins() {
+            let Ok(sids) = fs::read_dir(&bin) else { bad += 1; continue };
+            for sid in sids.flatten() {
+                let Ok(entries) = fs::read_dir(sid.path()) else { bad += 1; continue };
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if !(name.starts_with("$I") || name.starts_with("$R")) { continue; }
+                    let p = e.path();
+                    let done = if p.is_dir() { fs::remove_dir_all(&p).is_ok() } else { fs::remove_file(&p).is_ok() };
+                    if done { n += 1 } else { bad += 1 }
+                }
             }
         }
-    }
-    reload(h); // the bin is empty now; the message must not be wiped by that load
-    unsafe {
-        let msg = if bad > 0 {
-            tf!("корзина очищена: {}, ошибок: {}", "emptied: {}, failed: {}", ja: "削除: {} 件、失敗: {} 件", pt: "esvaziados: {}, falhas: {}", zh: "已清空 {} 项，失败 {} 项", n, bad)
-        } else {
-            tf!("корзина очищена: {}", "emptied: {}", ja: "削除: {} 件", pt: "esvaziados: {}", zh: "已清空 {} 项", n)
-        };
-        ui::notice(h, msg);
-    }
+        let done = Box::new(TrashDone { emptied: true, ok: n, bad });
+        unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
+    });
 }
 
 /// The Recycle Bin menu: on a row it offers Restore, everywhere Empty and Refresh. Our own menu, like the other ones.
@@ -413,6 +408,8 @@ static NAV: AtomicBool = AtomicBool::new(false); // loading from the back / forw
 const WM_NAV: u32 = WM_APP + 3; // wp: 1 back, 2 forward, 3 properties, 4 up (sent from the message loop for Alt+key)
 const WM_JOB: u32 = WM_APP + 5; // jobs.rs worker finished: wp = Box<Option<String>> (the error, if any)
 const WM_TRASH: u32 = WM_APP + 7; // Recycle Bin scan finished: wp = Box<Vec<Row>>
+const WM_DELETED: u32 = WM_APP + 9; // a shell file operation (delete / copy / move) ended on a worker: lp = Box<sh::FileOpDone>
+const WM_TRASH_DONE: u32 = WM_APP + 10; // Recycle Bin restore / empty ended on a worker: lp = Box<TrashDone>
 
 fn row(name: String, m: Option<&fs::Metadata>) -> Row {
     Row { name, dir: m.is_some_and(|m| m.is_dir()), size: m.map_or(0, |m| m.len()), time: m.map_or(0, |m| m.last_write_time()), icon: -1, thumb: -2, hdr: false, path: None, cap: None, trash: None }
@@ -557,7 +554,8 @@ fn paste(h: HWND, dir: &PathBuf) {
     if fast && !jobs::busy() {
         jobs::copy(h as isize, paths, dir.clone(), cut);
     } else {
-        let _ = sh::fileop(h, if cut { sh::Op::Move } else { sh::Op::Copy }, &paths, dir);
+        // the shell's engine (elevation prompts, shell items): on a worker too, a big copy must not freeze the window
+        sh::fileop_async(h, if cut { sh::Op::Move } else { sh::Op::Copy }, &paths, dir);
     }
     if cut { sh::clip_clear(); }
 }
@@ -767,7 +765,7 @@ fn item_menu(h: HWND, dir: &Path, paths: &[PathBuf]) {
         MENU_COPY => clip_selected(h, false),
         MENU_CUT => clip_selected(h, true),
         MENU_PASTE => { paste(h, &dest); reload(h); }
-        MENU_DELETE => { sh::delete(h, paths); reload(h); }
+        MENU_DELETE => { sh::delete(h, paths); } // WM_DELETED reloads when the worker is done
         MENU_PROPS => properties(&paths[0]),
         // the native menu, for everything we do not cover ourselves; reload like the old path did, the shell may have
         // deleted or renamed something
@@ -1341,7 +1339,6 @@ mod wall {
 /// Shell integration through COM (windows crate): file operations, context menu, drag and drop.
 mod sh {
     use std::{cell::RefCell, ffi::c_void, os::windows::ffi::OsStrExt, path::PathBuf};
-    use winrust_common::tf;
     use windows::{core::*, Win32::{Foundation::*, System::{Com::*, DataExchange::RegisterClipboardFormatW, Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock}, Ole::*, SystemServices::MODIFIERKEYS_FLAGS}, UI::{Shell::{Common::ITEMIDLIST, *}, WindowsAndMessaging::*}}};
 
     #[derive(Clone, Copy)]
@@ -1371,9 +1368,8 @@ mod sh {
 
     fn wide(p: &PathBuf) -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() }
 
-    fn wide_s(s: &str) -> Vec<u16> { s.encode_utf16().chain([0]).collect() }
-
-    /// Copy / move into `to`, or recycle. Must not be called while ST is borrowed (the shell pumps messages).
+    /// Copy / move into `to`, or recycle, on the calling thread. Must not be called while ST is borrowed (the shell pumps
+    /// messages). The window uses `fileop_async` / `delete`: a long operation here would freeze it.
     pub fn fileop(h: *mut c_void, op: Op, from: &[PathBuf], to: &PathBuf) -> Result<()> {
         fileop_ex(h, op, from, to, true)
     }
@@ -1401,35 +1397,65 @@ mod sh {
         }
     }
 
-    /// Delete through the Recycle Bin; if that fails (an elevated shell cannot write to the user's Recycle Bin), say why
-    /// and offer a permanent delete instead of failing silently. Returns whether something was deleted.
-    pub fn delete(h: *mut c_void, from: &[PathBuf]) -> bool {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO};
-        let none = PathBuf::new();
-        let err = match fileop_ex(h, Op::Delete, from, &none, true) {
-            Ok(()) => return true,
-            Err(e) => format!("{e:?}"),
-        };
-        // keep the evidence: which paths and which HRESULT (useful on Btrfs, locked files, long paths)
-        if let Some(p) = std::env::var_os("TEMP").map(|t| PathBuf::from(t).join("winrust-delete.log")) {
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-                let _ = writeln!(f, "delete failed: {err}");
-                for x in from {
-                    let _ = writeln!(f, "  {}", x.display());
+    /// Delete through the Recycle Bin, on a worker thread: `IFileOperation` is synchronous and pumps its own messages, so
+    /// a 200 GB folder would freeze our window (and the shell's progress dialog, whose owner is that window) for hours.
+    /// The outcome comes back as WM_DELETED; a recycle that fails is retried permanently only after the UI asks.
+    pub fn delete(h: *mut c_void, from: &[PathBuf]) {
+        spawn_fileop(h, Op::Delete, from.to_vec(), None, true);
+    }
+
+    /// The permanent delete the UI offers after a failed recycle: the same worker path, without the undo flag.
+    pub fn delete_permanent(h: *mut c_void, from: Vec<PathBuf>) {
+        spawn_fileop(h, Op::Delete, from, None, false);
+    }
+
+    /// Copy / move into `to` on a worker thread; the window reloads when a WM_DELETED arrives.
+    pub fn fileop_async(h: *mut c_void, op: Op, from: &[PathBuf], to: &PathBuf) {
+        spawn_fileop(h, op, from.to_vec(), Some(to.clone()), true);
+    }
+
+    /// What a finished background shell operation sends to the window (WM_DELETED, lp).
+    pub struct FileOpDone {
+        pub err: Option<String>, // HRESULT text; a failed delete also goes to %TEMP%\winrust-delete.log
+        pub retry: Vec<PathBuf>, // the recycle-bin delete failed here: the UI offers a permanent delete
+    }
+
+    /// Runs `fileop_ex` on a thread of its own with an STA of its own. `h` only reaches `SetOwnerWindow` (a handle is a
+    /// number), so the shell's progress dialog stays modal to the window while our message loop keeps running.
+    fn spawn_fileop(h: *mut c_void, op: Op, from: Vec<PathBuf>, to: Option<PathBuf>, undo: bool) {
+        let hwnd = h as isize; // HWND is not Send: cross the thread boundary as a plain number
+        std::thread::spawn(move || {
+            let init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            let mut err = init.err().map(|e| format!("CoInitializeEx: {e:?}"));
+            let mut failed_delete = false;
+            if init.is_ok() {
+                let none = PathBuf::new();
+                if let Err(e) = fileop_ex(hwnd as *mut c_void, op, &from, to.as_ref().unwrap_or(&none), undo) {
+                    err = Some(format!("{e:?}"));
+                    failed_delete = matches!(op, Op::Delete);
                 }
+                unsafe { CoUninitialize() }; // on the thread that initialized COM, even when the operation failed
+            }
+            if let (true, Some(e)) = (failed_delete, &err) {
+                log_delete(e, &from);
+            }
+            // only a failed recycle is worth a retry: a permanent delete already is the last word
+            let retry = if failed_delete && undo { from.clone() } else { vec![] };
+            let done = Box::new(FileOpDone { err, retry });
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(hwnd as _, super::WM_DELETED, 0, Box::into_raw(done) as isize) };
+        });
+    }
+
+    /// Keeps the evidence of a failed delete: which paths and which HRESULT (Btrfs, locked files, long paths).
+    fn log_delete(err: &str, from: &[PathBuf]) {
+        use std::io::Write as _;
+        let Some(p) = std::env::var_os("TEMP").map(|t| PathBuf::from(t).join("winrust-delete.log")) else { return };
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = writeln!(f, "delete failed: {err}");
+            for x in from {
+                let _ = writeln!(f, "  {}", x.display());
             }
         }
-        let msg = tf!(
-            "Не удалось переместить в корзину.\n\n{}\n\nУдалить навсегда?",
-            "Could not move to the Recycle Bin.\n\n{}\n\nDelete permanently?",
-            ja: "ごみ箱に移動できませんでした。\n\n{}\n\n完全に削除しますか?",
-            pt: "Não foi possível mover para a Lixeira.\n\n{}\n\nExcluir permanentemente?",
-            zh: "无法移到回收站。\n\n{}\n\n永久删除？",
-            err
-        );
-        let r = unsafe { MessageBoxW(h as _, wide_s(&msg).as_ptr(), wide_s("WinRust").as_ptr(), MB_YESNO | MB_ICONWARNING) };
-        r == IDYES && fileop_ex(h, Op::Delete, from, &none, false).is_ok()
     }
 
     /// Background thumbnail loader: GetImage for each (era, row, path) asked for, result posted to the main window.
@@ -1737,8 +1763,8 @@ unsafe fn hide_system_zip(cm: &IContextMenu, menu: HMENU) {        use windows::
             // like Explorer: same drive moves, other drive copies, Ctrl forces copy
             let copy = k.0 & 8 != 0 || paths.first().and_then(|p| p.components().next()) != to.components().next();
             unsafe { *e = if copy { DROPEFFECT_COPY } else { DROPEFFECT_MOVE } };
-            let _ = fileop(self.main as *mut c_void, if copy { Op::Copy } else { Op::Move }, &paths, &to);
-            unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), WM_APP, WPARAM(0), LPARAM(0)); }
+            let _ = fileop_async(self.main as *mut c_void, if copy { Op::Copy } else { Op::Move }, &paths, &to);
+            // the window reloads when the worker reports (WM_DELETED): Drop returns before the copy is done
             Ok(())
         }
     }
@@ -2203,7 +2229,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             10 | 11 if !paths.is_empty() && !in_virtual() => clip_selected(h, wp == 10),
                             12 if !in_virtual() => { paste(h, &dir); reload(h); }
                             13 if !in_zip() && !in_virtual() => rename_selected(),
-                            14 if !paths.is_empty() && !in_zip() && !in_virtual() => { sh::delete(h, &paths); reload(h); }
+                            14 if !paths.is_empty() && !in_zip() && !in_virtual() => { sh::delete(h, &paths); } // WM_DELETED reloads
                             _ => {}
                         }
                     }
@@ -2419,6 +2445,42 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 reload(h);
                 ui::status_dirty(h);
                 if let Some(e) = err { MessageBoxW(h, w(&e).as_ptr(), w("WinRust Explorer").as_ptr(), MB_ICONWARNING); }
+                0
+            }
+            // a shell file operation (delete / copy / move) ended on a worker thread
+            WM_DELETED => {
+                let sh::FileOpDone { err, retry } = *Box::from_raw(lp as *mut sh::FileOpDone);
+                reload(h); // the deleted / moved rows are gone
+                ui::status_dirty(h);
+                if retry.is_empty() {
+                    if let Some(e) = err { ui::notice(h, e); } // the worker also wrote it to %TEMP%\winrust-delete.log
+                } else {
+                    // the Recycle Bin refused it (an elevated shell cannot write the user's bin): ask here, on the UI
+                    // thread; the worker never opens a dialog of its own
+                    let msg = tf!(
+                        "Не удалось переместить в корзину.\n\n{}\n\nУдалить навсегда?",
+                        "Could not move to the Recycle Bin.\n\n{}\n\nDelete permanently?",
+                        ja: "ごみ箱に移動できませんでした。\n\n{}\n\n完全に削除しますか?",
+                        pt: "Não foi possível mover para a Lixeira.\n\n{}\n\nExcluir permanentemente?",
+                        zh: "无法移到回收站。\n\n{}\n\n永久删除？",
+                        err.unwrap_or_default()
+                    );
+                    let r = MessageBoxW(h, w(&msg).as_ptr(), w("WinRust").as_ptr(), MB_YESNO | MB_ICONWARNING);
+                    if r == IDYES { sh::delete_permanent(h, retry); }
+                }
+                0
+            }
+            // the Recycle Bin restore / empty ended on a worker thread
+            WM_TRASH_DONE => {
+                let TrashDone { emptied, ok, bad } = *Box::from_raw(lp as *mut TrashDone);
+                reload(h); // what was restored / deleted is gone from the bin; the message must not be wiped by that load
+                let msg = match (emptied, bad > 0) {
+                    (true, true) => tf!("корзина очищена: {}, ошибок: {}", "emptied: {}, failed: {}", ja: "削除: {} 件、失敗: {} 件", pt: "esvaziados: {}, falhas: {}", zh: "已清空 {} 项，失败 {} 项", ok, bad),
+                    (true, false) => tf!("корзина очищена: {}", "emptied: {}", ja: "削除: {} 件", pt: "esvaziados: {}", zh: "已清空 {} 项", ok),
+                    (false, true) => tf!("восстановлено: {}, не удалось: {}", "restored: {}, failed: {}", ja: "復元: {} 件、失敗: {} 件", pt: "restaurados: {}, falhas: {}", zh: "已还原 {} 项，失败 {} 项", ok, bad),
+                    (false, false) => tf!("восстановлено: {}", "restored: {}", ja: "復元: {} 件", pt: "restaurados: {}", zh: "已还原 {} 项", ok),
+                };
+                ui::notice(h, msg);
                 0
             }
             // a USB stick came or went, a volume changed: the pane lists the drives again, the drive list follows

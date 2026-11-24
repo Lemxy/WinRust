@@ -161,7 +161,14 @@ impl Enc {
                 None => (item_size.Width, item_size.Height),
             };
             if dims.0 < 2 || dims.1 < 2 {
-                return Err("capture source has an empty size".into());
+                return Err(t!(
+                    "у источника захвата пустой размер",
+                    "capture source has an empty size",
+                    ja: "キャプチャ元のサイズが空です",
+                    pt: "a fonte de captura tem tamanho vazio",
+                    zh: "捕获源尺寸为空"
+                )
+                .to_string());
             }
 
             let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&d3d_device, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, item_size).map_err(err)?;
@@ -283,7 +290,7 @@ unsafe fn make_writer(
         Err(e) if audio_fmt.is_some() => {
             // AAC rejected (or no AAC encoder): rebuild video-only and keep the recording alive.
             let (w, v, _) = build_writer(out, dims, fps, device, None)?;
-            Ok((w, v, None, Some(format!("audio unavailable: {e}"))))
+            Ok((w, v, None, Some(tf!("звук недоступен: {}", "audio unavailable: {}", ja: "音声を利用できません: {}", pt: "áudio indisponível: {}", zh: "音频不可用：{}", e))))
         }
         Err(e) => Err(e),
     }
@@ -408,7 +415,14 @@ pub fn record(target: &Target, fps: u32, cursor: bool, out: &Path, stop: Arc<Ato
                 // WGC produces frames at the compositor rate; wait for one instead of spinning.
                 misses += 1;
                 if misses > 200 && frames == 0 {
-                    return Err("Windows.Graphics.Capture produced no frames (minimized window, protected content or capture disabled)".into());
+                    return Err(t!(
+                        "Windows.Graphics.Capture не дал ни одного кадра (свёрнутое окно, защищённое содержимое или захват отключён)",
+                        "Windows.Graphics.Capture produced no frames (minimized window, protected content or capture disabled)",
+                        ja: "Windows.Graphics.Capture がフレームを生成しませんでした（ウィンドウ最小化、保護されたコンテンツ、またはキャプチャ無効）",
+                        pt: "O Windows.Graphics.Capture não produziu quadros (janela minimizada, conteúdo protegido ou captura desativada)",
+                        zh: "Windows.Graphics.Capture 未生成任何帧（窗口最小化、受保护内容或捕获已禁用）"
+                    )
+                    .to_string());
                 }
             }
             Err(e) => return Err(e),
@@ -424,7 +438,7 @@ pub fn record(target: &Target, fps: u32, cursor: bool, out: &Path, stop: Arc<Ato
         let _ = enc.writer.Finalize();
     }
     if frames == 0 {
-        return Err("no frames were encoded".into());
+        return Err(t!("кадры не закодированы", "no frames were encoded", ja: "フレームがエンコードされていません", pt: "nenhum quadro foi codificado", zh: "没有编码任何帧").to_string());
     }
     let audio_ok = enc.audio.is_some() && enc.audio_stream.is_some();
     let note = enc.audio_note.take();

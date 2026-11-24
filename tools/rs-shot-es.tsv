@@ -1,0 +1,102 @@
+  ·  max {}s	  ·  máx. {} s
+{} s	{} s
+{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}	{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}
+Arrow	Flecha
+audio	sonido
+audio is not available with the ffmpeg bridge; video is silent	el audio no está disponible con el puente ffmpeg; el vídeo no tendrá sonido
+audio unavailable: {}	audio no disponible: {}
+audio: AAC	audio: AAC
+Capture options:\n  --delay N                       wait N seconds before capturing (0, 2, 5, 10, ...)\n  --cursor                        include the mouse pointer in the capture\n  --clipboard                     with --no-ui: also copy to the clipboard (it is copied anyway)\n  --file PATH                     save here on Save/--no-ui (default Pictures\\Screenshots\\Screenshot_<date>.png)\n  --no-ui                         skip the editor/recording UI: clipboard only (plus --file); with --record,\n                                  record --duration N seconds headlessly (Region uses the cursor monitor)	Opciones de captura:\n  --delay N                       esperar N segundos antes de capturar (0, 2, 5, 10, ...)\n  --cursor                        incluir el puntero del ratón en la captura\n  --clipboard                     con --no-ui: copiar también al portapapeles (ya se copia)\n  --file PATH                     guardar aquí al guardar/--no-ui (por defecto Pictures\\Screenshots\\Captura de pantalla_<fecha>.png)\n  --no-ui                         sin editor ni interfaz de grabación: solo el portapapeles (y --file); con --record,\n                                  grabar --duration N segundos sin interfaz (la región usa el monitor del cursor)
+capture source has an empty size	la fuente de captura no tiene tamaño
+Click a shape to select it; Delete removes it	Haz clic en una figura para seleccionarla; Supr la elimina
+Click a window to capture it · Esc cancels	Haz clic en una ventana para capturarla · Esc cancela
+Click a window to start recording · Esc cancels	Haz clic en una ventana para empezar a grabar · Esc cancela
+Click and type; Enter commits	Haz clic y escribe; Enter confirma
+Click to stamp the next number	Haz clic para poner el siguiente número
+Copied to the clipboard	Copiado al portapapeles
+Could not copy to the clipboard	No se pudo copiar al portapapeles
+Could not create the temporary folder: {}	No se pudo crear la carpeta temporal: {}
+Could not create the video folder: {}	No se pudo crear la carpeta del vídeo: {}
+Could not open the recording bar	No se pudo abrir la barra de grabación
+Could not save the file	No se pudo guardar el archivo
+Could not save the screenshot	No se pudo guardar la captura
+Could not take the screenshot	No se pudo capturar la pantalla
+Crop	Recortar
+default output device: {}	dispositivo de salida predeterminado: {}
+--delay needs seconds, got {}	--delay necesita segundos, se recibió {}
+Delete removes the selected shape	Supr elimina la figura seleccionada
+Drag a box and release to crop	Arrastra un recuadro y suelta para recortar
+Drag a rectangle	Arrastra un rectángulo
+Drag to highlight; Shift draws straight	Arrastra para resaltar; Mayús dibuja recto
+Drag to select a region · Esc cancels	Arrastra para seleccionar una región · Esc cancela
+Drag; Shift makes a square/circle	Arrastra; Mayús hace cuadrado/círculo
+Drag; Shift snaps to 45°	Arrastra; Mayús ajusta a 45°
+--duration needs seconds, got {}	--duration necesita segundos, se recibió {}
+Ellipse	Elipse
+--encoder needs auto, wgc or ffmpeg, got {}	--encoder necesita auto, wgc o ffmpeg, se recibió {}
+ffmpeg could not build the MP4; the temporary frames were removed. {}	ffmpeg no pudo crear el MP4; los fotogramas temporales se eliminaron. {}
+ffmpeg disappeared before encoding	ffmpeg desapareció antes de codificar
+ffmpeg exited with {}	ffmpeg salió con {}
+--fps needs a number, got {}	--fps necesita un número, se recibió {}
+Full	Pantalla
+Full screen · Esc cancels	Pantalla completa · Esc cancela
+GetMixFormat returned null	GetMixFormat devolvió null
+GetMixFormat: {}	GetMixFormat: {}
+Headless recording needs --duration N (seconds): there is no Stop button to end it.	La grabación sin interfaz necesita --duration N (segundos): no hay botón Detener para terminarla.
+Highlighter	Rotulador
+IAudioCaptureClient: {}	IAudioCaptureClient: {}
+IAudioClient: {}	IAudioClient: {}
+JPEG encode failed for {}	no se pudo codificar el JPEG de {}
+Keys: PrintScreen / Win+Shift+S = Photo + Region; Win+Alt+R = Video + Region (through the WinRust shell).\n      In the bar, choosing a source acts at once: Region -> drag, Full/Monitor -> immediate, Window -> click it.\n      While recording: Win+Alt+S or Esc stops (Fn is firmware and cannot be a shortcut).\n      In the editor: Ctrl+S save+copy, Ctrl+C copy, Ctrl+Z/Y undo/redo, Esc close.\n\n  --print-strings                 print the UI texts in the current language (diagnostics)\n  -h, --help                      this help	Teclas: PrintScreen / Win+Shift+S = Foto + Región; Win+Alt+R = Vídeo + Región (mediante el shell de WinRust).\n      En la barra, elegir una fuente actúa al momento: Región -> arrastrar, Pantalla/Monitor -> inmediato, Ventana -> hacer clic.\n      Durante la grabación: Win+Alt+S o Esc detiene (Fn es firmware y no puede ser un atajo).\n      En el editor: Ctrl+S guardar+copiar, Ctrl+C copiar, Ctrl+Z/Y deshacer/rehacer, Esc cerrar.\n\n  --print-strings                 imprimir los textos de la interfaz en el idioma actual (diagnóstico)\n  -h, --help                      esta ayuda
+Line	Línea
+loopback Initialize: {}	inicialización de loopback: {}
+loopback mix has {} channels; only mono/stereo is supported	la mezcla de loopback tiene {} canales; solo se admite mono/estéreo
+loopback Start: {}	inicio de loopback: {}
+MMDeviceEnumerator: {}	MMDeviceEnumerator: {}
+mute	silencio
+no audio	sin audio
+no audio ({})	sin audio ({})
+No canvas to save	No hay lienzo que guardar
+no frames encoded	no se codificó ningún fotograma
+No frames were captured: {}	No se capturó ningún fotograma: {}
+no frames were encoded	no se codificó ningún fotograma
+Number	Número
+Photo	Foto
+Photo mode	Modo foto
+Pixelate	Pixelar
+REC	GRAB
+Recorded (ffmpeg, H.264/MP4, {} frames, {:.1} fps, {}): {}	Grabado (ffmpeg, H.264/MP4, {} fotogramas, {:.1} fps, {}): {}
+Recorded (WGC + Media Foundation, H.264/MP4, {} frames, {:.1} fps, {}): {}	Grabado (WGC + Media Foundation, H.264/MP4, {} fotogramas, {:.1} fps, {}): {}
+Recording	Grabación
+Recording (WGC + Media Foundation first, ffmpeg bridge when needed):\n  --record                        open the Photo/Video selection bar on the region\n  --record --monitor [N]          record a monitor\n  --record --window               record the foreground window\n  --duration N                    stop after N seconds (default: unlimited until Stop/Esc/Win+Alt+S)\n  --fps N                         frames per second (default 30, 1..60)\n  --out PATH                      MP4 path (default Videos\\Screen Records\\Recording_<date>.mp4)\n  --encoder auto|wgc|ffmpeg       auto (default): WGC + Media Foundation when it works, else ffmpeg\n  --audio                         record PC sound (WASAPI loopback + AAC, on by default)\n  --no-audio                      video only	Grabación (primero WGC + Media Foundation, ffmpeg cuando haga falta):\n  --record                        abrir la barra de selección Foto/Vídeo en la región\n  --record --monitor [N]          grabar un monitor\n  --record --window               grabar la ventana en primer plano\n  --duration N                    parar tras N segundos (por defecto: sin límite hasta Detener/Esc/Win+Alt+S)\n  --fps N                         fotogramas por segundo (por defecto 30, 1..60)\n  --out PATH                      ruta del MP4 (por defecto Videos\\Screen Records\\Grabación_<fecha>.mp4)\n  --encoder auto|wgc|ffmpeg       auto (por defecto): WGC + Media Foundation cuando funciona, si no ffmpeg\n  --audio                         grabar el sonido del PC (WASAPI loopback + AAC, activado por defecto)\n  --no-audio                      solo vídeo
+Recording is unavailable: {}.\n\nThe fallback needs ffmpeg:\nwinget install --id Gyan.FFmpeg -e\n\nNothing was recorded.	La grabación no está disponible: {}.\n\nEl método alternativo necesita ffmpeg:\nwinget install --id Gyan.FFmpeg -e\n\nNo se grabó nada.
+Rectangle	Rectángulo
+Redo	Rehacer
+Region	Región
+rs-shot — recording	rs-shot — grabando
+rs-shot — Screenshot	rs-shot — Captura
+rs-shot — WinRust screenshot and screen recorder	rs-shot — captura de pantalla y grabador de pantalla de WinRust
+Save and copy	Guardar y copiar
+Saved and copied: {name}	Guardado y copiado: {name}
+Saved: {name}	Guardado: {name}
+screen capture returned no bitmap	la captura de pantalla no devolvió ningún mapa de bits
+Screenshot	Captura de pantalla
+Select	Seleccionar
+the recorder did not finish; giving up	el grabador no terminó; se cancela
+There is no foreground window to record	No hay ninguna ventana en primer plano que grabar
+This monitor · Esc cancels	Este monitor · Esc cancela
+Undo	Deshacer
+unknown error	error desconocido
+unknown option {}	opción desconocida {}
+unsupported loopback mix format (tag {}, {} bits)	formato de mezcla de loopback no admitido (etiqueta {}, {} bits)
+Usage:\n  rs-shot                         region overlay + editor (default)\n  rs-shot --full                  all monitors, editor\n  rs-shot --monitor [N]           monitor under the cursor, or number N (1 = leftmost), editor\n  rs-shot --window                foreground window, editor\n  rs-shot --region                region overlay + editor	Uso:\n  rs-shot                         selección de región + editor (por defecto)\n  rs-shot --full                  todos los monitores, editor\n  rs-shot --monitor [N]           monitor bajo el cursor, o número N (1 = el más a la izquierda), editor\n  rs-shot --window                ventana en primer plano, editor\n  rs-shot --region                selección de región + editor
+Video	Vídeo
+Video mode	Modo vídeo
+WGC recording could not start: {}	La grabación por WGC no pudo iniciarse: {}
+WGC/Media Foundation could not record the video; the partial file was removed. {}	WGC/Media Foundation no pudo grabar el vídeo; el archivo parcial se eliminó. {}
+Window	Ventana
+Windows.Graphics.Capture captures one monitor or one window; the full multi-monitor desktop is not one item. Use --encoder ffmpeg.	Windows.Graphics.Capture captura un monitor o una ventana; el escritorio completo con varios monitores no es un solo elemento. Usa --encoder ffmpeg.
+Windows.Graphics.Capture is not available	Windows.Graphics.Capture no está disponible
+Windows.Graphics.Capture produced no frames (minimized window, protected content or capture disabled)	Windows.Graphics.Capture no generó ningún fotograma (ventana minimizada, contenido protegido o captura desactivada)
+More options…	Más opciones…
+Could not open the app	No se pudo abrir la aplicacián

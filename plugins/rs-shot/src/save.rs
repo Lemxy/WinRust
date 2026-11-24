@@ -80,11 +80,22 @@ fn known_folder(id: &GUID) -> Option<PathBuf> {
     }
 }
 
+/// The base name of a screenshot file, in the UI language (`Screenshot_...`, `Снимок_...`, …). The folder keeps its
+/// Windows name in every language: two installations switching language must not scatter the pictures.
+pub fn screenshot_base() -> String {
+    t!("Снимок", "Screenshot", ja: "スクリーンショット", pt: "Captura de tela", zh: "截图").to_string()
+}
+
+/// The base name of a recording file, in the UI language.
+pub fn recording_base() -> String {
+    t!("Запись", "Recording", ja: "録画", pt: "Gravação", zh: "录制").to_string()
+}
+
 /// `Screenshot_2026-11-24_15-30-00.png` in Pictures\Screenshots, with a `-2`, `-3` suffix if two land in one second.
 pub fn auto_path() -> PathBuf {
     let dir = pictures_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let base = format!("Screenshot_{}", stamp());
+    let base = format!("{}_{}", screenshot_base(), stamp());
     let mut p = dir.join(format!("{base}.png"));
     let mut n = 2;
     while p.exists() {
@@ -98,10 +109,10 @@ pub fn default_video_path() -> PathBuf {
     let dir = recordings_dir();
     let _ = std::fs::create_dir_all(&dir);
     let base = stamp();
-    let mut p = dir.join(format!("Recording_{base}.mp4"));
+    let mut p = dir.join(format!("{}_{base}.mp4", recording_base()));
     let mut n = 2;
     while p.exists() {
-        p = dir.join(format!("Recording_{base}-{n}.mp4"));
+        p = dir.join(format!("{}_{base}-{n}.mp4", recording_base()));
         n += 1;
     }
     p

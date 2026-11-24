@@ -503,7 +503,7 @@ unsafe fn draw_bar(dc: HDC, hw: HWND, hover: Option<usize>) {
             continue;
         }
         if matches!(act, Act::Delay) {
-            let text = format!("{delay} s");
+            let text = tf!("{} с", "{} s", ja: "{} 秒", pt: "{} s", zh: "{} 秒", delay);
             ui::rounded(dc, r, if hover == Some(i) { pal().hover } else { bar_color() }, 8 * s);
             ui::text(dc, &text, r, f, pal().text, DT_CENTER as u32);
             continue;

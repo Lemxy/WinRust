@@ -113,7 +113,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
             crate::Mode::Window => {
                 let h = cap::foreground();
                 if h.is_null() {
-                    crate::msg(t!("Нет окна для записи", "There is no foreground window to record", ja: "録画するウィンドウがありません", pt: "Não há janela em primeiro plano para gravar", zh: "没有可录制的前台窗口"), t!("rs-shot", "rs-shot"));
+                    crate::msg(t!("Нет окна для записи", "There is no foreground window to record", ja: "録画するウィンドウがありません", pt: "Não há janela em primeiro plano para gravar", zh: "没有可录制的前台窗口"), crate::TITLE);
                     return 2;
                 }
                 Source::Window(h)
@@ -133,7 +133,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
         if let Err(e) = std::fs::create_dir_all(parent) {
             crate::msg(
                 &tf!("Не удалось создать папку для видео: {}", "Could not create the video folder: {}", ja: "動画フォルダーを作成できません: {}", pt: "Não foi possível criar a pasta do vídeo: {}", zh: "无法创建视频文件夹：{}", e),
-                t!("rs-shot", "rs-shot"),
+                crate::TITLE,
             );
             return 4;
         }
@@ -162,7 +162,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
                             pt: "O Windows.Graphics.Capture captura um monitor ou uma janela; a área de trabalho com vários monitores não é um único item. Use --encoder ffmpeg.",
                             zh: "Windows.Graphics.Capture 一次捕获一个显示器或一个窗口；整个多显示器桌面不是单个项目。请使用 --encoder ffmpeg。"
                         ),
-                        t!("rs-shot", "rs-shot"),
+                        crate::TITLE,
                     );
                     return 4;
                 }
@@ -172,7 +172,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
         wgc_err = Some(t!("Windows.Graphics.Capture недоступен", "Windows.Graphics.Capture is not available", ja: "Windows.Graphics.Capture を利用できません", pt: "Windows.Graphics.Capture não está disponível", zh: "Windows.Graphics.Capture 不可用").to_string());
     }
     if o.encoder == crate::Encoder::Wgc && !use_wgc {
-        crate::msg(&tf!("Запись через WGC не запустилась: {}", "WGC recording could not start: {}", ja: "WGC 録画を開始できません: {}", pt: "A gravação por WGC não iniciou: {}", zh: "WGC 录制无法启动：{}", wgc_err.unwrap_or_default()), t!("rs-shot", "rs-shot"));
+        crate::msg(&tf!("Запись через WGC не запустилась: {}", "WGC recording could not start: {}", ja: "WGC 録画を開始できません: {}", pt: "A gravação por WGC não iniciou: {}", zh: "WGC 录制无法启动：{}", wgc_err.unwrap_or_default()), crate::TITLE);
         return 4;
     }
     let ffmpeg = if use_wgc { None } else { find_ffmpeg() };
@@ -187,7 +187,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
                 zh: "无法录制：{}。\n\n备用方案需要 ffmpeg：\nwinget install --id Gyan.FFmpeg -e\n\n未开始录制。",
                 detail
             ),
-            t!("rs-shot", "rs-shot"),
+            crate::TITLE,
         );
         return 4;
     }
@@ -195,7 +195,7 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
     let dir = save::frames_dir();
     if !use_wgc {
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            crate::msg(&tf!("Не удалось создать временную папку: {}", "Could not create the temporary folder: {}", ja: "一時フォルダーを作成できません: {}", pt: "Não foi possível criar a pasta temporária: {}", zh: "无法创建临时文件夹：{}", e), t!("rs-shot", "rs-shot"));
+            crate::msg(&tf!("Не удалось создать временную папку: {}", "Could not create the temporary folder: {}", ja: "一時フォルダーを作成できません: {}", pt: "Não foi possível criar a pasta temporária: {}", zh: "无法创建临时文件夹：{}", e), crate::TITLE);
             return 4;
         }
     }
@@ -232,7 +232,16 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
             let _ = tx.send(res);
         });
     } else {
-        let audio_note = o.audio.then(|| "audio is not available with the ffmpeg bridge; video is silent".to_string());
+        let audio_note = o.audio.then(|| {
+            t!(
+                "звук недоступен через мост ffmpeg; видео без звука",
+                "audio is not available with the ffmpeg bridge; video is silent",
+                ja: "ffmpeg ブリッジでは音声を録れません。映像のみになります",
+                pt: "o áudio não está disponível com a ponte ffmpeg; o vídeo fica sem som",
+                zh: "ffmpeg 桥接不支持音频；视频将没有声音"
+            )
+            .to_string()
+        });
         std::thread::spawn(move || {
             let (frames, elapsed_ms, err) = record_loop(source, stop2, dir2, fps);
             let _ = tx.send(RecRes { frames: frames as u64, elapsed_ms, err, audio: false, note: audio_note });
@@ -257,7 +266,16 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
         let res = early
             .or_else(|| rx.recv_timeout(Duration::from_secs(15)).ok())
             .unwrap_or_else(|| {
-                report_error("the recorder did not finish; giving up", false);
+                report_error(
+                    t!(
+                        "рекордер не завершился; сдаёмся",
+                        "the recorder did not finish; giving up",
+                        ja: "レコーダーが終了しませんでした。中止します",
+                        pt: "o gravador não terminou; desistindo",
+                        zh: "录制器未完成；放弃"
+                    ),
+                    false,
+                );
                 std::process::exit(4);
             });
         return finish(res, use_wgc, ffmpeg, &dir, &out, false);
@@ -291,7 +309,16 @@ unsafe fn start(o: &Opts, preset: Option<Source>) -> i32 {
     HOOK.store(0, Relaxed);
     stop.store(true, Relaxed);
     let res = rx.recv_timeout(Duration::from_secs(20)).unwrap_or_else(|_| {
-        report_error("the recorder did not finish; giving up", true);
+        report_error(
+            t!(
+                "рекордер не завершился; сдаёмся",
+                "the recorder did not finish; giving up",
+                ja: "レコーダーが終了しませんでした。中止します",
+                pt: "o gravador não terminou; desistindo",
+                zh: "录制器未完成；放弃"
+            ),
+            true,
+        );
         std::process::exit(4);
     });
     destroy_ui();
@@ -331,7 +358,11 @@ fn finish(res: RecRes, use_wgc: bool, ffmpeg: Option<PathBuf>, dir: &Path, out: 
             ja: "WGC/Media Foundation は録画できませんでした。途中のファイルは削除しました。{}",
             pt: "WGC/Media Foundation não conseguiu gravar o vídeo; o arquivo parcial foi removido. {}",
             zh: "WGC/Media Foundation 无法录制视频；已删除不完整文件。{}",
-            if res.err.is_empty() { "no frames encoded".to_string() } else { res.err }
+            if res.err.is_empty() {
+                t!("кадры не закодированы", "no frames encoded", ja: "フレームがエンコードされていません", pt: "nenhum quadro codificado", zh: "没有编码任何帧").to_string()
+            } else {
+                res.err
+            }
         );
         report_error(&msg, notify_ui);
         return 4;
@@ -345,7 +376,11 @@ fn finish(res: RecRes, use_wgc: bool, ffmpeg: Option<PathBuf>, dir: &Path, out: 
             ja: "フレームを取得できませんでした: {}",
             pt: "Nenhum quadro foi capturado: {}",
             zh: "未能捕获帧：{}",
-            if res.err.is_empty() { t!("неизвестная ошибка", "unknown error") } else { &res.err }
+            if res.err.is_empty() {
+                t!("неизвестная ошибка", "unknown error", ja: "不明なエラー", pt: "erro desconhecido", zh: "未知错误")
+            } else {
+                &res.err
+            }
         );
         report_error(&msg, notify_ui);
         return 4;
@@ -354,7 +389,16 @@ fn finish(res: RecRes, use_wgc: bool, ffmpeg: Option<PathBuf>, dir: &Path, out: 
     let real_fps = (res.frames as f64 / secs).clamp(1.0, 120.0);
     let Some(ffmpeg) = ffmpeg else {
         let _ = std::fs::remove_dir_all(dir);
-        report_error("ffmpeg disappeared before encoding", notify_ui);
+        report_error(
+            t!(
+                "ffmpeg исчез перед кодированием",
+                "ffmpeg disappeared before encoding",
+                ja: "エンコード前に ffmpeg が見つからなくなりました",
+                pt: "o ffmpeg desapareceu antes da codificação",
+                zh: "编码前 ffmpeg 消失了"
+            ),
+            notify_ui,
+        );
         return 4;
     };
     match to_mp4(&ffmpeg, dir, real_fps, out) {
@@ -474,11 +518,27 @@ unsafe fn record_loop(source: Source, stop: Arc<AtomicBool>, dir: PathBuf, fps: 
                 if save::encode_jpeg(b, &p) {
                     n += 1;
                 } else if err.is_empty() {
-                    err = format!("JPEG encode failed for {}", p.display());
+                    err = tf!(
+                        "не удалось закодировать JPEG для {}",
+                        "JPEG encode failed for {}",
+                        ja: "JPEG エンコードに失敗しました: {}",
+                        pt: "falha ao codificar JPEG para {}",
+                        zh: "JPEG 编码失败：{}",
+                        p.display()
+                    );
                 }
                 DeleteObject(b as HGDIOBJ);
             }
-            None if err.is_empty() => err = "screen capture returned no bitmap".to_string(),
+            None if err.is_empty() => {
+                err = t!(
+                    "захват экрана не вернул изображение",
+                    "screen capture returned no bitmap",
+                    ja: "画面キャプチャがビットマップを返しませんでした",
+                    pt: "a captura de tela não retornou um bitmap",
+                    zh: "屏幕捕获未返回位图"
+                )
+                .to_string();
+            }
             None => {}
         }
         let spent = tick.elapsed();
@@ -683,7 +743,23 @@ unsafe fn bar_paint(hw: HWND) {
     let rec = t!("ЗАПИСЬ", "REC", ja: "録画中", pt: "GRAVANDO", zh: "录制中");
     ui::text(hdc, &format!("{rec}   {}", elapsed_text(ms)), RECT { left: 40, top: 6, right: c.right - 100, bottom: 32 }, f, pal().text, 0);
     let audio_txt = if audio { t!("звук", "audio", ja: "音声", pt: "áudio", zh: "音频") } else { t!("без звука", "mute", ja: "無音", pt: "mudo", zh: "静音") };
-    let dims = format!("{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}", source.right - source.left, source.bottom - source.top, fps, audio_txt, if duration > 0 { format!("  ·  max {}s", duration) } else { String::new() });
+    let limit = if duration > 0 {
+        tf!("  ·  не дольше {} с", "  ·  max {}s", ja: "  ·  最大 {} 秒", pt: "  ·  máx. {} s", zh: "  ·  最长 {} 秒", duration)
+    } else {
+        String::new()
+    };
+    let dims = tf!(
+        "{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}",
+        "{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}",
+        ja: "{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}",
+        pt: "{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}",
+        zh: "{}×{}  ·  {} fps  ·  {}  ·  Win+Alt+S / Esc{}",
+        source.right - source.left,
+        source.bottom - source.top,
+        fps,
+        audio_txt,
+        limit
+    );
     ui::text(hdc, &dims, RECT { left: 40, top: 30, right: c.right - 100, bottom: 54 }, f2, pal().dim, 0);
     let br = RECT { left: c.right - ui::sc(hw, 96), top: ui::sc(hw, 15), right: c.right - ui::sc(hw, 12), bottom: c.bottom - ui::sc(hw, 15) };
     ui::rounded(hdc, br, if hover { rgb(220, 50, 45) } else { rgb(170, 38, 35) }, ui::sc(hw, 8));
@@ -905,7 +981,18 @@ fn to_mp4(ff: &Path, dir: &Path, fps: f64, out: &Path) -> Result<(), String> {
         if s.len() > 1200 {
             s.truncate(1200);
         }
-        Err(if s.is_empty() { format!("ffmpeg exited with {}", output.status) } else { s })
+        Err(if s.is_empty() {
+            tf!(
+                "ffmpeg завершился с кодом {}",
+                "ffmpeg exited with {}",
+                ja: "ffmpeg が終了しました: {}",
+                pt: "o ffmpeg terminou com {}",
+                zh: "ffmpeg 退出，状态 {}",
+                output.status
+            )
+        } else {
+            s
+        })
     }
 }
 

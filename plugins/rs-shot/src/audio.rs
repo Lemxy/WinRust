@@ -37,12 +37,21 @@ pub struct Format {
 pub fn open() -> Result<Audio, String> {
     unsafe {
         let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
-        let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|e| format!("default render device: {e}"))?;
-        let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| format!("IAudioClient: {e}"))?;
-        let mix = client.GetMixFormat().map_err(|e| format!("GetMixFormat: {e}"))?;
+            .map_err(|e| tf!("MMDeviceEnumerator: {}", "MMDeviceEnumerator: {}", ja: "MMDeviceEnumerator: {}", pt: "MMDeviceEnumerator: {}", zh: "MMDeviceEnumerator：{}", e))?;
+        let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|e| {
+            tf!(
+                "устройство вывода по умолчанию: {}",
+                "default output device: {}",
+                ja: "既定の出力デバイス: {}",
+                pt: "dispositivo de saída padrão: {}",
+                zh: "默认输出设备：{}",
+                e
+            )
+        })?;
+        let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| tf!("IAudioClient: {}", "IAudioClient: {}", ja: "IAudioClient: {}", pt: "IAudioClient: {}", zh: "IAudioClient：{}", e))?;
+        let mix = client.GetMixFormat().map_err(|e| tf!("GetMixFormat: {}", "GetMixFormat: {}", ja: "GetMixFormat: {}", pt: "GetMixFormat: {}", zh: "GetMixFormat：{}", e))?;
         if mix.is_null() {
-            return Err("GetMixFormat returned null".into());
+            return Err(t!("GetMixFormat вернул null", "GetMixFormat returned null", ja: "GetMixFormat が null を返しました", pt: "GetMixFormat retornou null", zh: "GetMixFormat 返回了 null").into());
         }
         let wf: &WAVEFORMATEX = &*mix;
         let (rate, channels, bits) = (wf.nSamplesPerSec, wf.nChannels, wf.wBitsPerSample);
@@ -56,17 +65,32 @@ pub fn open() -> Result<Audio, String> {
         let pcm16 = tag == 1 && bits == 16 || (tag == 0xFFFE && sub == windows::core::GUID::from_u128(SUBTYPE_PCM) && bits == 16);
         if !(channels == 1 || channels == 2) {
             CoTaskMemFree(Some(mix as *const _));
-            return Err(format!("loopback mix has {channels} channels; only mono/stereo is supported"));
+            return Err(tf!(
+                "в loopback-миксе {} каналов; поддерживаются только моно и стерео",
+                "loopback mix has {} channels; only mono/stereo is supported",
+                ja: "ループバックミックスは {} チャンネルです。モノラル/ステレオのみ対応しています",
+                pt: "a mixagem de loopback tem {} canais; só mono/estéreo é suportado",
+                zh: "回环混音有 {} 个声道；仅支持单声道/立体声",
+                channels
+            ));
         }
         if !float && !pcm16 {
             CoTaskMemFree(Some(mix as *const _));
-            return Err(format!("unsupported loopback mix format (tag {tag}, {bits} bits)"));
+            return Err(tf!(
+                "неподдерживаемый формат loopback-микса (тег {}, {} бит)",
+                "unsupported loopback mix format (tag {}, {} bits)",
+                ja: "未対応のループバックミックス形式（タグ {}、{} ビット）",
+                pt: "formato de mixagem de loopback não suportado (tag {}, {} bits)",
+                zh: "不支持的回环混音格式（标记 {}，{} 位）",
+                tag,
+                bits
+            ));
         }
         let init = client.Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 20_000_000, 0, mix, None);
         CoTaskMemFree(Some(mix as *const _));
-        init.map_err(|e| format!("loopback Initialize: {e}"))?;
-        let capture = client.GetService::<IAudioCaptureClient>().map_err(|e| format!("IAudioCaptureClient: {e}"))?;
-        client.Start().map_err(|e| format!("loopback Start: {e}"))?;
+        init.map_err(|e| tf!("запуск loopback: {}", "loopback Initialize: {}", ja: "ループバック初期化: {}", pt: "inicialização do loopback: {}", zh: "回环初始化：{}", e))?;
+        let capture = client.GetService::<IAudioCaptureClient>().map_err(|e| tf!("IAudioCaptureClient: {}", "IAudioCaptureClient: {}", ja: "IAudioCaptureClient: {}", pt: "IAudioCaptureClient: {}", zh: "IAudioCaptureClient：{}", e))?;
+        client.Start().map_err(|e| tf!("запуск loopback: {}", "loopback Start: {}", ja: "ループバック開始: {}", pt: "início do loopback: {}", zh: "回环启动：{}", e))?;
         Ok(Audio { _client: client, capture, rate, channels, float, frames: 0 })
     }
 }
