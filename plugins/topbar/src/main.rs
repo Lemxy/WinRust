@@ -879,7 +879,10 @@ unsafe extern "system" fn collect(h: HWND, lp: LPARAM) -> i32 {
     let mut cls = [0u16; 32];
     let n = GetClassNameW(h, cls.as_mut_ptr(), 32) as usize;
     let ours = String::from_utf16_lossy(&cls[..n]) == "topbar";
-    if IsWindowVisible(h) != 0 && GetWindow(h, GW_OWNER).is_null() && cloaked == 0 && !ours && GetWindowTextLengthW(h) > 0 && (ex & WS_EX_TOOLWINDOW == 0 || ex & WS_EX_APPWINDOW != 0) {
+    // a tool window that cannot be activated is an overlay (a full-screen layer of a tray app), even with WS_EX_APPWINDOW:
+    // such apps take their tab off Windows' taskbar (ITaskbarList::DeleteTab), which nothing outside Explorer can see
+    let overlay = ex & WS_EX_TOOLWINDOW != 0 && ex & 0x0800_0000 != 0; // WS_EX_NOACTIVATE
+    if IsWindowVisible(h) != 0 && GetWindow(h, GW_OWNER).is_null() && cloaked == 0 && !ours && GetWindowTextLengthW(h) > 0 && (ex & WS_EX_TOOLWINDOW == 0 || ex & WS_EX_APPWINDOW != 0) && !overlay {
         (*(lp as *mut Vec<HWND>)).push(h);
     }
     1
