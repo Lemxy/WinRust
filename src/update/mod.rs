@@ -74,7 +74,7 @@ pub(crate) fn autoupdate() -> Result<String, String> {
         match r {
             Ok(m) if m.is_empty() => {}
             Ok(m) => log(&format!("autoupdate: {m}")),
-            Err(e) => log(&tf!("autoupdate: ОШИБКА {e}", "autoupdate: ERROR {e}", ja: "自動更新: エラー {e}", pt: "autoupdate: ERRO {e}", zh: "autoupdate: 错误 {e}")),
+            Err(e) => log(&tf!("autoupdate: ОШИБКА {e}", "autoupdate: ERROR {e}", ja: "自動更新: エラー {e}", pt: "autoupdate: ERRO {e}", zh: "autoupdate: 错误 {e}", es: "actualización automática: ERROR {e}")),
         }
     }
     // a new WinRust.exe was swapped in: it brings its plugins now (from_self), not at the next daily run
@@ -107,7 +107,7 @@ fn from_self(work: &Path) -> Result<String, String> {
             Err(e) => errs.push(e),
         }
     }
-    let msg = if done.is_empty() { String::new() } else { tf!("{own}: обновлено {}", "{own}: updated {}", ja: "{own}: {} を更新しました", pt: "{own}: atualizado {}", zh: "{own}：已更新 {}", done.join(", ")) };
+    let msg = if done.is_empty() { String::new() } else { tf!("{own}: обновлено {}", "{own}: updated {}", ja: "{own}: {} を更新しました", pt: "{own}: atualizado {}", zh: "{own}：已更新 {}", es: "{own}: actualizado {}", done.join(", ")) };
     if errs.is_empty() {
         let _ = fs::write(home().join("plugins.txt"), &own); // failed files are retried on the next run
         Ok(msg)
@@ -158,10 +158,10 @@ fn check(work: &Path) -> Result<String, String> {
     let vfile = home().join("version.txt");
     if let Some(cur) = fs::read_to_string(&vfile).ok().and_then(|s| ver(s.trim())) {
         if new_v < cur {
-            return Err(tf!("{}: релиз старше установленного, отказ", "{}: older than the installed release, refused", ja: "{}: インストール済みのリリースより古いため拒否しました", pt: "{}: mais antiga que a versão instalada, recusada", zh: "{}：比已安装的版本旧，已拒绝", m.version));
+            return Err(tf!("{}: релиз старше установленного, отказ", "{}: older than the installed release, refused", ja: "{}: インストール済みのリリースより古いため拒否しました", pt: "{}: mais antiga que a versão instalada, recusada", zh: "{}：比已安装的版本旧，已拒绝", es: "{}: es anterior a la versión instalada, rechazada", m.version));
         }
         if new_v == cur {
-            return Ok(tf!("{}: всё актуально", "{}: up to date", ja: "{}: 最新です", pt: "{}: atualizado", zh: "{}：已是最新", m.version));
+            return Ok(tf!("{}: всё актуально", "{}: up to date", ja: "{}: 最新です", pt: "{}: atualizado", zh: "{}：已是最新", es: "{}: al día", m.version));
         }
     }
     let (mut done, mut errs) = (vec![], vec![]);
@@ -174,14 +174,14 @@ fn check(work: &Path) -> Result<String, String> {
         // GitHub turns spaces in asset names into dots
         let got = fetch(&format!("{BASE}/download/{}/{}", m.version, name.replace(' ', ".")), &tmp).and_then(|_| {
             let b = fs::read(&tmp).map_err(|e| e.to_string())?;
-            if sha256_hex(&b) == *sha { Ok(()) } else { Err(tf!("{name}: хеш не совпадает с манифестом", "{name}: hash does not match the manifest", ja: "{name}: ハッシュがマニフェストと一致しません", pt: "{name}: o hash não corresponde ao manifesto", zh: "{name}：哈希与清单不匹配")) }
+            if sha256_hex(&b) == *sha { Ok(()) } else { Err(tf!("{name}: хеш не совпадает с манифестом", "{name}: hash does not match the manifest", ja: "{name}: ハッシュがマニフェストと一致しません", pt: "{name}: o hash não corresponde ao manifesto", zh: "{name}：哈希与清单不匹配", es: "{name}: el hash no coincide con el manifiesto")) }
         });
         match got.and_then(|_| swap_all(&tmp, &stale)) {
             Ok(()) => done.push(name.as_str()),
             Err(e) => errs.push(e),
         }
     }
-    let msg = if done.is_empty() { tf!("{}: всё актуально", "{}: up to date", ja: "{}: 最新です", pt: "{}: atualizado", zh: "{}：已是最新", m.version) } else { tf!("{}: обновлено {}", "{}: updated {}", ja: "{}: {} を更新しました", pt: "{}: atualizado {}", zh: "{}：已更新 {}", m.version, done.join(", ")) };
+    let msg = if done.is_empty() { tf!("{}: всё актуально", "{}: up to date", ja: "{}: 最新です", pt: "{}: atualizado", zh: "{}：已是最新", es: "{}: al día", m.version) } else { tf!("{}: обновлено {}", "{}: updated {}", ja: "{}: {} を更新しました", pt: "{}: atualizado {}", zh: "{}：已更新 {}", es: "{}: actualizado {}", m.version, done.join(", ")) };
     if errs.is_empty() {
         let _ = fs::write(&vfile, &m.version); // failed files are retried: the version is recorded only when all went through
         Ok(msg)
@@ -191,7 +191,7 @@ fn check(work: &Path) -> Result<String, String> {
 /// After install / uninstall: the task and the installer copy exist exactly while at least one plugin is installed.
 pub(crate) fn updater_sync() {
     if PLUGINS.iter().any(|p| (p.installed)()) {
-        soft(t!("автообновление не включено", "automatic updates were not enabled", ja: "自動更新は有効になりませんでした", pt: "as atualizações automáticas não foram ativadas", zh: "未启用自动更新"), enable());
+        soft(t!("автообновление не включено", "automatic updates were not enabled", ja: "自動更新は有効になりませんでした", pt: "as atualizações automáticas não foram ativadas", zh: "未启用自动更新", es: "no se activaron las actualizaciones automáticas"), enable());
     } else {
         let _ = run("schtasks", &["/delete", "/tn", TASK, "/f"]);
         let _ = fs::remove_dir_all(home()); // fails harmlessly if this very copy is running

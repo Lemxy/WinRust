@@ -70,11 +70,11 @@ pub(crate) fn bar_install() -> Result<(), String> {
         if run("powershell", &["-NoProfile", "-Command", &task]).is_ok() && run("schtasks", &["/run", "/tn", "topbar"]).is_ok() {
             let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
         } else {
-            WARN.lock().unwrap().push(t!("задача topbar не создана: запуск через Run, без прав администратора", "topbar task was not created: it starts via Run, without administrator rights", ja: "topbar タスクを作成できませんでした: 管理者権限なしで Run 経由で起動します", pt: "a tarefa topbar não foi criada: ela inicia pelo Run, sem direitos de administrador", zh: "topbar 计划任务未创建：它将通过 Run 启动，没有管理员权限").into());
+            WARN.lock().unwrap().push(t!("задача topbar не создана: запуск через Run, без прав администратора", "topbar task was not created: it starts via Run, without administrator rights", ja: "topbar タスクを作成できませんでした: 管理者権限なしで Run 経由で起動します", pt: "a tarefa topbar não foi criada: ela inicia pelo Run, sem direitos de administrador", zh: "topbar 计划任务未创建：它将通过 Run 启动，没有管理员权限", es: "no se creó la tarea topbar: se inicia mediante Run, sin permisos de administrador").into());
             run("reg", &["add", RUN_KEY, "/v", "topbar", "/t", "REG_SZ", "/d", &format!("\"{}\"", dst.display()), "/f"])?;
             let _ = winrust_common::launch::program(&dst.to_string_lossy()); // normal user token, like rs-launcher
         }
-        soft(t!("профиль PowerShell не записан", "PowerShell profile was not written", ja: "PowerShell プロファイルを書き込めませんでした", pt: "o perfil do PowerShell não foi gravado", zh: "PowerShell 配置文件未写入"), profile_install()); // a shell nicety, must not fail the bar install
+        soft(t!("профиль PowerShell не записан", "PowerShell profile was not written", ja: "PowerShell プロファイルを書き込めませんでした", pt: "o perfil do PowerShell não foi gravado", zh: "PowerShell 配置文件未写入", es: "no se escribió el perfil de PowerShell"), profile_install()); // a shell nicety, must not fail the bar install
         Ok(())
     })
 }
