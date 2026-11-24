@@ -1,13 +1,23 @@
-//! topbar: the blur behind the bar (style::bar_blur). Windows blurs what lies under a window wherever the window's own
-//! pixels are see-through, so with the blur on the bar is painted into a 32-bit DIB and, at the end, every pixel the
-//! background left alone gets the bar's opacity; whatever was drawn over it (text, icons, pills) stays solid.
+//! topbar: a see-through bar (style::bar_opacity below 100) and the blur behind it (style::bar_blur). Windows composes a
+//! window with an accent policy by its own pixels' alpha, so the bar is painted into a 32-bit DIB and, at the end, every
+//! pixel the background left alone gets the bar's opacity; whatever was drawn over it (text, icons, pills) stays solid.
+//! Fading the whole layered window instead faded the icons and the clock along with the background.
 //! GDI writes no alpha at all, hence comparing against a copy of the background instead of trusting the alpha byte.
 use super::*;
 use std::{cell::RefCell, ffi::c_void, sync::atomic::AtomicU8};
 
-/// The bar wants the blur: switched on and see-through (behind a solid bar there is nothing to show).
-pub(crate) fn blur_on() -> bool {
-    i18n::style::bar_blur() && i18n::style::bar_opacity() < 100
+/// The bar is see-through: its background, not its contents, gets the opacity (and the blur, when that is on).
+pub(crate) fn see_through() -> bool {
+    i18n::style::bar_opacity() < 100
+}
+
+/// What Windows draws behind the bar: 0 nothing (solid), 2 nothing but our own alpha, 3 its blur.
+pub(crate) fn accent() -> u32 {
+    match (see_through(), i18n::style::bar_blur()) {
+        (false, _) => 0,
+        (true, false) => 2,
+        (true, true) => 3,
+    }
 }
 
 /// A top-down 32-bit DIB of `w` x `h`: the bitmap and its pixels; None if Windows would not make one.
@@ -66,7 +76,7 @@ fn blend(px: &mut [u32], bg: &[u32], alpha: u8) {
 
 #[repr(C)]
 struct AccentPolicy {
-    state: u32, // 0 off, 3 blur behind (Windows 10 and 11 both draw it)
+    state: u32, // 0 off, 2 transparent gradient (with flags 2 and colour 0: our alpha only), 3 blur behind (Windows 10 and 11)
     flags: u32,
     color: u32,
     anim: u32,
@@ -79,16 +89,16 @@ struct CompositionData {
     size: usize,
 }
 
-/// Windows' blur behind `hwnd`, on or off. user32's SetWindowCompositionAttribute has no header, so it is looked up;
-/// a Windows without it simply gets no blur. Only called when the state changes.
-pub(crate) unsafe fn set_accent(hwnd: HWND, on: bool) {
+/// The accent behind `hwnd` (see `accent`). user32's SetWindowCompositionAttribute has no header, so it is looked up;
+/// a Windows without it simply gets no see-through bar. Only called when the state changes.
+pub(crate) unsafe fn set_accent(hwnd: HWND, state: u32) {
     static LAST: AtomicU8 = AtomicU8::new(u8::MAX); // the first call always goes through
-    if LAST.swap(on as u8, Relaxed) == on as u8 {
+    if LAST.swap(state as u8, Relaxed) == state as u8 {
         return;
     }
     let Some(f) = GetProcAddress(GetModuleHandleW(wide("user32.dll").as_ptr()), c"SetWindowCompositionAttribute".as_ptr().cast()) else { return };
     let set: unsafe extern "system" fn(HWND, *mut CompositionData) -> i32 = std::mem::transmute(f);
-    let mut policy = AccentPolicy { state: if on { 3 } else { 0 }, flags: 0, color: 0, anim: 0 };
+    let mut policy = AccentPolicy { state, flags: if state == 2 { 2 } else { 0 }, color: 0, anim: 0 };
     let mut d = CompositionData { attr: 19, data: (&mut policy as *mut AccentPolicy).cast(), size: size_of::<AccentPolicy>() };
     set(hwnd, &mut d);
 }

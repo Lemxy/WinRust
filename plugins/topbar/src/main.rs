@@ -1987,7 +1987,7 @@ unsafe fn paint(hwnd: HWND) {
     let h = cr.bottom;
     BUSY.set(false);
     // with the blur the bar is painted where its pixels can be reached (glass.rs); otherwise as always
-    let glass = if glass::blur_on() { glass::dib(wdc, cr.right, h) } else { None };
+    let glass = if glass::see_through() { glass::dib(wdc, cr.right, h) } else { None };
     let dc = CreateCompatibleDC(wdc);
     let bmp = glass.map_or_else(|| CreateCompatibleBitmap(wdc, cr.right, h), |(b, _)| b);
     let old = SelectObject(dc, bmp);

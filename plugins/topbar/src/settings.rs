@@ -126,13 +126,11 @@ pub(crate) unsafe fn bar_page() {
     });
 }
 
-/// Bar transparency from the colours page (the window is layered; 100 % = opaque). With the blur the see-through part
-/// is per pixel (glass.rs) and the window itself stays whole, or the text would fade along with the background.
+/// Bar transparency (100 % = opaque). The see-through part is per pixel (glass.rs) and the window itself stays whole:
+/// fading the layered window faded the icons and the clock along with the background.
 pub(crate) unsafe fn apply_opacity(hwnd: HWND) {
-    let blur = glass::blur_on();
-    let a = if blur { 255 } else { (255 * i18n::style::bar_opacity() as u32 / 100) as u8 };
-    SetLayeredWindowAttributes(hwnd, 0, a, LWA_ALPHA);
-    glass::set_accent(hwnd, blur);
+    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+    glass::set_accent(hwnd, glass::accent());
 }
 
 /// The user's own look: every colour of the bar and the WinRust windows, and the bar's transparency. Each colour opens
