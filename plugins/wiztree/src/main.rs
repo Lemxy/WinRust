@@ -397,16 +397,80 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     }
 }
 
+/// The token's elevation type: 3 is the split token Explorer gives, which a UAC request raises. Anything else without admin
+/// rights cannot be raised from here: a standard user (1), or the "basic user" token `runas /trustlevel` derives from an
+/// elevated one (WinRust starts the bar, the search and what they open with it), which still says 2 (full). From that one
+/// a UAC request quietly starts another copy without rights.
+fn elevation() -> i32 {
+    use windows_sys::Win32::{Security::{GetTokenInformation, TOKEN_QUERY, TokenElevationType}, System::Threading::{GetCurrentProcess, OpenProcessToken}};
+    unsafe {
+        let (mut tok, mut kind, mut n) = (null_mut(), 0i32, 0u32);
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) == 0 {
+            return 1;
+        }
+        let ok = GetTokenInformation(tok, TokenElevationType, (&mut kind as *mut i32).cast(), 4, &mut n) != 0;
+        CloseHandle(tok);
+        if ok { kind } else { 1 }
+    }
+}
+
+/// Explorer is the shell (not WinRust's file manager): it can start a program with its own token.
+fn explorer_is_shell() -> bool {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetShellWindow(), &mut pid);
+        let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if p.is_null() {
+            return false;
+        }
+        let (mut b, mut len) = ([0u16; 520], 520u32);
+        let ok = QueryFullProcessImageNameW(p, 0, b.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(p);
+        ok && String::from_utf16_lossy(&b[..len as usize]).to_lowercase().ends_with("\\explorer.exe")
+    }
+}
+
+/// Explorer starts programs without arguments: the copy it starts finds them here (written a moment before).
+fn note_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(l).join(r"WinRust\disk-start.txt"))
+}
+
+fn take_note() -> Option<Vec<String>> {
+    let p = note_path()?;
+    let fresh = p.metadata().ok()?.modified().ok()?.elapsed().is_ok_and(|e| e.as_secs() < 30);
+    let text = std::fs::read_to_string(&p).ok()?;
+    let _ = std::fs::remove_file(&p);
+    fresh.then(|| text.split_whitespace().map(String::from).collect())
+}
+
 fn main() {
     unsafe {
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut args: Vec<String> = std::env::args().skip(1).collect();
+        if args.is_empty() {
+            args = take_note().unwrap_or_default();
+        }
+        let has = |f: &str| args.iter().any(|a| a == f);
         let drive = args.iter().find(|a| a.len() == 2 && a.ends_with(':')).and_then(|a| a.chars().next()).filter(char::is_ascii_alphabetic).map_or('C', |c| c.to_ascii_uppercase());
-        let cleaning = args.iter().any(|a| a == "--clean");
+        let cleaning = has("--clean");
         if IsUserAnAdmin() == 0 {
-            // raw volume access needs it: ask once through UAC and let the elevated copy do the work
+            // raw volume access needs admin. Asked for once at most: on a PC that elevates without a prompt, a copy that
+            // could not be raised started the next one forever (the cursor spun, nothing opened)
             let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-            let pass = format!("{drive}:{}", if cleaning { " --clean" } else { "" });
-            ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe).as_ptr(), wide(&pass).as_ptr(), null(), SW_SHOWNORMAL);
+            let mode = format!("{drive}:{}", if cleaning { " --clean" } else { "" });
+            if has("--elevated") {
+                let msg = t!("WinRust Disk нужны права администратора, чтобы читать диски, а Windows их не дала. Откройте его из меню «Пуск».", "WinRust Disk needs administrator rights to read the drives, and Windows did not give them. Open it from the Start menu.", ja: "WinRust Disk はドライブを読み取るために管理者権限が必要ですが、Windows から付与されませんでした。スタート メニューから開いてください。", pt: "O WinRust Disk precisa de direitos de administrador para ler as unidades, e o Windows não os concedeu. Abra-o pelo menu Iniciar.", zh: "WinRust Disk 需要管理员权限才能读取磁盘，但 Windows 没有授予。请从开始菜单打开它。", es: "WinRust Disk necesita permisos de administrador para leer los discos y Windows no se los dio. Ábrelo desde el menú Inicio.");
+                MessageBoxW(null_mut(), wide(msg).as_ptr(), wide("WinRust Disk").as_ptr(), MB_ICONWARNING);
+                return;
+            }
+            if elevation() != 3 && !has("--via-shell") && explorer_is_shell() && let Some(note) = note_path() {
+                // a token UAC cannot raise: Explorer starts a copy with its own, and that one asks
+                let _ = note.parent().map(std::fs::create_dir_all);
+                if std::fs::write(&note, format!("{mode} --via-shell")).is_ok() && std::process::Command::new("explorer.exe").arg(&exe).spawn().is_ok() {
+                    return;
+                }
+            }
+            ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe).as_ptr(), wide(&format!("{mode} --elevated")).as_ptr(), null(), SW_SHOWNORMAL);
             return;
         }
         SetProcessDPIAware();
