@@ -29,6 +29,7 @@ mod shot;
 mod lang;
 mod settings;
 mod thumbs;
+mod glass;
 use {tray::*, status::*, run::*, shot::*, lang::*, settings::*};
 use windows::{
     Win32::{
@@ -439,11 +440,11 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 unsafe fn tip_text(h: i32) -> String {
     match h {
         SEARCH => "Search".into(),
-        TASKVIEW => t!("Представление задач", "Task View", ja: "タスク ビュー", pt: "Visão de Tarefas").into(),
+        TASKVIEW => t!("Представление задач", "Task View", ja: "タスク ビュー", pt: "Visão de Tarefas", es: "Vista de tareas").into(),
         0 => "Start".into(),
         TAPP => "Hidden icons".into(),
-        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式").into(),
-        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho", zh: "显示桌面").into(),
+        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式", es: "Estilo").into(),
+        SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho", zh: "显示桌面", es: "Mostrar escritorio").into(),
         CLOCK => {
             let mut t: SYSTEMTIME = zeroed();
             GetLocalTime(&mut t);
@@ -451,12 +452,12 @@ unsafe fn tip_text(h: i32) -> String {
             let n = GetDateFormatW(0x0400, 2, &t, null(), b.as_mut_ptr(), 80).max(1) as usize - 1; // DATE_LONGDATE
             String::from_utf16_lossy(&b[..n])
         }
-        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", zh: "输入语言：{}", layout_names(layouts().1).0),
+        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", zh: "输入语言：{}", es: "Idioma de entrada: {}", layout_names(layouts().1).0),
         WIFI_I => match net() {
-            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%", zh: "Wi‑Fi · 信号 {q}%"),
-            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet", zh: "Wi‑Fi 已连接，无 Internet").into(),
-            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo", zh: "有线网络").into(),
-            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接").into(),
+            Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%", zh: "Wi‑Fi · 信号 {q}%", es: "Wi‑Fi · señal {q}%"),
+            Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet", zh: "Wi‑Fi 已连接，无 Internet", es: "Wi‑Fi conectado, sin internet").into(),
+            Link::Cable => t!("Интернет по кабелю", "Internet over a cable", ja: "有線のインターネット", pt: "Internet por cabo", zh: "有线网络", es: "Internet por cable").into(),
+            Link::Offline => t!("Нет подключения к сети", "Not connected", ja: "未接続", pt: "Não conectado", zh: "未连接", es: "No conectado").into(),
         },
         VOL_I => vol_tip(),
         BAT_I => match BAT.get() {
@@ -1302,8 +1303,11 @@ fn refresh_status() {
             // The empty-tray check below misses this when some icons already reached the bar.
             announce();
         }
-        if TAPPS.with_borrow(|t| t.is_empty()) && n % 4 == 2 {
-            announce(); // no icons yet (apps started before us, or explorer restarted): ask them to register again
+        // no icons yet (apps started before us, or explorer restarted): ask them to register again. Every 4 s for the first
+        // minute, then once a minute: a PC with no tray apps at all should not wake every window in the session forever
+        let ask = if n < 60 { n % 4 == 2 } else { n % 60 == 2 };
+        if ask && TAPPS.with_borrow(|t| t.is_empty()) {
+            announce();
         }
         if n % 3 == 0 {
             read_wifi();
@@ -1934,10 +1938,17 @@ unsafe fn paint(hwnd: HWND) {
     GetClientRect(hwnd, &mut cr);
     let h = cr.bottom;
     BUSY.set(false);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, h));
+    // with the blur the bar is painted where its pixels can be reached (glass.rs); otherwise as always
+    let glass = if glass::blur_on() { glass::dib(wdc, cr.right, h) } else { None };
+    let dc = CreateCompatibleDC(wdc);
+    let bmp = glass.map_or_else(|| CreateCompatibleBitmap(wdc, cr.right, h), |(b, _)| b);
     let old = SelectObject(dc, bmp);
     // the background (gradient, facets, hairlines) is the same every frame: drawn once per size / style, then copied
     BitBlt(dc, 0, 0, cr.right, h, bg_layer(wdc, cr), 0, 0, SRCCOPY);
+    let px_count = (cr.right * h).max(0) as usize;
+    if let Some((_, px)) = glass {
+        glass::remember_backdrop(px, px_count, BG.get().2);
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let [f_txt, f_small, f_glyph, f_bold] = bar_fonts();
     let of = SelectObject(dc, f_txt);
@@ -2085,6 +2096,9 @@ unsafe fn paint(hwnd: HWND) {
     text(dc, &dt, RECT { left: cb.left, top: mid - sc(1), right: cb.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
     }
 
+    if let Some((_, px)) = glass {
+        glass::finish(px, px_count, (255 * i18n::style::bar_opacity() as u32 / 100) as u8);
+    }
     BitBlt(wdc, 0, 0, cr.right, h, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
     SelectObject(dc, old);
@@ -2171,13 +2185,12 @@ unsafe fn open(path: &[u16]) {
     }
 }
 
-/// Starts the disk cleaner (rs-du, installed next to the task manager) elevated: it reads the raw volume.
 /// Right-click menu of an app button, like the Windows taskbar's jump list: pin / unpin, close, end process.
 fn wstr_of(w: &[u16]) -> String {
     String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())])
 }
 
-/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows"; "3 个窗口" (no plural in Chinese).
+/// "1 окно", "3 окна", "5 окон"; "1 window", "2 windows"; "3 个窗口" (no plural in Chinese); "2 ventanas".
 fn windows_ru(n: usize) -> String {
     use i18n::Lang;
     let w = match lang!() {
@@ -2185,6 +2198,7 @@ fn windows_ru(n: usize) -> String {
         Lang::Pt => if n == 1 { "janela" } else { "janelas" },
         Lang::Ja => "ウィンドウ",
         Lang::Zh => "个窗口",
+        Lang::Es => if n == 1 { "ventana" } else { "ventanas" },
         Lang::Ru => match (n % 10, n % 100) {
             (1, x) if x != 11 => "окно",
             (2..=4, x) if !(12..=14).contains(&x) => "окна",
@@ -2215,9 +2229,9 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
     let stem = std::path::Path::new(&launch).file_stem().unwrap_or_default().to_string_lossy().to_string();
     let name: String = stem.chars().take(1).flat_map(char::to_uppercase).chain(stem.chars().skip(1)).collect();
     let sub = match (wins.len(), pin.is_some()) {
-        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução", zh: "已固定 · 未运行").to_string(),
-        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", zh: "已固定 · {}", windows_ru(n)),
-        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", zh: "运行中 · {}", windows_ru(n)),
+        (0, _) => t!("Закреплено · не запущено", "Pinned · not running", ja: "固定済み · 未起動", pt: "Fixado · não está em execução", zh: "已固定 · 未运行", es: "Anclado · sin ejecutar").to_string(),
+        (n, true) => tf!("Закреплено · {}", "Pinned · {}", ja: "固定済み · {}", pt: "Fixado · {}", zh: "已固定 · {}", es: "Anclado · {}", windows_ru(n)),
+        (n, false) => tf!("Запущено · {}", "Running · {}", ja: "実行中 · {}", pt: "Em execução · {}", zh: "运行中 · {}", es: "En ejecución · {}", windows_ru(n)),
     };
     let icon = if picon.is_null() { bicon } else { picon };
     let mut items: Vec<(fly::MItem, A)> = Vec::new();
@@ -2229,30 +2243,30 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
         }
     }
     if !launch.is_empty() {
-        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela", zh: "新建窗口") });
+        let it = fly::MItem::new(if wins.is_empty() { t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开", es: "Abrir") } else { t!("Новое окно", "New window", ja: "新しいウィンドウ", pt: "Nova janela", zh: "新建窗口", es: "Nueva ventana") });
         items.push((if items.is_empty() { it } else { it.sep() }, A::Open));
     }
     if pin.is_some() {
-        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra", zh: "从任务栏取消固定")), A::Pin));
+        items.push((fly::MItem::new(t!("Открепить от панели", "Unpin from the bar", ja: "バーから固定を外す", pt: "Desafixar da barra", zh: "从任务栏取消固定", es: "Desanclar de la barra")), A::Pin));
     } else if !exe.is_empty() {
-        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra", zh: "固定到任务栏")), A::Pin));
+        items.push((fly::MItem::new(t!("Закрепить на панели", "Pin to the bar", ja: "バーに固定する", pt: "Fixar na barra", zh: "固定到任务栏", es: "Anclar a la barra")), A::Pin));
     }
     if let Some(p) = pin.filter(|_| !lnk.is_empty()) {
         let n = PINS.with_borrow(|p| p.len());
         if p > 0 {
-            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima", zh: "上移") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda", zh: "左移") }), A::Left));
+            items.push((fly::MItem::new(if vert() { t!("Выше", "Move up", ja: "上へ移動", pt: "Mover para cima", zh: "上移", es: "Mover arriba") } else { t!("Сдвинуть влево", "Move left", ja: "左へ移動", pt: "Mover para a esquerda", zh: "左移", es: "Mover a la izquierda") }), A::Left));
         }
         if p + 1 < n {
-            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo", zh: "下移") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita", zh: "右移") }), A::Right));
+            items.push((fly::MItem::new(if vert() { t!("Ниже", "Move down", ja: "下へ移動", pt: "Mover para baixo", zh: "下移", es: "Mover abajo") } else { t!("Сдвинуть вправо", "Move right", ja: "右へ移動", pt: "Mover para a direita", zh: "右移", es: "Mover a la derecha") }), A::Right));
         }
     }
     if !launch.is_empty() {
         let s = fly::start_pinned(&launch);
-        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单") }), A::Start));
+        items.push((fly::MItem::new(if s { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除", es: "Quitar de Inicio") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单", es: "Agregar a Inicio") }), A::Start));
     }
     if !wins.is_empty() {
-        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas", zh: "关闭所有窗口") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela", zh: "关闭窗口") }).hint("Alt+F4").sep(), A::Close));
-        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo", zh: "结束进程")).danger(), A::Kill));
+        items.push((fly::MItem::new(if wins.len() > 1 { t!("Закрыть все окна", "Close all windows", ja: "すべてのウィンドウを閉じる", pt: "Fechar todas as janelas", zh: "关闭所有窗口", es: "Cerrar todas las ventanas") } else { t!("Закрыть окно", "Close window", ja: "ウィンドウを閉じる", pt: "Fechar janela", zh: "关闭窗口", es: "Cerrar ventana") }).hint("Alt+F4").sep(), A::Close));
+        items.push((fly::MItem::new(t!("Завершить процесс", "End process", ja: "プロセスを終了", pt: "Finalizar processo", zh: "结束进程", es: "Finalizar proceso")).danger(), A::Kill));
     }
     let acts: Vec<A> = items.iter().map(|x| x.1).collect();
     let items = items.into_iter().map(|x| x.0).collect();
@@ -2453,11 +2467,14 @@ unsafe fn open_purge() {
     }
 }
 
+/// The disk cleaner, elevated (it reads the raw volumes): WinRust Disk's cleaner page when that is installed, a window for
+/// every drive; else rs-du's list in a console (it comes with the task manager).
 unsafe fn open_cleaner() {
-    let Some(pf) = std::env::var_os("ProgramFiles") else { return };
-    let exe = PathBuf::from(pf).join(r"rtaskmgr\rs-du.exe");
+    let Some(pf) = std::env::var_os("ProgramFiles").map(PathBuf::from) else { return };
+    let disk = pf.join(r"wiztree\wiztree.exe");
+    let (exe, args) = if disk.is_file() { (disk, "--clean") } else { (pf.join(r"rtaskmgr\rs-du.exe"), "--clean --ask") };
     if exe.is_file() {
-        ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe.to_string_lossy()).as_ptr(), wide("C: --clean --ask").as_ptr(), null(), SW_SHOWNORMAL);
+        ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe.to_string_lossy()).as_ptr(), wide(args).as_ptr(), null(), SW_SHOWNORMAL);
     }
 }
 
@@ -2486,33 +2503,33 @@ unsafe fn open_launcher() -> bool {
 /// Right click on Start: the Win+X menu (Explorer's own is gone with the bar).
 unsafe fn start_menu() {
     let bar = BAR.load(Relaxed) as HWND;
-    // (label in ru/en/ja/pt/zh, target); "!" targets are actions of ours, the rest goes through `open`
-    let tools: [(&str, &str, &str, &str, &str, &str); 15] = [
-        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "应用和功能", "ms-settings:appsfeatures"),
-        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "电源选项", "powercfg.cpl"),
-        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "事件查看器", "eventvwr.msc"),
-        ("Система", "System", "システム", "Sistema", "系统", "ms-settings:about"),
-        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "设备管理器", "devmgmt.msc"),
-        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "网络连接", "ms-settings:network"),
-        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "磁盘管理", "diskmgmt.msc"),
-        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "计算机管理", "compmgmt.msc"),
-        ("Терминал", "Terminal", "ターミナル", "Terminal", "终端", "!term"),
-        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "任务管理器", "taskmgr.exe"),
-        ("Параметры", "Settings", "設定", "Configurações", "设置", "ms-settings:"),
-        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "文件资源管理器", "shell:MyComputerFolder"),
-        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "运行", "!run"),
-        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "桌面", "!desktop"),
-        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "任务视图", "!taskview"),
+    // (label in ru/en/ja/pt/zh/es, target); "!" targets are actions of ours, the rest goes through `open`
+    let tools: [(&str, &str, &str, &str, &str, &str, &str); 15] = [
+        ("Приложения и возможности", "Apps and Features", "アプリと機能", "Aplicativos e Recursos", "应用和功能", "Aplicaciones y características", "ms-settings:appsfeatures"),
+        ("Электропитание", "Power Options", "電源オプション", "Opções de Energia", "电源选项", "Opciones de energía", "powercfg.cpl"),
+        ("Просмотр событий", "Event Viewer", "イベント ビューアー", "Visualizador de Eventos", "事件查看器", "Visor de eventos", "eventvwr.msc"),
+        ("Система", "System", "システム", "Sistema", "系统", "Sistema", "ms-settings:about"),
+        ("Диспетчер устройств", "Device Manager", "デバイス マネージャー", "Gerenciador de Dispositivos", "设备管理器", "Administrador de dispositivos", "devmgmt.msc"),
+        ("Сетевые подключения", "Network Connections", "ネットワーク接続", "Conexões de Rede", "网络连接", "Conexiones de red", "ms-settings:network"),
+        ("Управление дисками", "Disk Management", "ディスクの管理", "Gerenciamento de Disco", "磁盘管理", "Administración de discos", "diskmgmt.msc"),
+        ("Управление компьютером", "Computer Management", "コンピューターの管理", "Gerenciamento do Computador", "计算机管理", "Administración de equipos", "compmgmt.msc"),
+        ("Терминал", "Terminal", "ターミナル", "Terminal", "终端", "Terminal", "!term"),
+        ("Диспетчер задач", "Task Manager", "タスク マネージャー", "Gerenciador de Tarefas", "任务管理器", "Administrador de tareas", "taskmgr.exe"),
+        ("Параметры", "Settings", "設定", "Configurações", "设置", "Configuración", "ms-settings:"),
+        ("Проводник", "File Explorer", "エクスプローラー", "Explorador de Arquivos", "文件资源管理器", "Explorador de archivos", "shell:MyComputerFolder"),
+        ("Выполнить", "Run", "ファイル名を指定して実行", "Executar", "运行", "Ejecutar", "!run"),
+        ("Рабочий стол", "Desktop", "デスクトップ", "Área de Trabalho", "桌面", "Escritorio", "!desktop"),
+        ("Представление задач", "Task View", "タスク ビュー", "Visão de Tarefas", "任务视图", "Vista de tareas", "!taskview"),
     ];
-    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "锁定", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "睡眠", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "重启", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "关机", "!shutdown")];
+    let power = [("Блокировка", "Lock", "ロック", "Bloquear", "锁定", "Bloquear", "!lock"), ("Сон", "Sleep", "スリープ", "Suspender", "睡眠", "Suspender", "!sleep"), ("Перезагрузка", "Restart", "再起動", "Reiniciar", "重启", "Reiniciar", "!restart"), ("Завершение работы", "Shut down", "シャットダウン", "Desligar", "关机", "Apagar", "!shutdown")];
     let mut items = Vec::new();
     let mut targets = Vec::new();
-    for (i, (ru, en, ja, pt, zh, to)) in tools.iter().chain(power.iter()).enumerate() {
-        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt, zh: *zh));
+    for (i, (ru, en, ja, pt, zh, es, to)) in tools.iter().chain(power.iter()).enumerate() {
+        let it = fly::MItem::new(t!(*ru, *en, ja: *ja, pt: *pt, zh: *zh, es: *es));
         items.push(if i == tools.len() { it.sep() } else { it });
         targets.push(*to);
     }
-    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar", zh: "启动").to_string(), String::new());
+    let head = (null_mut(), "\u{E700}", t!("Пуск", "Start", ja: "開始", pt: "Iniciar", zh: "启动", es: "Iniciar").to_string(), String::new());
     fly::menu(tip_cx(&bar_layout(bar), 0), Some(head), items, move |i| {
         let Some(&to) = targets.get(i) else { return };
         let quiet = |c: &mut Command| { let _ = c.creation_flags(NO_WINDOW).spawn(); };
@@ -2627,8 +2644,8 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
         CLOCK => {
             // right click: like Windows 11, a menu with the date and time and notification settings (#126)
             let items = vec![
-                fly::MItem::new(t!("Настройка даты и времени", "Adjust date and time", ja: "日付と時刻を調整する", pt: "Ajustar data e hora")),
-                fly::MItem::new(t!("Параметры уведомлений", "Notification settings", ja: "通知の設定", pt: "Configurações de notificação")),
+                fly::MItem::new(t!("Настройка даты и времени", "Adjust date and time", ja: "日付と時刻を調整する", pt: "Ajustar data e hora", es: "Ajustar fecha y hora")),
+                fly::MItem::new(t!("Параметры уведомлений", "Notification settings", ja: "通知の設定", pt: "Configurações de notificação", es: "Configuración de notificaciones")),
             ];
             fly::menu(tip_cx(&bar_layout(BAR.load(Relaxed) as HWND), CLOCK), None, items, |i| {
                 if i == 0 {
@@ -2770,6 +2787,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             hide_taskbar();
             place(hwnd);
         }
+        return 0;
+    }
+    if msg != 0 && msg == i18n::style::msg() {
+        // someone switched the look or the language (the installer, rust-settings, our own gear): repaint in it
+        i18n::style::reload();
+        onedrive_recheck();
+        relook(false);
         return 0;
     }
     match msg {
@@ -2970,7 +2994,8 @@ fn main() {
         let dc = GetDC(null_mut());
         SCALE.set(GetDeviceCaps(dc, LOGPIXELSX as i32) as f32 / 96.0);
         ReleaseDC(null_mut(), dc);
-        SHOWN.set(std::fs::read_to_string(appdata_file("topbar-tray.txt")).ok().map(|s| s.lines().map(str::to_string).collect()));
+        // our own list once the user moved an icon; before that, what Windows 11 shows on its taskbar
+        SHOWN.set(std::fs::read_to_string(appdata_file("topbar-tray.txt")).ok().map(|s| s.lines().map(str::to_string).collect()).or_else(windows_promoted));
         load_pins();
         fly::init(GetModuleHandleW(null()));
         thread::spawn(fly::load_apps);
@@ -2988,6 +3013,7 @@ fn main() {
         ChangeWindowMessageFilterEx(HOST.get(), WM_COPYDATA, MSGFLT_ALLOW, null_mut());
         ChangeWindowMessageFilterEx(hwnd, CALLBACK, MSGFLT_ALLOW, null_mut());
         ChangeWindowMessageFilterEx(hwnd, TB_MSG.get(), MSGFLT_ALLOW, null_mut()); // explorer restarted (it runs unelevated)
+        ChangeWindowMessageFilterEx(hwnd, i18n::style::msg(), MSGFLT_ALLOW, null_mut()); // look / language from unelevated windows
         // files dragged from a normal-rights app onto the (elevated) bar: Start button = add to Start, elsewhere = pin
         DragAcceptFiles(hwnd, 1);
         for m in [WM_DROPFILES, 0x49 /* WM_COPYGLOBALDATA */, WM_COPYDATA] {
@@ -3020,6 +3046,7 @@ fn main() {
         hide_taskbar();
         place(hwnd);
         refresh();
+        onedrive_recheck(); // remembers the OneDrive switch as it is now
         announce(); // apps already running re-add their icons to us
         SetTimer(hwnd, 1, 1000, None); // status poll; windows come from win_event
         BAR.store(hwnd as isize, Relaxed);

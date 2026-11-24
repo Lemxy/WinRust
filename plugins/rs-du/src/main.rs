@@ -2,6 +2,7 @@
 // rs-du [X:] --clean --ask       numbered list by risk, asks what to clean, waits for Enter at the end (used by the topbar menu)
 // rs-du [X:] --clean [--apply [--all|--safe]]   list (or delete: default = green+yellow, --all = everything, --safe = green only)
 // rs-du [X:] --restore | --purge   bring quarantined files back | empty the quarantine now (it also empties itself after 30 days)
+// Without X: the cleaner and the quarantine cover every fixed drive; the analysis looks at C:.
 #[macro_use]
 extern crate winrust_common;
 mod clean;
@@ -9,36 +10,29 @@ use winrust_common::mft::*;
 // Reads the NTFS MFT (see mft.rs), sums sizes up the parent chain, prints the biggest folders and files. Needs admin (raw volume handle).
 // shortcuts: attribute lists / extension records are ignored (very fragmented files are undercounted),
 // folder index sizes are not counted; upgrade if numbers drift from Explorer.
-use std::{collections::{HashMap, HashSet}, env, fs, io::Write, path::{Path, PathBuf}};
-
-/// Bytes under `p`, not following symlinks/junctions.
-fn dir_size(p: &Path) -> u64 {
-    let Ok(rd) = fs::read_dir(p) else { return 0 };
-    rd.flatten().map(|e| match e.file_type() { Ok(t) if t.is_dir() => dir_size(&e.path()), Ok(t) if t.is_symlink() => 0, _ => e.metadata().map_or(0, |m| m.len()) }).sum()
-}
-
-fn wipe(p: &Path) {
-    if let Ok(rd) = fs::read_dir(p) {
-        for e in rd.flatten() {
-            let q = e.path();
-            let _ = if e.file_type().is_ok_and(|t| t.is_dir()) { fs::remove_dir_all(&q) } else { fs::remove_file(&q) }; // locked/in-use: skipped
-        }
-    }
-}
+use std::{env, io::Write, path::PathBuf};
 
 fn main() {
     winrust_common::utf8_console();
     let a: Vec<String> = env::args().skip(1).collect();
     let flag = |f: &str| a.iter().any(|x| x == f);
     let val = |f: &str, d: usize| a.iter().position(|x| x == f).and_then(|i| a.get(i + 1)?.parse().ok()).unwrap_or(d);
-    let drive = a.first().filter(|x| x.len() == 2 && x.ends_with(':')).and_then(|x| x.chars().next()).unwrap_or('C').to_ascii_uppercase();
+    let named = a.first().filter(|x| x.len() == 2 && x.ends_with(':')).and_then(|x| x.chars().next()).map(|c| c.to_ascii_uppercase());
+    let drive = named.unwrap_or('C');
     let (top, depth, logical, json) = (val("--top", 20), val("--depth", 2), flag("--logical"), flag("--json"));
-    if flag("--restore") { return clean::restore(drive); }
-    if flag("--purge") { return clean::purge(drive, true); }
+    let drives = named.map_or_else(winrust_common::clean::fixed_drives, |d| vec![d]);
+    if flag("--restore") { return clean::restore(&drives); }
+    if flag("--purge") { return clean::purge(&drives); }
+    if flag("--clean") {
+        let scanned: Vec<winrust_common::clean::Digest> = match named {
+            Some(d) => vec![scan(d).map(|recs| winrust_common::clean::digest(&winrust_common::clean::Drive { letter: d, tot: totals(&recs, false), recs })).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) })],
+            None => winrust_common::clean::scan_all(&mut |s| eprintln!("{s}")),
+        };
+        return clean::clean(&scanned, flag("--apply"), flag("--ask"), flag("--all"), flag("--safe"));
+    }
     let t = std::time::Instant::now();
     let recs = scan(drive).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) });
     let tot = totals(&recs, logical);
-    if flag("--clean") { clean::clean(&recs, &tot, drive, flag("--apply"), flag("--ask"), flag("--all"), flag("--safe")); return; }
     let mut dirs: Vec<(u32, u64)> = vec![];
     let mut files: Vec<(u32, u64)> = vec![];
     for (&id, &s) in &tot {
@@ -53,10 +47,10 @@ fn main() {
         let j = |v: &[(String, u64)]| v.iter().map(|(p, s)| format!("{{\"path\":\"{}\",\"bytes\":{s}}}", p.replace('\\', "\\\\").replace('"', "\\\""))).collect::<Vec<_>>().join(",");
         println!("{{\"drive\":\"{drive}\",\"folders\":[{}],\"files\":[{}]}}", j(&d), j(&f));
     } else {
-        println!("{}", tf!("{drive}: записей {0}, всего {1} ({2}), {3:.2} с", "{drive}: {0} records, {1} total ({2}), {3:.2}s", ja: "{drive}: {0} レコード、合計 {1} ({2})、{3:.2} 秒", pt: "{drive}: {0} registros, {1} no total ({2}), {3:.2}s", zh: "{drive}: {0} 条记录，共 {1}（{2}），{3:.2} 秒", recs.len(), human(tot.get(&ROOT).copied().unwrap_or(0)), if logical { t!("логический", "logical", ja: "論理", pt: "lógico", zh: "逻辑大小") } else { t!("на диске", "on disk", ja: "ディスク上", pt: "no disco", zh: "占用空间") }, t.elapsed().as_secs_f32()));
-        println!("{}", tf!("\nПапки (глубина <= {depth}):", "\nFolders (depth <= {depth}):", ja: "\nフォルダー (深さ <= {depth}):", pt: "\nPastas (profundidade <= {depth}):", zh: "\n文件夹（深度 <= {depth}）："));
+        println!("{}", tf!("{drive}: записей {0}, всего {1} ({2}), {3:.2} с", "{drive}: {0} records, {1} total ({2}), {3:.2}s", ja: "{drive}: {0} レコード、合計 {1} ({2})、{3:.2} 秒", pt: "{drive}: {0} registros, {1} no total ({2}), {3:.2}s", zh: "{drive}: {0} 条记录，共 {1}（{2}），{3:.2} 秒", es: "{drive}: {0} registros, {1} en total ({2}), {3:.2}s", recs.len(), human(tot.get(&ROOT).copied().unwrap_or(0)), if logical { t!("логический", "logical", ja: "論理", pt: "lógico", zh: "逻辑大小", es: "lógico") } else { t!("на диске", "on disk", ja: "ディスク上", pt: "no disco", zh: "占用空间", es: "en disco") }, t.elapsed().as_secs_f32()));
+        println!("{}", tf!("\nПапки (глубина <= {depth}):", "\nFolders (depth <= {depth}):", ja: "\nフォルダー (深さ <= {depth}):", pt: "\nPastas (profundidade <= {depth}):", zh: "\n文件夹（深度 <= {depth}）：", es: "\nCarpetas (profundidad <= {depth}):"));
         for (p, s) in &d { println!("{:>10}  {p}", human(*s)); }
-        println!("{}", t!("\nФайлы:", "\nFiles:", ja: "\nファイル:", pt: "\nArquivos:", zh: "\n文件："));
+        println!("{}", t!("\nФайлы:", "\nFiles:", ja: "\nファイル:", pt: "\nArquivos:", zh: "\n文件：", es: "\nArchivos:"));
         for (p, s) in &f { println!("{:>10}  {p}", human(*s)); }
     }
 }
@@ -105,19 +99,6 @@ mod tests {
         let mut b = record();
         b[0x16] = 0;
         assert!(parse(&mut b).is_none());
-    }
-
-    #[test]
-    fn wipe_empties_dir_but_keeps_it() {
-        let d = env::temp_dir().join("rs-du-test-wipe");
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(d.join("a/b")).unwrap();
-        fs::write(d.join("a/b/f"), [0u8; 100]).unwrap();
-        fs::write(d.join("g"), [0u8; 50]).unwrap();
-        assert_eq!(dir_size(&d), 150);
-        wipe(&d);
-        assert!(d.is_dir() && dir_size(&d) == 0 && fs::read_dir(&d).unwrap().count() == 0);
-        fs::remove_dir(&d).unwrap();
     }
 
     #[test]

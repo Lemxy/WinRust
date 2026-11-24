@@ -1,10 +1,12 @@
 #![windows_subsystem = "windows"]
-// wiztree [X:]  Disk usage treemap on the NTFS MFT (the same reader as rs-du, from winrust-common).
+// wiztree [X:] [--clean]  Disk usage treemap on the NTFS MFT (the same reader as rs-du, from winrust-common), and a cleaner
+// for every drive (clean.rs; the button at the top right switches, --clean opens on it).
 // Click a folder: go in. Right click / Backspace: up. Click a file: show it in Explorer. Tab: next drive. F5: rescan. Esc: quit.
 // Needs admin (raw volume); starts itself elevated (UAC) when it is not.
 // shortcuts: one level of the tree at a time, the 300 biggest items; a folder's own index size is not counted (see common/src/mft.rs).
 use winrust_common::{t, tf};
 use winrust_common::mft::*;
+mod clean;
 use std::{cell::RefCell, collections::HashMap, ptr::{null, null_mut}};
 use windows_sys::Win32::{
     Foundation::*,
@@ -55,6 +57,12 @@ struct App {
     hot: Option<usize>,
     dpi: i32,
     font: isize,
+    bold: isize,
+    small: isize,
+    cleaning: bool, // the cleaner page is up instead of the map
+    switch: RECT,   // the title bar button between the two
+    switch_hot: bool,
+    clean: clean::Clean,
 }
 thread_local! { static APP: RefCell<App> = RefCell::new(App { drive: 'C', cur: ROOT, dpi: 96, ..Default::default() }) }
 
@@ -131,7 +139,7 @@ fn fixed_drives() -> Vec<char> {
 fn rescan(hwnd: HWND, drive: char) {
     APP.with_borrow_mut(|a| {
         (a.tree, a.drive, a.cur, a.hot, a.cells) = (None, drive, ROOT, None, vec![]);
-        a.status = tf!("Чтение MFT диска {drive}: ...", "Reading the MFT of {drive}: ...", ja: "ドライブ {drive}: の MFT を読み込んでいます...", pt: "Lendo a MFT de {drive}: ...", zh: "正在读取 {drive}: 的 MFT…");
+        a.status = tf!("Чтение MFT диска {drive}: ...", "Reading the MFT of {drive}: ...", ja: "ドライブ {drive}: の MFT を読み込んでいます...", pt: "Lendo a MFT de {drive}: ...", zh: "正在读取 {drive}: 的 MFT…", es: "Leyendo la MFT de {drive}: ...");
     });
     unsafe { InvalidateRect(hwnd, null(), 0) };
     let h = hwnd as isize;
@@ -140,6 +148,9 @@ fn rescan(hwnd: HWND, drive: char) {
         unsafe { PostMessageW(h as HWND, WM_DONE, 0, Box::into_raw(Box::new(r)) as isize) };
     });
 }
+
+/// The window draws its own caption: the path line on top is the title bar, the buttons sit at its right end.
+const CAP: winrust_common::caption::Caption = winrust_common::caption::Caption { height: 32, drag: 44, buttons: winrust_common::caption::MIN | winrust_common::caption::MAX | winrust_common::caption::CLOSE };
 
 unsafe fn paint(hwnd: HWND) {
     unsafe {
@@ -171,7 +182,12 @@ unsafe fn paint(hwnd: HWND) {
             a.cells.clear();
             let mut head = format!("{}:", a.drive);
             let mut foot = a.status.clone();
-            if let Some(t) = &a.tree {
+            if a.cleaning {
+                head = t!("Освободить место на всех дисках", "Free up space on every drive", ja: "すべてのドライブの空き領域を増やす", pt: "Liberar espaço em todas as unidades", zh: "释放所有磁盘的空间", es: "Liberar espacio en todos los discos").into();
+                foot.clear(); // the page has its own footer
+                clean::paint(mem, a, w, h, top);
+                SelectObject(mem, a.font as _);
+            } else if let Some(t) = &a.tree {
                 head = path_of(&t.recs, a.cur, a.drive).0;
                 let items: Vec<(u32, u64)> = t.kids.get(&a.cur).map_or(vec![], |v| v.iter().take(MAX_CELLS).map(|&id| (id, t.tot[&id])).collect());
                 let pad = 8.0 * k;
@@ -196,18 +212,49 @@ unsafe fn paint(hwnd: HWND) {
                 head = format!("{head}    {}", human(size));
                 foot = match a.hot.and_then(|n| a.cells.get(n)) {
                     Some((_, id)) => format!("{}    {}", path_of(&t.recs, *id, a.drive).0, human(t.tot[id])),
-                    None => t!("Щелчок: открыть папку / показать файл    ПКМ, Backspace: вверх    Tab: следующий диск    F5: обновить", "Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan", ja: "クリック: フォルダーを開く / ファイルを表示    右クリック、Backspace: 上へ    Tab: 次のドライブ    F5: 再スキャン", pt: "Clique: abrir pasta / mostrar arquivo    Botão direito, Backspace: subir    Tab: próxima unidade    F5: examinar de novo", zh: "单击：打开文件夹 / 定位文件    右键、Backspace：上一层    Tab：下一个磁盘    F5：重新扫描").into(),
+                    None => t!("Щелчок: открыть папку / показать файл    ПКМ, Backspace: вверх    Tab: следующий диск    F5: обновить", "Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan", ja: "クリック: フォルダーを開く / ファイルを表示    右クリック、Backspace: 上へ    Tab: 次のドライブ    F5: 再スキャン", pt: "Clique: abrir pasta / mostrar arquivo    Botão direito, Backspace: subir    Tab: próxima unidade    F5: examinar de novo", zh: "单击：打开文件夹 / 定位文件    右键、Backspace：上一层    Tab：下一个磁盘    F5：重新扫描", es: "Clic: abrir carpeta / mostrar archivo    Clic derecho, Retroceso: subir    Tab: siguiente unidad    F5: volver a analizar").into(),
                 };
             }
-            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: w - 12, bottom: top }, ACCENT, one);
-            text(&foot, RECT { left: (12.0 * k) as i32, top: h - bot, right: w - 12, bottom: h }, DIM, one);
+            // the switch between the map and the cleaner, at the right end of the title bar
+            let label = if a.cleaning { t!("Карта диска", "Disk map", ja: "ディスク マップ", pt: "Mapa do disco", zh: "磁盘地图", es: "Mapa del disco") } else { t!("Освободить место", "Free up space", ja: "空き領域を増やす", pt: "Liberar espaço", zh: "释放空间", es: "Liberar espacio") };
+            let lw: Vec<u16> = label.encode_utf16().collect();
+            let mut sz: SIZE = std::mem::zeroed();
+            GetTextExtentPoint32W(mem, lw.as_ptr(), lw.len() as i32, &mut sz);
+            let (bw, bh, right) = (sz.cx + (28.0 * k) as i32, (28.0 * k) as i32, w - winrust_common::caption::buttons_width(hwnd, CAP) - (10.0 * k) as i32);
+            a.switch = RECT { left: right - bw, top: (top - bh) / 2, right, bottom: (top - bh) / 2 + bh };
+            let b = CreateSolidBrush(if a.switch_hot { rgb(62, 62, 68) } else { rgb(44, 44, 48) });
+            let (ob, op) = (SelectObject(mem, b as _), SelectObject(mem, GetStockObject(NULL_PEN)));
+            RoundRect(mem, a.switch.left, a.switch.top, a.switch.right, a.switch.bottom, (16.0 * k) as i32, (16.0 * k) as i32);
+            SelectObject(mem, ob);
+            SelectObject(mem, op);
+            DeleteObject(b as _);
+            text(label, a.switch, rgb(235, 235, 235), DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: a.switch.left - 12, bottom: top }, ACCENT, one);
+            if !foot.is_empty() {
+                text(&foot, RECT { left: (12.0 * k) as i32, top: h - bot, right: w - 12, bottom: h }, DIM, one);
+            }
         });
+        winrust_common::caption::paint_buttons(mem, hwnd, CAP, BG, rgb(235, 235, 235));
         BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old);
         DeleteObject(bmp as _);
         DeleteDC(mem);
         EndPaint(hwnd, &ps);
     }
+}
+
+/// Map <-> cleaner. Each page reads the disks the first time it is shown.
+fn switch(hwnd: HWND) {
+    let (cleaning, map_ready, cleaner_ready) = APP.with_borrow_mut(|a| {
+        (a.cleaning, a.hot, a.switch_hot) = (!a.cleaning, None, false);
+        (a.cleaning, a.tree.is_some() || !a.status.is_empty(), a.clean.started())
+    });
+    if cleaning && !cleaner_ready {
+        clean::start(hwnd);
+    } else if !cleaning && !map_ready {
+        rescan(hwnd, APP.with_borrow(|a| a.drive));
+    }
+    unsafe { InvalidateRect(hwnd, null(), 0) };
 }
 
 fn up(hwnd: HWND) {
@@ -222,11 +269,15 @@ fn up(hwnd: HWND) {
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        if let Some(r) = winrust_common::caption::handle(hwnd, msg, wp, lp, CAP, |_, _| false) {
+            return r;
+        }
         match msg {
             WM_CREATE => {
                 let dpi = GetDpiForSystem() as i32;
-                let f = CreateFontW(-(15 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide(winrust_common::style::sans_face()).as_ptr());
-                APP.with_borrow_mut(|a| (a.dpi, a.font) = (dpi, f as isize));
+                let face = wide(winrust_common::style::sans_face());
+                let font = |px: i32, weight: i32| CreateFontW(-(px * dpi / 96), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr()) as isize;
+                APP.with_borrow_mut(|a| (a.dpi, a.font, a.bold, a.small) = (dpi, font(15, 400), font(15, 600), font(13, 400)));
                 0
             }
             WM_PAINT => {
@@ -234,6 +285,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 0
             }
             WM_ERASEBKGND => 1,
+            clean::WM_STEP | clean::WM_PLAN | clean::WM_CLEANED => {
+                clean::on_msg(hwnd, msg, lp);
+                0
+            }
             WM_DONE => {
                 match *Box::from_raw(lp as *mut Result<Tree, String>) {
                     Ok(t) => APP.with_borrow_mut(|a| {
@@ -247,16 +302,36 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             WM_MOUSEMOVE => {
                 let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16) as i16 as i32);
-                let changed = APP.with_borrow_mut(|a| {
-                    let n = a.cells.iter().position(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom);
-                    std::mem::replace(&mut a.hot, n) != n
+                let on_switch = APP.with_borrow_mut(|a| {
+                    let s = a.switch;
+                    let on = x >= s.left && x < s.right && y >= s.top && y < s.bottom;
+                    std::mem::replace(&mut a.switch_hot, on) != on
                 });
+                let page = if APP.with_borrow(|a| a.cleaning) {
+                    clean::hover(x, y)
+                } else {
+                    APP.with_borrow_mut(|a| {
+                        let n = a.cells.iter().position(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom);
+                        std::mem::replace(&mut a.hot, n) != n
+                    })
+                };
+                let changed = on_switch || page;
                 if changed {
                     InvalidateRect(hwnd, null(), 0);
                 }
                 0
             }
             WM_LBUTTONDOWN => {
+                let (x, y) = ((lp & 0xFFFF) as i16 as i32, (lp >> 16) as i16 as i32);
+                let (on_switch, cleaning) = APP.with_borrow(|a| (a.switch_hot, a.cleaning));
+                if on_switch {
+                    switch(hwnd);
+                    return 0;
+                }
+                if cleaning {
+                    clean::click(hwnd, x, y);
+                    return 0;
+                }
                 let act = APP.with_borrow_mut(|a| {
                     let id = a.hot.and_then(|n| a.cells.get(n))?.1;
                     let t = a.tree.as_ref()?;
@@ -276,14 +351,31 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 0
             }
             WM_RBUTTONDOWN => {
-                up(hwnd);
+                if APP.with_borrow(|a| a.cleaning) {
+                    clean::right_click((lp & 0xFFFF) as i16 as i32, (lp >> 16) as i16 as i32);
+                } else {
+                    up(hwnd);
+                }
+                0
+            }
+            WM_MOUSEWHEEL => {
+                if APP.with_borrow(|a| a.cleaning) {
+                    clean::wheel(hwnd, wp);
+                }
                 0
             }
             WM_KEYDOWN => {
+                let cleaning = APP.with_borrow(|a| a.cleaning);
                 match wp as u16 {
                     VK_ESCAPE => {
                         DestroyWindow(hwnd);
                     }
+                    VK_F5 if cleaning => {
+                        if !APP.with_borrow(|a| a.clean.busy()) {
+                            clean::start(hwnd);
+                        }
+                    }
+                    _ if cleaning => {}
                     VK_BACK => up(hwnd),
                     VK_F5 => rescan(hwnd, APP.with_borrow(|a| a.drive)),
                     VK_TAB => {
@@ -305,13 +397,80 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     }
 }
 
+/// The token's elevation type: 3 is the split token Explorer gives, which a UAC request raises. Anything else without admin
+/// rights cannot be raised from here: a standard user (1), or the "basic user" token `runas /trustlevel` derives from an
+/// elevated one (WinRust starts the bar, the search and what they open with it), which still says 2 (full). From that one
+/// a UAC request quietly starts another copy without rights.
+fn elevation() -> i32 {
+    use windows_sys::Win32::{Security::{GetTokenInformation, TOKEN_QUERY, TokenElevationType}, System::Threading::{GetCurrentProcess, OpenProcessToken}};
+    unsafe {
+        let (mut tok, mut kind, mut n) = (null_mut(), 0i32, 0u32);
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) == 0 {
+            return 1;
+        }
+        let ok = GetTokenInformation(tok, TokenElevationType, (&mut kind as *mut i32).cast(), 4, &mut n) != 0;
+        CloseHandle(tok);
+        if ok { kind } else { 1 }
+    }
+}
+
+/// Explorer is the shell (not WinRust's file manager): it can start a program with its own token.
+fn explorer_is_shell() -> bool {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetShellWindow(), &mut pid);
+        let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if p.is_null() {
+            return false;
+        }
+        let (mut b, mut len) = ([0u16; 520], 520u32);
+        let ok = QueryFullProcessImageNameW(p, 0, b.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(p);
+        ok && String::from_utf16_lossy(&b[..len as usize]).to_lowercase().ends_with("\\explorer.exe")
+    }
+}
+
+/// Explorer starts programs without arguments: the copy it starts finds them here (written a moment before).
+fn note_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(l).join(r"WinRust\disk-start.txt"))
+}
+
+fn take_note() -> Option<Vec<String>> {
+    let p = note_path()?;
+    let fresh = p.metadata().ok()?.modified().ok()?.elapsed().is_ok_and(|e| e.as_secs() < 30);
+    let text = std::fs::read_to_string(&p).ok()?;
+    let _ = std::fs::remove_file(&p);
+    fresh.then(|| text.split_whitespace().map(String::from).collect())
+}
+
 fn main() {
     unsafe {
-        let drive = std::env::args().nth(1).and_then(|a| a.chars().next()).filter(char::is_ascii_alphabetic).map_or('C', |c| c.to_ascii_uppercase());
+        let mut args: Vec<String> = std::env::args().skip(1).collect();
+        if args.is_empty() {
+            args = take_note().unwrap_or_default();
+        }
+        let has = |f: &str| args.iter().any(|a| a == f);
+        let drive = args.iter().find(|a| a.len() == 2 && a.ends_with(':')).and_then(|a| a.chars().next()).filter(char::is_ascii_alphabetic).map_or('C', |c| c.to_ascii_uppercase());
+        let cleaning = has("--clean");
         if IsUserAnAdmin() == 0 {
-            // raw volume access needs it: ask once through UAC and let the elevated copy do the work
+            // raw volume access needs admin. Asked for once at most: on a PC that elevates without a prompt, a copy that
+            // could not be raised started the next one forever (the cursor spun, nothing opened)
             let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-            ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe).as_ptr(), wide(&format!("{drive}:")).as_ptr(), null(), SW_SHOWNORMAL);
+            let mode = format!("{drive}:{}", if cleaning { " --clean" } else { "" });
+            if has("--elevated") {
+                let msg = t!("WinRust Disk нужны права администратора, чтобы читать диски, а Windows их не дала. Откройте его из меню «Пуск».", "WinRust Disk needs administrator rights to read the drives, and Windows did not give them. Open it from the Start menu.", ja: "WinRust Disk はドライブを読み取るために管理者権限が必要ですが、Windows から付与されませんでした。スタート メニューから開いてください。", pt: "O WinRust Disk precisa de direitos de administrador para ler as unidades, e o Windows não os concedeu. Abra-o pelo menu Iniciar.", zh: "WinRust Disk 需要管理员权限才能读取磁盘，但 Windows 没有授予。请从开始菜单打开它。", es: "WinRust Disk necesita permisos de administrador para leer los discos y Windows no se los dio. Ábrelo desde el menú Inicio.");
+                MessageBoxW(null_mut(), wide(msg).as_ptr(), wide("WinRust Disk").as_ptr(), MB_ICONWARNING);
+                return;
+            }
+            if elevation() != 3 && !has("--via-shell") && explorer_is_shell() && let Some(note) = note_path() {
+                // a token UAC cannot raise: Explorer starts a copy with its own, and that one asks
+                let _ = note.parent().map(std::fs::create_dir_all);
+                if std::fs::write(&note, format!("{mode} --via-shell")).is_ok() && std::process::Command::new("explorer.exe").arg(&exe).spawn().is_ok() {
+                    return;
+                }
+            }
+            ShellExecuteW(null_mut(), wide("runas").as_ptr(), wide(&exe).as_ptr(), wide(&format!("{mode} --elevated")).as_ptr(), null(), SW_SHOWNORMAL);
             return;
         }
         SetProcessDPIAware();
@@ -319,7 +478,14 @@ fn main() {
         let wc = WNDCLASSW { style: 0, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
         RegisterClassW(&wc);
         let hwnd = CreateWindowExW(0, class.as_ptr(), wide("WinRust Disk").as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800, null_mut(), null_mut(), inst, null());
-        rescan(hwnd, drive);
+        winrust_common::caption::install(hwnd);
+        windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(hwnd, 20, &1i32 as *const i32 as *const _, 4); // dark frame and window menu
+        APP.with_borrow_mut(|a| (a.drive, a.cleaning) = (drive, cleaning));
+        if cleaning {
+            clean::start(hwnd);
+        } else {
+            rescan(hwnd, drive);
+        }
         let mut m: MSG = std::mem::zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
             TranslateMessage(&m);
