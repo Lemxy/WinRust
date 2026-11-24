@@ -123,6 +123,8 @@ const LIST_TOP: f32 = 180.0; // the custom page's first row
 const EXTRA_SEC_Y: f32 = LIST_TOP + N_READY as f32 * ROW_H + 12.0;
 const EXTRA_TOP: f32 = EXTRA_SEC_Y + 26.0;
 const NOTE_Y: f32 = FOOT_Y - 50.0; // status / the hovered component's description
+const STEP_CX: f32 = 33.0; // centre of the step circles in the side list (the header's mark sits over them)
+const STEP_TEXT_X: f32 = 56.0; // where the step names start (the header's name too)
 const _: () = assert!(EXTRA_TOP + N_EXTRA as f32 * ROW_H <= NOTE_Y, "the custom list runs into the note: make WIN_H taller");
 
 // clickable things
@@ -399,13 +401,14 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     // header: the name on the left, the language on the right, the accent line under it
     ui.shape([0.0, 0.0, w, HEAD_H], 0.0, argb(HEAD, 255));
     ui.shape([0.0, HEAD_H, w, HEAD_H + 3.0], 0.0, argb(ACCENT, 255));
-    let mark = [PAD - 6.0, 19.0, PAD + 20.0, 45.0];
+    // the mark sits over the step circles' column and the name starts where the step names do: one grid down the window
+    let mark = [STEP_CX - 13.0, HEAD_H / 2.0 - 13.0, STEP_CX + 13.0, HEAD_H / 2.0 + 13.0];
     ui.round(mark, 3.0, ACCENT, ACCENT);
     ui.text("W", mark, 16.0, 800, ON_ACCENT, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    ui.text("WinRust", [PAD + 32.0, 0.0, X1, HEAD_H], 20.0, 700, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    ui.text("WinRust", [STEP_TEXT_X, 0.0, X1, HEAD_H], 20.0, 700, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     let tw = ui.width("WinRust", 20.0, 700);
     let lb = lang_box(w);
-    ui.text(t!("Установка", "Setup", ja: "セットアップ", pt: "Instalação", zh: "安装程序", es: "Instalación"), [PAD + 40.0 + tw, 0.0, lb[0] - 8.0, HEAD_H], 16.0, 300, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    ui.text(t!("Установка", "Setup", ja: "セットアップ", pt: "Instalação", zh: "安装程序", es: "Instalación"), [STEP_TEXT_X + 8.0 + tw, 0.0, lb[0] - 8.0, HEAD_H], 16.0, 300, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     let open = LANG_OPEN.get().is_some();
     ui.round(lb, 3.0, if hot(ID_LANG) || open { rgb(40, 40, 40) } else { HEAD }, if open { ACCENT } else { rgb(70, 70, 70) });
     ui.text(i18n::lang().name(), [lb[0] + 10.0, lb[1], lb[2] - 26.0, lb[3]], 13.0, 400, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -428,7 +431,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
             ui.shape([0.0, y, 4.0, y + 38.0], 0.0, argb(ACCENT, 255));
             ui.shape([4.0, y, SIDE_W, y + 38.0], 0.0, argb(rgb(34, 34, 34), 255));
         }
-        let c = [22.0, y + 8.0, 44.0, y + 30.0];
+        let c = [STEP_CX - 11.0, y + 8.0, STEP_CX + 11.0, y + 30.0];
         if done {
             ui.round(c, 11.0, ACCENT, ACCENT);
             ui.text_in("\u{E73E}", c, 10.0, 700, ON_ACCENT, DT_CENTER | DT_VCENTER | DT_SINGLELINE, icons);
@@ -438,7 +441,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
             ui.text(&(k + 1).to_string(), c, 11.0, 600, if cur { TEXT } else { DIM }, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         let fg = if cur { TEXT } else if done { lerp(TEXT, DIM, 0.3) } else { DIM };
-        ui.text(label, [56.0, y, SIDE_W - 8.0, y + 38.0], 13.5, if cur { 600 } else { 400 }, fg, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        ui.text(label, [STEP_TEXT_X, y, SIDE_W - 8.0, y + 38.0], 13.5, if cur { 600 } else { 400 }, fg, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
     if let Some(v) = update::NEWER.lock().unwrap().clone() {
         let t = tf!("Новая версия {} ›", "New version {} ›", ja: "新しいバージョン {} ›", pt: "Nova versão {} ›", zh: "新版本 {} ›", es: "Nueva versión {} ›", v);
