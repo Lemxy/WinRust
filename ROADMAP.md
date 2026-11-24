@@ -35,7 +35,7 @@ Each item says how far it was checked: **tests** (unit tests), **built** (compil
 ### Plugins
 - **rust-search**: NTFS search service + Alt+Space; disables WSearch, blocks SearchHost.exe, hides the taskbar search box. Right-click a result: rename, recycle bin, "delete permanently + clean the registry" (scan → confirm → delete; registry saved to `%LOCALAPPDATA%\rs-search\registry-backups\*.reg` first). *tests, ran*
 - **rtaskmgr-win32**: replaces Task Manager through an IFEO Debugger (`taskmgr.exe` untouched); on a panic writes `%APPDATA%\rtaskmgr\crash.log` and opens the real Taskmgr. *tests, ran*
-- **topbar**: Windows 11-style bottom bar instead of the taskbar; `topbar.exe --restore` brings the taskbar back. Installs with it: reshell hotkeys, rs-du, the PowerShell profile block (`src/install/profile.ps1`, Windows PowerShell 5.1 and pwsh 7). *ran; the profile block only on a temporary profile*
+- **topbar**: Windows 11-style bottom bar instead of the taskbar; `topbar.exe --restore` brings the taskbar back. Installs with it: reshell hotkeys, rs-du, and on request (the gear on its row) the PowerShell profile block (`src/install/profile.ps1`, Windows PowerShell 5.1 and pwsh 7). *ran; the profile block only on a temporary profile*
 - **reshell safety net**: if topbar is not running while the taskbar is hidden, twice in a row (~10 s), it runs `topbar.exe --restore`. *tests; killing topbar was not tried*
 - **reshell hotkeys**: Win+D (show desktop) and Win+I (Settings) work without Explorer, like Win+E (v0.2.1). *ran*
 - **Styles** (v0.3.0): a gear at the left end of the bar switches Normal / Terminal / Floating dock / Tiling; the bar, rust-explorer and the search window repaint at once (a broadcast message, `%ProgramData%\WinRust\style.txt`). The dock reserves no screen space and slides away from maximized windows; Tiling puts the bar at the top and can tile the windows. *ran*
@@ -77,11 +77,11 @@ emoved.txt`. `purge.exe` lists, `--ask` asks for YES (the bar's right-click menu
 5. **Code signing** (removes the SmartScreen warning and part of the antivirus false positives).
 6. **PowerShell profile**: optionally install rg/fd/bat/eza/zoxide through winget (a checkbox in the topbar settings).
 7. **chrome-rs**: a real install once the browser is ready (see `plugins/chrome-rs/ROADMAP.md`).
-8. **Win+S / Start button** open rust-search instead of Windows Search (risky, a separate decision).
+8. **Typing in Start** goes to rust-search instead of Windows Search (risky, a separate decision). Win+S / Win+Q already open it.
 9. **Non-NTFS drives** in rust-search (skipped today).
 
 ## Known limitations
 - System components are disabled or bypassed (reversibly), not removed: deleting `taskmgr.exe` or Windows Search outright would break system protection.
 - Administrator rights are required.
-- Win+S and Start still open Windows Search.
+- Typing in Windows' own Start menu still goes to Windows Search, which rust-search blocks; Win+S / Win+Q open rust-search.
 - With rust-explorer as the shell, Store apps that Explorer hosts (Windows Settings pages rust-settings lacks, the Microsoft sign-in window in Outlook/Teams, #98, #109) need Explorer running; sign in once with Explorer as the shell.

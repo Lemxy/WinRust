@@ -4,7 +4,7 @@
 
 **用 Rust 编写的 Windows 外壳：比系统自带的更快、更轻。** 一批原生小程序（不用 .NET，不用 Electron）替换掉 Windows 的部件：任务栏、资源管理器、文件搜索、任务管理器，另外还有磁盘清理、磁盘占用图和图片查看器。一个安装程序全部装好，一个按钮全部卸掉。
 
-[English](README.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [Português (Brasil)](README.pt-BR.md) | **简体中文**
+[English](README.md) | [Русский](README.ru.md) | [日本語](README.ja.md) | [Português (Brasil)](README.pt-BR.md) | **简体中文** | [Español](README.es.md)
 
 <p align="center"><img src="assets/th.jpg" alt="WinRust" width="480"></p>
 
@@ -14,7 +14,7 @@
 
 1. 从[最新版本](https://github.com/Lemxy/WinRust/releases/latest)下载 `WinRust.exe`（Windows 10/11，x64）。
 2. 以管理员身份运行它。
-3. 勾选需要的组件，然后按安装按钮。全新安装时 `rust-explorer` 默认不勾选，勾上它才会替换 Windows 资源管理器外壳（也可以在 topbar 那一行的齿轮里打开 **Shell: rust-explorer** 开关）。组件会按正确顺序安装；某个失败或被跳过不会中断其它组件，窗口里会列出哪里出了问题。
+3. 勾选需要的组件，然后按安装按钮。全新安装时 `rust-explorer` 默认不勾选，勾上它会装上这个文件管理器；要替换 Windows 资源管理器外壳，打开 topbar 那一行齿轮里的**替换资源管理器**开关。组件会按正确顺序安装；某个失败或被跳过不会中断其它组件，窗口里会列出哪里出了问题。
 
 Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 搜索服务的去臃肿 LTSC 镜像），这一步会被跳过并给出警告，而不是让安装失败。
 
@@ -24,7 +24,7 @@ Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 
 
 **手动更新：** 从 releases 页面下载新的 `WinRust.exe`，以管理员身份运行，选要更新或安装的组件。更新时已安装的 `rust-explorer` 默认保持勾选。你的设置和保存下来的 Windows 原值都会保留。
 
-安装程序打开时是英文。右上角是语言下拉框（English、Русский、日本語、Português (Brasil)、简体中文），任务栏的齿轮里也有同一份列表（**任务栏设置 → 语言**），rust-settings 的「个性化」页里同样可以切换（**界面语言**）。选择保存在 `%ProgramData%\WinRust\lang.txt`（`en`、`ru`、`ja`、`pt`、`zh`）：切换的这一个程序立刻重画，其它程序在下次启动时生效，所以切换后请重启它们（或注销后重新登录）。
+安装程序打开时是英文。右上角是语言下拉框（English、Русский、日本語、Português (Brasil)、简体中文、Español），任务栏的齿轮里也有同一份列表（**任务栏设置 → 语言**），rust-settings 的「个性化」页里同样可以切换（**界面语言**）。选择保存在 `%ProgramData%\WinRust\lang.txt`（`en`、`ru`、`ja`、`pt`、`zh`、`es`）：所有打开的 WinRust 窗口会立刻切换。还没有翻译的文本显示为英文。
 
 ## 卸载
 
@@ -38,10 +38,10 @@ Windows 搜索是可选项：在精简过的 Windows 上（例如去掉 Windows 
 
 | 插件 | 你会得到什么 | 它改动了 Windows 的什么 |
 |---|---|---|
-| **rust-search** | 覆盖全部 NTFS 驱动器的文件搜索，Alt+Space。配合 topbar 时 Win+R 打开它的「运行」模式：历史记录、文件夹补全（Tab）、Ctrl+Shift+Enter 以管理员身份运行 | 关闭 Windows 搜索服务、拦截 SearchHost.exe、隐藏任务栏搜索框 |
+| **rust-search** | 覆盖全部 NTFS 驱动器的文件搜索，Alt+Space 或 Win+S（两者都可以在它那一行的齿轮里关掉）。配合 topbar 时 Win+R 打开它的「运行」模式：历史记录、文件夹补全（Tab）、Ctrl+Shift+Enter 以管理员身份运行 | 关闭 Windows 搜索服务、拦截 SearchHost.exe（Windows 11 的搜索窗口；Windows 10 的不动，Win+S 只是改为打开 rust-search）、隐藏任务栏搜索框 |
 | **rtaskmgr-win32** | 任务管理器（Ctrl+Shift+Esc 打开它） | `taskmgr.exe` 被重定向到它（系统文件本身不动）。同时装 **rs-du** 磁盘清理。**加速**页里有一批自愿开启、可逆的开关：游戏 / 工作配置文件（停止后台服务、关闭启动器或同步类应用，之后再把它们启动回来）、清理内存备用缓存（立即，或 topbar 运行时自动）、拦截 Windows 开始菜单、小组件和「手机连接」的进程、用每周一次的 `winget upgrade` 代替第三方更新器、给构建缓存和游戏库加 Defender 排除项、更快的 NTFS（不记录最后访问时间、不用 8.3 短名）、广告拦截 hosts 文件。**启动项**页还会列出登录/启动任务和第三方自启动服务，并给出它们各自拖慢了最近几次启动多少（用 Windows 自己的启动日志）。**什么在变慢**页显示驱动耗时（DPC/中断）、无响应的窗口、慢磁盘和启动耗时。卸载会把这一切改回去 |
-| **topbar** | Windows 11 风格的底部栏：窗口、时钟、音量、各种菜单 | 隐藏系统任务栏。同时装 **reshell**（快捷键：Win+Ctrl+1/2/3 和 Win+\` 切换桌面（Win+1..9 打开栏上的应用按钮）、Win+D 显示桌面、Win+I 打开设置、Win+E 打开文件管理器；栏挂了它会把任务栏找回来）、**rs-du**，以及 PowerShell 配置文件里的一段（`zoxide`、`grep`=rg、`ll`=eza、`cat`=bat；没装就什么都不做）。齿轮菜单里有几页短设置：主题、颜色与透明度（栏和 WinRust 窗口的任何颜色、栏的不透明度）、模板（保存自己的一套外观并在其间切换）、位置、大小、行为（底部 / 左侧 / 右侧、大小、自动隐藏、像 Windows 10 那样把按钮放在左端）以及「将所有设置恢复默认」 |
-| **rust-explorer** | 带标签页的文件管理器，还有桌面 | 文件夹和驱动器在它里面打开；**资源管理器不再是外壳**（topbar 出问题时它会自己回来）。全新安装时，会在能备份原值的前提下调整 PcaSvc、InventorySvc、lfsvc、cbdhsvc 和 DoSvc 的启动设置，以及 svchost 分组阈值。它自带的复制引擎（SSD 上同时复制多个文件、大文件用无缓冲方式、进度显示在状态行）和右键菜单的**压缩为 ZIP**（用满所有核心）/ **解压到这里**（ZIP 和 7z），都是我们自己的 ZIP 引擎；`.zip` 像文件夹一样打开（浏览、往外复制、直接打开里面的文件）。其它程序里的「在文件夹中显示」会选中该文件（对于常见文件夹：下载、文档、桌面、图片、音乐、视频以及已固定的文件夹，即使没有打开窗口也可以）；鼠标的「后退 / 前进」键可用；右键单击桌面可以隐藏桌面图标。需要 topbar |
+| **topbar** | Windows 11 风格的底部栏：窗口、时钟、音量、各种菜单 | 隐藏系统任务栏。同时装 **reshell**（快捷键：Win+Ctrl+1/2/3 和 Win+\` 切换桌面（Win+1..9 打开栏上的应用按钮）、Win+D 显示桌面、Win+I 打开设置、Win+E 打开文件管理器；栏挂了它会把任务栏找回来）和 **rs-du**；PowerShell 配置文件里的那一段（`zoxide`、`grep`=rg、`ll`=eza、`cat`=bat；没装就什么都不做）只有在安装程序里 topbar 那一行的齿轮中打开才会写入。同一个齿轮里还能设置外观：按钮居中（Windows 11 的默认；Windows 10 上默认靠左）、所有托盘图标都显示在栏上、半透明的栏以及栏背后的模糊。栏自己的齿轮菜单里有几页短设置：主题、颜色与透明度（栏和 WinRust 窗口的任何颜色、栏的不透明度、背后的模糊）、模板（保存自己的一套外观并在其间切换）、位置、大小、行为（底部 / 左侧 / 右侧、大小、自动隐藏、像 Windows 10 那样把按钮放在左端）以及「将所有设置恢复默认」 |
+| **rust-explorer** | 带标签页的文件管理器，还有桌面 | 文件夹和驱动器在它里面打开；资源管理器仍是外壳。打开**替换资源管理器**（安装程序里 topbar 那一行的齿轮，或 `--shell`）后，**资源管理器不再是外壳**，topbar 也会一起装上（topbar 出问题时资源管理器会自己回来）；这时第一次会在能备份原值的前提下调整 PcaSvc、InventorySvc、lfsvc、cbdhsvc 和 DoSvc 的启动设置，以及 svchost 分组阈值。它自带的复制引擎（SSD 上同时复制多个文件、大文件用无缓冲方式、进度显示在状态行）和右键菜单的**压缩为 ZIP**（用满所有核心）/ **解压到这里**（ZIP 和 7z），都是我们自己的 ZIP 引擎；`.zip` 像文件夹一样打开（浏览、往外复制、直接打开里面的文件）。其它程序里的「在文件夹中显示」会选中该文件（对于常见文件夹：下载、文档、桌面、图片、音乐、视频以及已固定的文件夹，即使没有打开窗口也可以）；鼠标的「后退 / 前进」键可用；右键单击桌面可以隐藏桌面图标。只有替换外壳时才需要 topbar |
 | **wiztree** | 磁盘占用图（开始菜单里的「WinRust Disk」） | 除了一个文件和一个快捷方式，什么都不改 |
 | **photoview** | 一个很快的图片查看器 | 把它加到「打开方式」里（不会成为默认程序） |
 | **rust-settings** | 用 Rust 写的设置：显示（分辨率、刷新率）、声音（音量）、电源计划和驱动器空间、按应用调音量和选设备、夜间模式、拖动排列显示器、网络适配器、每个适配器上的 Wi-Fi（密码或 802.1X）、VPN 和代理、蓝牙、应用、Windows 更新、磁盘清理、主题、关于 | 除了一个文件和一个快捷方式，什么都不改。Win+I 和栏上的菜单会打开这个窗口而不是 Windows 设置（只有少数罕见页面仍然打开系统自带的） |
@@ -114,7 +114,7 @@ src/            安装程序（plugin-launcher.exe）
   main.rs         插件表 PLUGINS：名字、文案、安装/卸载函数对、图标
   install/        每个插件改了什么、怎么撤销（一个插件一个文件）
   cli.rs, ui.rs   命令行和窗口；两者调用同一批安装函数
-common/         winrust-common：语言切换（t!/tf!: 英文、俄文、日文、巴西葡萄牙文、简体中文）、UI 样式和配色、reg.exe 输出解析、NTFS MFT 读取
+common/         winrust-common：语言切换（t!/tf!: 英文、俄文、日文、巴西葡萄牙文、简体中文、西班牙文）、UI 样式和配色、reg.exe 输出解析、NTFS MFT 读取、自绘标题栏（caption.rs）
 plugins/        所有插件的源码，每个都是独立的 crate
 ReShell/        reshell（桌面快捷键、topbar 的安全网），随 topbar 一起装
 payload.txt     内嵌进安装程序的 exe，以及构建产物放哪里
@@ -124,7 +124,7 @@ scripts/        构建、更新、发布
 全部是一个 cargo workspace（一份 `Cargo.lock`，所有 exe 都在 `target\release`）。`plugins/rust-search` 和 `plugins/chrome-rs` 单独构建，因为它们需要 `panic = "unwind"`（见 `Cargo.toml`）。
 
 ### 添加一种语言
-`t!("русский", "english", ja: "日本語", pt: "português", zh: "中文")` 和 `tf!(…)` 会返回当前语言的文本（不写 `ja:`/`pt:`/`zh:` 时，这几种语言显示英文）。语言列表就是 `common/src/lib.rs` 里的 `Lang`。
+`t!("русский", "english", ja: "日本語", pt: "português", zh: "中文", es: "español")` 和 `tf!(…)` 会返回当前语言的文本（不写 `ja:`/`pt:`/`zh:`/`es:` 时，这几种语言显示英文）。语言列表就是 `common/src/lib.rs` 里的 `Lang`。
 
 ### 构建
 需要 Windows x64、Rust stable（1.85+）和 MSVC 工具链。
@@ -153,7 +153,7 @@ plugin-launcher rollback --yes           (全部移除)
 plugin-launcher autoupdate               (立刻检查一次更新：WinRust-update 任务跑的就是它)
 ```
 
-要在全新批量安装里带上 `rust-explorer`，运行 `plugin-launcher install all rust-explorer --yes`。如果 `topbar` 已经装好，也可以单独安装 `rust-explorer`。
+`plugin-launcher install rust-explorer --yes` 只安装文件管理器（`install all` 不包含它；`install all rust-explorer --yes` 会加上它）。加 `--shell` 会同时替换资源管理器外壳（如果没有 topbar 会一起装上）；`update rust-explorer --no-shell` 交还外壳并保留文件管理器。对 topbar，`--ps-aliases` / `--no-ps-aliases` 写入或删除 PowerShell 配置文件里的那一段；不加时，全新安装不动配置文件，更新则保持原样。
 一条命令里的多个插件按插件表的顺序安装（topbar 在 rust-explorer 之前）；某个失败不会中断其余的。退出码：0 成功，1 出错（至少一个插件失败），2 参数不对或缺少 `--yes`。不带参数时打开窗口。安装日志：`%ProgramData%\plugin-launcher\install.log`。
 
 ### 添加一个插件
