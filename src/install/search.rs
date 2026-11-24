@@ -1,4 +1,4 @@
-//! rust-search: NTFS search service + Alt+Space launcher; disables Windows Search (reversibly).
+//! rust-search: NTFS search service + Alt+Space / Win+S launcher; disables Windows Search (reversibly).
 use crate::*;
 
 /// Where launchers before the change journal kept the originals; turned into the journal's first lines, then deleted.
@@ -54,11 +54,14 @@ pub(crate) fn install() -> Result<(), String> {
             j.set_svc("WSearch", "disabled")?;
             let _ = run("sc.exe", &["stop", "WSearch"]);
         } else {
-            WARN.lock().unwrap().push(t!("службы Windows Search (WSearch) нет в этой системе: шаг пропущен", "the Windows Search service (WSearch) does not exist on this system: step skipped", ja: "Windows Search サービス (WSearch) がこのシステムに存在しません: 手順をスキップしました", pt: "o serviço Pesquisa do Windows (WSearch) não existe neste sistema: etapa ignorada", zh: "此系统上不存在 Windows Search 服务（WSearch）：已跳过该步骤").into());
+            WARN.lock().unwrap().push(t!("службы Windows Search (WSearch) нет в этой системе: шаг пропущен", "the Windows Search service (WSearch) does not exist on this system: step skipped", ja: "Windows Search サービス (WSearch) がこのシステムに存在しません: 手順をスキップしました", pt: "o serviço Pesquisa do Windows (WSearch) não existe neste sistema: etapa ignorada", zh: "此系统上不存在 Windows Search 服务（WSearch）：已跳过该步骤", es: "el servicio Búsqueda de Windows (WSearch) no existe en este sistema: paso omitido").into());
         }
         // SearchHost.exe (the Start/Win+S search UI) is not a service, so it gets the same IFEO trick as taskmgr: Windows runs `cmd /c exit` instead.
         j.set_reg(SH_KEY, "Debugger", "REG_SZ", "cmd.exe /c exit")?;
         let _ = run("taskkill", &["/f", "/im", "SearchHost.exe"]);
+        // Windows 10's search window (SearchApp.exe / SearchUI.exe) is not blocked: Explorer keeps activating it, and a
+        // blocked one makes Explorer wait out DCOM's timeout each time (seconds of a frozen desktop menu). Win+S reaches
+        // rs-launcher's hook first, and with WSearch off it has nothing to search.
         j.set_reg(SB_KEY, "SearchboxTaskbarMode", "REG_DWORD", "0") // hide the taskbar search box
     })
 }
