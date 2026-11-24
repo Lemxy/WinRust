@@ -2224,6 +2224,13 @@ unsafe fn msix_app_id(lnk: &str) -> Option<String> {
     fly::apps_folder().into_iter().map(|a| a.1).find(|id| id.to_lowercase().starts_with(&prefix))
 }
 
+/// The installed rust-explorer, if any.
+fn rust_explorer() -> Option<String> {
+    let pf = std::env::var("ProgramFiles").ok()?;
+    let p = std::path::Path::new(&pf).join(r"rust-explorer\rust-explorer.exe");
+    p.is_file().then(|| p.to_string_lossy().into_owned())
+}
+
 /// Starts a Store app by its app id. false = it did not start (the caller falls back to explorer).
 unsafe fn activate_app(aumid: &str) -> bool {
     use windows::Win32::UI::Shell::{ACTIVATEOPTIONS, ApplicationActivationManager, IApplicationActivationManager};
@@ -2237,6 +2244,16 @@ unsafe fn activate_app(aumid: &str) -> bool {
 unsafe fn open(path: &[u16]) {
     let n = path.iter().position(|&c| c == 0).unwrap_or(path.len());
     let p = String::from_utf16_lossy(&path[..n]);
+    // Windows' File Explorer (the exe, or a pin / shortcut to it) is the WinRust file manager once that is installed;
+    // the pin keeps its look
+    let low = p.to_lowercase();
+    let explorer = low.ends_with("\\explorer.exe") || low == "explorer.exe" || (low.ends_with(".lnk") && lnk_target(&wide(&p)).ends_with("\\explorer.exe"));
+    if explorer {
+        if let Some(rx) = rust_explorer() {
+            winrust_common::launch::program(&rx);
+            return;
+        }
+    }
     if p.to_lowercase().ends_with(".lnk") {
         bump(&p);
     }
