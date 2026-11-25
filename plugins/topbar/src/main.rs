@@ -244,6 +244,7 @@ thread_local! {
     static EXP_TRAY: Cell<HWND> = const { Cell::new(null_mut()) }; // explorer's taskbar we registered with
     static APP_FG: Cell<HWND> = const { Cell::new(null_mut()) }; // last foreground window that is not ours: the language button acts on it
     static LANG_TRY: Cell<(u32, usize, usize)> = const { Cell::new((0, 0, 0)) }; // (thread, layout before, layout asked for) of the last switch, checked by timer 7
+    static BAR_WORK: Cell<(i32, i32, i32, i32)> = const { Cell::new((-1, -1, -1, -1)) }; // last work area reserved by place()
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -742,9 +743,9 @@ unsafe fn place(hwnd: HWND) {
     // No explorer (rs-shell / rust-explorer): nobody handles appbars, so set the work area ourselves. Without it maximized
     // windows slide under the bar and, covering the whole monitor, count as "fullscreen" and hide the bar.
     // Also with Explorer: it does not always honour the appbar when its own taskbar is hidden (#89).
-    {
-        set_work_area(if vert() { if ab.uEdge == ABE_LEFT { RECT { left: ab.rc.right, top: 0, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: ab.rc.left, bottom: cy } } } else if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } });
-    }
+    let work = if vert() { if ab.uEdge == ABE_LEFT { RECT { left: ab.rc.right, top: 0, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: ab.rc.left, bottom: cy } } } else if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } };
+    BAR_WORK.set((work.left, work.top, work.right, work.bottom));
+    set_work_area(work);
     let (x, w) = bar_x_w();
     // the dock is a pill; the other styles a plain strip
     SetWindowRgn(hwnd, if dock() { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
@@ -765,6 +766,15 @@ unsafe fn set_work_area(mut want: RECT) {
         PostMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETWORKAREA as usize, 0);
         EnumWindows(Some(fit_maximized), &want as *const RECT as isize);
     }
+}
+
+/// Explorer and display changes can reset the work area after the bar has already claimed its edge.
+unsafe fn work_area_drifted() -> bool {
+    let want = BAR_WORK.get();
+    if want.0 < 0 { return false; }
+    let mut current: RECT = zeroed();
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut current as *mut _ as *mut _, 0) != 0
+        && (current.left, current.top, current.right, current.bottom) != want
 }
 
 /// A window that was already maximized keeps its old height when the work area shrinks: trim it (size only, no restore).
@@ -2604,6 +2614,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_DROPFILES => on_drop(hwnd, wp as HDROP),
         WM_TIMER => {
             hide_taskbar_if_shown();
+            if work_area_drifted() { place(hwnd); }
             refresh();
             // repaint (GDI+, the costly part) only when something shown changed; every 10th tick anyway as a safety net
             let (last, quiet) = SIG.get();
@@ -2668,6 +2679,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
         }
         WM_DISPLAYCHANGE => place(hwnd),
+        WM_SETTINGCHANGE if wp == SPI_SETWORKAREA as usize => {
+            if work_area_drifted() { place(hwnd); }
+        }
         WM_DESTROY => {
             let mut ab: APPBARDATA = zeroed();
             ab.cbSize = size_of::<APPBARDATA>() as u32;
