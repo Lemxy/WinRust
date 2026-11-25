@@ -63,6 +63,7 @@ no hace falta reiniciar.
 | Lado de la barra | `side.txt` | hub (Barra) | topbar | sí |
 | Tamaño de la barra | `bar-size.txt` | hub (Barra) | topbar | sí |
 | Auto-ocultar | `autohide.txt` | hub (Barra) | topbar | sí |
+| Esquivar ventanas | `dodge.txt` | hub (Barra) | topbar | sí |
 | Botones a la izquierda | `align-left.txt` | hub (Barra) | topbar | sí |
 | Alt+Tab por monitor | `alttab-monitor.txt` | hub (Barra) | topbar | sí |
 | Monitor de la barra | `look.txt` → `bar-monitor` | hub (Barra) | topbar (`bars_sync`) | sí (si hay >1) |

@@ -28,7 +28,9 @@ Full report: `tools/wallpaper-engine.md` (mechanism, phases, snippets, risks, 24
 - [ ] `plugins/rust-control`: new Control Panel crate (Category view as the home page, Icon view toggle,
       pages: System, Programs, Services, Devices, Network, Users, Power, Date/Time, Accessibility, Security, Admin tools).
 - [ ] Bluetooth: `DeviceWatcher` (classic + LE) with live results — verify the controller appears while pairing.
-- [ ] Verify Spanish entries added for every new `t!` key (English is the key in `common/es.tsv`).
+- [x] Spanish entries added for every new `t!` key: `tools/i18n-check.ps1` reports **0 errors** (the 32 remaining
+      duplicate aliases are historical, only one of each pair is used). `plugins/topbar/src/fly.rs` was double-encoded
+      and has been converted back (RU/JA/ZH/PT and curly quotes in the flyouts).
 
 ## 4. Applied, do not undo
 

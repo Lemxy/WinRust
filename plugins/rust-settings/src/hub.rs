@@ -85,6 +85,7 @@ enum Op {
     BarBlur,
     BarRadius(i32),
     Autohide,
+    Dodge,
     AlignLeft,
     AltTab,
     SearchBtn,
@@ -360,6 +361,8 @@ fn rows(cat: u8) -> Vec<Row> {
             }
             v.push(head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为")));
             v.push(check(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏"), st::autohide(), Op::Autohide));
+            v.push(check(t!("Уступать место окнам", "Dodge windows", ja: "ウィンドウを避ける", pt: "Desviar de janelas", zh: "为窗口让路"), st::dodge(), Op::Dodge));
+            v.push(info(t!("Уступать место окнам: панель уходит, когда окно спереди доходит до неё, и возвращается у края экрана. Место не резервируется.", "Dodge windows: the bar slides away while a window reaches it and comes back at the screen edge. It reserves no space.", ja: "ウィンドウを避ける: 手前のウィンドウがバーに達すると隠れ、画面の端で戻ります。画面領域は予約しません。", pt: "Desviar de janelas: a barra desaparece quando uma janela chega a ela e volta na borda da tela. Não reserva espaço.", zh: "为窗口让路：当前窗口接近任务栏时它会让开，鼠标移到屏幕边缘时回来。不保留屏幕空间。")));
             v.push(check(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10"), st::align_left(), Op::AlignLeft));
             v.push(check(t!("Alt+Tab: только этот монитор", "Alt+Tab: this monitor only", ja: "Alt+Tab: このモニターのみ", pt: "Alt+Tab: somente este monitor", zh: "Alt+Tab：仅限此显示器"), st::alttab_per_monitor(), Op::AltTab));
             v.push(check(t!("Кнопка поиска", "Search button", ja: "検索ボタン", pt: "Botão de pesquisa", zh: "搜索按钮"), lk::bar_search(), Op::SearchBtn));
@@ -955,6 +958,10 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         Op::BarRadius(r) => lk::bar_radius_set(r),
         Op::Autohide => {
             st::set_autohide(!st::autohide());
+            changed();
+        }
+        Op::Dodge => {
+            st::set_dodge(!st::dodge());
             changed();
         }
         Op::AlignLeft => {

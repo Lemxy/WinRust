@@ -38,6 +38,11 @@ bell for notifications and no hairline border. Right-click it for the bar menu:
 
 ![Bar menu](docs/screenshots/bar-menu.png)
 
+**Dodge windows** (**Settings → Taskbar → Behavior → Dodge windows**, `dodge.txt`): the bar reserves no work area,
+slides away as soon as the window in front reaches it (a maximized window, a video, one dragged to the edge) and comes
+back when the pointer touches the screen edge. Already-maximized windows grow to the whole screen at once. It works
+independently of *Hide automatically*.
+
 ### One bar per monitor
 
 ![Two bars](docs/screenshots/two-bars.png)

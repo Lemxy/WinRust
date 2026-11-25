@@ -62,7 +62,7 @@ use windows_sys::Win32::{
         LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW},
         Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
         SystemInformation::{GetLocalTime, GetTickCount64},
-        Threading::{OpenProcess, QueryFullProcessImageNameW, TerminateProcess},
+        Threading::{GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, TerminateProcess},
     },
     UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
 };
@@ -254,6 +254,7 @@ const ALT_UP: u32 = WM_APP + 12; // posted by the keyboard hook: Alt released wh
 static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab switcher open (the hook thread reads it)
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static DESK_HIDE: AtomicBool = AtomicBool::new(false); // the desktop in front and the pointer away from the bar for 2 s
+static WINDOW_HIDE: AtomicBool = AtomicBool::new(false); // "dodge windows": the window in front reaches the bar's strip
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the leader bar window (tray, hooks, keyboard messages), for other threads
 const WIN_NUM: u32 = WM_APP + 15; // posted by the keyboard hook: Win+1..9 (wp 0..8) = the n-th button of the bar
@@ -887,7 +888,8 @@ unsafe fn place(hwnd: HWND) {
     ab.hWnd = hwnd;
     // the reserved strip: the bar itself plus the dock's gap under it
     // the dock reserves nothing: maximized windows take the whole screen and the dock slides away over them
-    let strip = if dock() || i18n::style::autohide() { 0 } else { bar_h() };
+    // "dodge windows" reserves nothing either: that is what makes a maximized window reach the bar's strip
+    let strip = if dock() || i18n::style::autohide() || i18n::style::dodge() { 0 } else { bar_h() };
     if vert() {
         let left = i18n::style::side() == i18n::style::Side::Left;
         ab.uEdge = if left { ABE_LEFT } else { ABE_RIGHT };
@@ -960,7 +962,8 @@ unsafe fn set_work_area(mut want: RECT) {
     }
 }
 
-/// A window that was already maximized keeps its old height when the work area shrinks: trim it (size only, no restore).
+/// A window that was already maximized keeps its old size when the work area changes (the bar hides, "dodge windows"
+/// turns on or off): fit it to the new area, growing and shrinking (size only, the window stays maximized: no restore).
 unsafe extern "system" fn fit_maximized(h: HWND, lp: isize) -> i32 {
     let want = &*(lp as *const RECT);
     // the work area is the primary monitor's: a window maximized on another monitor would be cut to a sliver
@@ -969,8 +972,10 @@ unsafe extern "system" fn fit_maximized(h: HWND, lp: isize) -> i32 {
     }
     let mut r: RECT = zeroed();
     GetWindowRect(h, &mut r);
-    let f =GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER); // a maximized window overhangs by its border
-    let n = RECT { left: r.left.max(want.left - f), top: r.top.max(want.top - f), right: r.right.min(want.right + f), bottom: r.bottom.min(want.bottom + f) };
+    let f = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER); // a maximized window overhangs by its border
+    // a maximized window is the work area grown by the frame on every side: growing it back is what makes a maximized
+    // app fill the screen once the bar is out of the way (not just trim it when the area shrinks)
+    let n = RECT { left: want.left - f, top: want.top - f, right: want.right + f, bottom: want.bottom + f };
     if (n.left, n.top, n.right, n.bottom) != (r.left, r.top, r.right, r.bottom) && n.right > n.left && n.bottom > n.top {
         SetWindowPos(h, null_mut(), n.left, n.top, n.right - n.left, n.bottom - n.top, SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -1728,8 +1733,10 @@ unsafe fn bar_anim(hwnd: HWND) {
 }
 
 unsafe fn bar_step(hwnd: HWND) {
-    // hides for a fullscreen game or video, and with "auto-hide" on while the pointer is away (never otherwise: not over the desktop, not in any style)
-    let target = if FULLSCREEN.load(Relaxed) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) { 0.0 } else { 1.0 };
+    // hides for a fullscreen game or video, with "auto-hide" on while the pointer is away, and with "dodge windows" on
+    // while the window in front reaches the bar (never otherwise: not over the desktop, not in any style)
+    let away = (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) || (i18n::style::dodge() && WINDOW_HIDE.load(Relaxed));
+    let target = if FULLSCREEN.load(Relaxed) || away { 0.0 } else { 1.0 };
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1791,6 +1798,12 @@ unsafe fn desktop_now() -> bool {
 }
 
 unsafe fn fs_update(hwnd: HWND) {
+    // a look file edited outside the settings window (or a broadcast that raced the one-second cache): auto-hide and
+    // "dodge windows" decide whether the bar reserves its strip, so the work area has to be taken or given back
+    let modes = (i18n::style::autohide(), i18n::style::dodge());
+    if MODES.replace(modes) != modes {
+        place_all();
+    }
     let fs = fullscreen_now(hwnd);
     // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
     // edges all the time); Win opens Start, which brings the bar with it
@@ -1807,6 +1820,12 @@ unsafe fn fs_update(hwnd: HWND) {
     if DESK_HIDE.swap(desk, Relaxed) != desk {
         bar_anim(hwnd);
     }
+    // "dodge windows": the bar gets out of the way of the window in front (a maximized one, a video, one dragged to the
+    // edge) and comes back while the pointer is at the edge or one of our panels is open
+    let near = i18n::style::dodge() && !over && !fly::any_open() && window_over_bar();
+    if WINDOW_HIDE.swap(near, Relaxed) != near {
+        bar_anim(hwnd);
+    }
     if FULLSCREEN.swap(fs, Relaxed) != fs {
         if fs {
             fly::close_now();
@@ -1815,12 +1834,13 @@ unsafe fn fs_update(hwnd: HWND) {
         }
         bar_anim(hwnd);
     }
-    // the 250 ms watch is only needed while the pointer decides (auto-hide, dock, desktop, bar away); otherwise
+    // the 250 ms watch is only needed while the pointer decides (auto-hide, dodge, dock, desktop, bar away); otherwise
     // the foreground event, ABN_FULLSCREENAPP and the 1 s tick call this
-    let poll = i18n::style::autohide() || dock() || desktop_now() || DESK_HIDE.load(Relaxed);
-    if FS_POLL.replace(poll) != poll {
+    let poll = i18n::style::autohide() || i18n::style::dodge() || dock() || desktop_now() || DESK_HIDE.load(Relaxed);
+    let ivl = if i18n::style::dodge() { 120 } else { 250 }; // dodging wants a quicker look than auto-hide
+    if FS_POLL.replace(poll) != poll || FS_IVL.replace(ivl) != ivl {
         if poll {
-            SetTimer(hwnd, 3, 250, None);
+            SetTimer(hwnd, 3, ivl, None);
         } else {
             KillTimer(hwnd, 3);
         }
@@ -1829,6 +1849,54 @@ unsafe fn fs_update(hwnd: HWND) {
 
 thread_local! {
     static FS_POLL: Cell<bool> = const { Cell::new(true) }; // timer 3 runs (set in main)
+    static FS_IVL: Cell<u32> = const { Cell::new(0) }; // its current interval, 0 = not started from here yet
+    static MODES: Cell<(bool, bool)> = const { Cell::new((false, false)) }; // last (auto-hide, dodge) the strip was placed for
+}
+
+/// The window in front reaches the strip a bar occupies ("dodge windows"): a maximized window, a video, one dragged to
+/// the edge. Unlike `fullscreen_now` it looks at the bar of the window's own monitor and ignores our own panels and the
+/// desktop.
+unsafe fn window_over_bar() -> bool {
+    let fg = GetForegroundWindow();
+    if fg.is_null() || is_bar(fg) || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
+        return false;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(fg, &mut pid);
+    if pid == GetCurrentProcessId() {
+        return false; // a panel of ours (tray, volume, notifications), not an application window
+    }
+    let mut cls = [0u16; 64];
+    let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
+    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
+        return false; // the desktop is as big as the screen and would keep the bar hidden for good
+    }
+    let mut r: RECT = zeroed();
+    if GetWindowRect(fg, &mut r) == 0 {
+        return false;
+    }
+    let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+    let Some(b) = BARS.with_borrow(|bars| bars.iter().find(|b| b.mon.handle == mon).copied()) else {
+        return false; // no bar on this monitor (bar-monitor picks a single screen)
+    };
+    let m = b.mon.rc;
+    let strip = if vert() {
+        if i18n::style::side() == i18n::style::Side::Left {
+            RECT { left: m.left, top: m.top, right: m.left + bar_h(), bottom: m.bottom }
+        } else {
+            RECT { left: m.right - bar_h(), top: m.top, right: m.right, bottom: m.bottom }
+        }
+    } else if at_top() {
+        RECT { left: m.left, top: m.top, right: m.right, bottom: m.top + bar_h() }
+    } else if dock() {
+        let (x, w) = bar_x_w_m(m); // the pill, not the whole edge: a window in a corner does not hide it
+        RECT { left: x, top: m.bottom - bar_h() - dock_gap(), right: x + w, bottom: m.bottom }
+    } else {
+        RECT { left: m.left, top: m.bottom - bar_h() - dock_gap(), right: m.right, bottom: m.bottom }
+    };
+    // a window that is about to slip under the bar answers the same as one already over it
+    let g = sc(2);
+    r.left - g < strip.right && r.right + g > strip.left && r.top - g < strip.bottom && r.bottom + g > strip.top
 }
 
 /// The pointer is on the screen edge a bar of monitor `m` occupies (where auto-hide brings it back).
@@ -3332,8 +3400,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
         if msg != 0 && msg == SETTINGS_CHANGED.get() {
             // the settings program saved a value: re-read the shared look and put the bars back where they belong
+            i18n::style::reread(); // the one-second cache must not answer with the value the user just changed
             reload_usage(); // the app history may have been cleared
             relook(true);
+            fs_update(hwnd); // auto-hide / dodge windows take effect without waiting for the next tick
             return 0;
         }
     if msg != 0 && msg == TB_MSG.get() {

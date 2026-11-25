@@ -78,6 +78,20 @@ pub fn reload() {
     store(Style::parse(&name.unwrap_or_default()));
 }
 
+/// Forces every cached look value to be read from its file again. The settings program writes the files and broadcasts
+/// `WinRust.SettingsChanged`; without this the one-second caches could still answer with the value the user just changed.
+pub fn reread() {
+    READ_AT.store(0, Relaxed);
+    HIDE_AT.store(0, Relaxed);
+    DODGE_AT.store(0, Relaxed);
+    LEFT_AT.store(0, Relaxed);
+    SIDE_AT.store(0, Relaxed);
+    COLORS_AT.store(0, Relaxed);
+    OPACITY_AT.store(0, Relaxed);
+    SIZE_AT.store(0, Relaxed);
+    MON_AT.store(0, Relaxed);
+}
+
 /// The current style. The file is read again at most once a second, so a program that missed the broadcast still follows.
 pub fn style() -> Style {
     if CUR.load(Relaxed) == u8::MAX || now_ms().saturating_sub(READ_AT.load(Relaxed)) > 1000 {
@@ -116,6 +130,33 @@ pub fn set_autohide(on: bool) {
     HIDE.store(on as u8, Relaxed);
     HIDE_AT.store(now_ms(), Relaxed);
     if let Some(f) = autohide_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, if on { "1" } else { "0" });
+    }
+}
+
+fn dodge_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("dodge.txt"))
+}
+
+/// The bar slides away while the window in front reaches it and comes back at the screen edge ("dodge windows", off
+/// unless the file says 1). Like auto-hide it reserves no work area, so a maximized window covers the bar. Re-read once a
+/// second.
+pub fn dodge() -> bool {
+    if now_ms().saturating_sub(DODGE_AT.load(Relaxed)) > 1000 {
+        DODGE.store(dodge_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|s| s.trim() == "1") as u8, Relaxed);
+        DODGE_AT.store(now_ms(), Relaxed);
+    }
+    DODGE.load(Relaxed) == 1
+}
+
+static DODGE: AtomicU8 = AtomicU8::new(0);
+static DODGE_AT: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_dodge(on: bool) {
+    DODGE.store(on as u8, Relaxed);
+    DODGE_AT.store(now_ms(), Relaxed);
+    if let Some(f) = dodge_file() {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, if on { "1" } else { "0" });
     }

@@ -11,6 +11,10 @@ This fork builds on [Lemxy/WinRust](https://github.com/Lemxy/WinRust) and adds, 
   `TrackPopupMenu`, with shell icons, shortcuts, ticks, one submenu level, rounded corners and live transparency.
 - **Settings window with tabs** (`plugins/topbar/src/settingswin.rs`): replaces the long dropdown with a popup that has
   a tab rail (Appearance, Start menu, Blur, Bar, Language), double-buffered, with the frost background.
+- **Dodge windows** (the settings hub, Bar → Behavior, `%ProgramData%\WinRust\dodge.txt`): the bar reserves no work area,
+  hides while the window in front reaches it and returns at the screen edge; a maximized window takes the whole screen.
+  Independent of auto-hide. `style::reread()` makes a settings change skip the one-second cache, so the work area is
+  given back or taken at once, and `fit_maximized` grows *and* trims already-maximized windows (they stay maximized).
 - **Bar layout**: Windows button at the left end (Start), search / Task View can be hidden, the tray hugs the clock and
   there is no hairline border.
 - **Start menu, three styles** (`start7.rs`, `start10.rs`, `start11.rs` behind `startctx.rs`): Windows 7 (two columns,
@@ -24,7 +28,12 @@ This fork builds on [Lemxy/WinRust](https://github.com/Lemxy/WinRust) and adds, 
 ## Language
 
 - **Spanish** (`common/es.tsv`, `Lang::Es`): English texts are the keys, missing entries fall back to English. The
-  language list, the `lang.txt` codes, plurals and number formatting know about `es`.
+  language list, the `lang.txt` codes, plurals and number formatting know about `es`. `tools/i18n-check.ps1` reports
+  **0 errors** for the whole workspace; the texts of Notepad, Calculator, Clipboard, Run, the icons' descriptions and
+  the new bar setting are in the table too.
+- **`plugins/topbar/src/fly.rs` encoding**: the file had been saved double-encoded (UTF-8 read as CP1252 and saved
+  again), so every Russian/Japanese/Chinese/Portuguese string and every curly quote in the network panel and the other
+  flyouts of that file showed mojibake. Converted back losslessly (1,266 Cyrillic and 1,026 CJK characters restored).
 
 ## File manager
 

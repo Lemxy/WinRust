@@ -371,6 +371,8 @@ Dropbox updater	Actualizador de Dropbox
 Drops the standby list (cached file data nobody holds), like ISLC. Helps against stutter in games when no memory is free.	Vacía la lista de reserva (datos de archivos en caché que nadie usa), como ISLC. Ayuda contra los tirones en juegos cuando no hay memoria libre.
 Dry run: nothing is changed. Add --apply (admin) to do it, --undo to revert.\n	Simulación: no se cambia nada. Añade --apply (administrador) para hacerlo, --undo para revertir.\n
 Dry run: nothing is removed. --apply REMOVES it FOR GOOD (no undo).\n	Simulación: no se elimina nada. --apply lo ELIMINA DEFINITIVAMENTE (sin deshacer).\n
+Dodge windows	Esquivar ventanas
+Dodge windows: the bar slides away while a window reaches it and comes back at the screen edge. It reserves no space.	Esquivar ventanas: la barra se aparta cuando una ventana llega hasta ella y vuelve al borde de la pantalla. No reserva espacio.
 Duplicate	Duplicar
 Earlier this month	A principios de este mes
 Earlier this week	A principios de esta semana
@@ -1488,3 +1490,64 @@ Reset	Restablecer
 Yes, reset everything	Sí, restablecer todo
 Theme, colors, bar, Start, language and effects. Templates stay.	Tema, colores, barra, inicio, idioma y efectos. Las plantillas se conservan.
 Program language	Idioma del programa
+Calculator	Calculadora
+History	Historial
+Clear	Borrar
+Nothing yet	Nada todavía
+Error	Error
+rs-calc — the WinRust calculator	rs-calc — la calculadora de WinRust
+Hint: cmd does not wait for a GUI program. For the exit code use start /wait rs-calc "2+2" or PowerShell Start-Process -Wait.	Nota: cmd no espera a un programa con interfaz gráfica. Para obtener el código de salida usa start /wait rs-calc "2+2" o Start-Process -Wait en PowerShell.
+Usage:\n  rs-calc                  open the window\n  rs-calc \"2+2*3\"          evaluate and print (exit 0, 1 on error)\n  rs-calc --rad \"sin(pi/2)\" radians (degrees by default)	Uso:\n  rs-calc                  abrir la ventana\n  rs-calc \"2+2*3\"          evaluar e imprimir (código 0, 1 si hay error)\n  rs-calc --rad \"sin(pi/2)\" radianes (grados por defecto)
+Operators: + - * / % ^, parentheses, !, unary minus.\nFunctions: sin cos tan asin acos atan ln log sqrt abs exp, pi, e.\n% after a value is a percent (50% = 0.5); between two values it is the remainder (7%3 = 1).	Operadores: + - * / % ^, paréntesis, !, menos unario.\nFunciones: sin cos tan asin acos atan ln log sqrt abs exp, pi, e.\n% tras un valor es un porcentaje (50% = 0.5); entre dos valores es el resto (7%3 = 1).
+Emoji	Emojis
+Search by name	Buscar por nombre
+Faces	Caras
+Gestures	Gestos
+Food	Comida
+Objects	Objetos
+Symbols	Símbolos
+No emoji found	No se encontraron emojis
+Clear history	Vaciar historial
+Clipboard	Portapapeles
+Search the clipboard	Buscar en el portapapeles
+No clipboard history	No hay historial del portapapeles
+Copy something and it will appear here	Copia algo y aparecerá aquí
+No matches	Sin coincidencias
+Image	Imagen
+Files	Archivos
+{} items	{} elementos
+{} found	{} encontrados
+Untitled	Sin título
+Edit	Editar
+Cannot open the file: {}	No se puede abrir el archivo: {}
+Cannot open a folder.	No se puede abrir una carpeta.
+Cannot save the file: {}	No se puede guardar el archivo: {}
+Save changes to "{}"?	¿Guardar los cambios en «{}»?
+Text files	Archivos de texto
+All files	Todos los archivos
+Save as	Guardar como
+Not found	No encontrado
+New	Nuevo
+Open...	Abrir...
+Save	Guardar
+Save as...	Guardar como...
+Find...	Buscar...
+Find next	Buscar siguiente
+Line {}, Column {}	Línea {}, Columna {}
+Length: {}	Longitud: {}
+Type the name of a program, folder, document or web address	Escriba el nombre de un programa, carpeta, documento o dirección de Internet
+OK	Aceptar
+Not installed	No instalado
+mute	silenciar
+{own}: updated {}	{own}: actualizado {}
+The settings program (rust-settings) is not installed.\nInstall it with the WinRust installer.	El programa de ajustes (rust-settings) no está instalado.\nInstálalo con el instalador de WinRust.
+\r\nThis REMOVES the apps above FOR GOOD, there is no undo. Type YES to continue: 	\r\nEsto ELIMINA las aplicaciones anteriores DEFINITIVAMENTE, no se puede deshacer. Escribe YES para continuar: 
+\r\nPress Enter to close.	\r\nPulsa Intro para cerrar.
+Could not connect to “{ssid}”	No se pudo conectar a “{ssid}”
+Forgot “{ssid}”	Se olvidó “{ssid}”
+Could not forget “{ssid}”	No se pudo olvidar “{ssid}”
+Known networks…	Redes conocidas…
+Password for “{name}”	Contraseña de “{name}”
+Enter — connect · Esc — cancel	Intro — conectar · Esc — cancelar
+Turn Wi‑Fi on to see networks	Activa el Wi‑Fi para ver las redes
+Or search an app and right-click it → Add to Start	O busca una aplicación y haz clic derecho en ella → Añadir a Inicio
