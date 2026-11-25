@@ -86,12 +86,13 @@ pub fn open(store: Arc<Mutex<Store>>, target: isize) {
             return;
         }
 
-        let entries = {
+        let (entries, search) = {
             let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
             s.refresh_limit();
-            s.entries()
+            let entries = s.entries();
+            let search: Vec<String> = entries.iter().map(|e| store::entry_text(e).to_lowercase()).collect();
+            (entries, search)
         };
-        let search = entries.iter().map(|e| store::entry_text(e).to_lowercase()).collect();
         let mut p = Box::new(Popup {
             hwnd,
             store,
@@ -166,6 +167,7 @@ impl Popup {
         if self.sel >= self.filt.len() {
             self.sel = self.filt.len().saturating_sub(1);
         }
+        self.hover = -1;
         self.clamp_scroll();
     }
 
@@ -192,8 +194,14 @@ impl Popup {
 
     /// Reloads after a delete/clear: the store owns the files, the popup only keeps a snapshot.
     fn reload(&mut self) {
-        self.entries = self.store.lock().unwrap_or_else(|e| e.into_inner()).entries();
-        self.search = self.entries.iter().map(|e| store::entry_text(e).to_lowercase()).collect();
+        let (entries, search) = {
+            let s = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let entries = s.entries();
+            let search: Vec<String> = entries.iter().map(|e| store::entry_text(e).to_lowercase()).collect();
+            (entries, search)
+        };
+        self.entries = entries;
+        self.search = search;
         for (_, h) in self.thumbs.drain() {
             unsafe { DeleteObject(h as HGDIOBJ) };
         }
@@ -252,6 +260,16 @@ impl Popup {
         }
         let mem = CreateCompatibleDC(wdc);
         let bmp = CreateCompatibleBitmap(wdc, cr.right, cr.bottom);
+        if mem.is_null() || bmp.is_null() {
+            if !mem.is_null() {
+                DeleteDC(mem);
+            }
+            if !bmp.is_null() {
+                DeleteObject(bmp);
+            }
+            EndPaint(h, &ps);
+            return;
+        }
         let old = SelectObject(mem, bmp);
         let p = pal();
         ui::surface(mem, &self.px, cr);

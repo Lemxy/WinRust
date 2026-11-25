@@ -388,6 +388,7 @@ impl Popup {
         if self.sel >= self.filt.len() {
             self.sel = self.filt.len().saturating_sub(1);
         }
+        self.hover = -1;
         self.clamp_scroll();
     }
 
@@ -413,7 +414,8 @@ impl Popup {
     unsafe fn clamp_scroll(&mut self) {
         let m = ui::metrics(self.hwnd);
         let (_, cols, rows) = self.grid(&m);
-        self.scroll = self.scroll.min(self.filt.len().saturating_sub(cols * rows));
+        let max = self.filt.len().saturating_sub(cols * rows);
+        self.scroll = (self.scroll.min(max) / cols.max(1)) * cols.max(1);
     }
 
     unsafe fn ensure_visible(&mut self) {
@@ -447,6 +449,16 @@ impl Popup {
         }
         let mem = CreateCompatibleDC(wdc);
         let bmp = CreateCompatibleBitmap(wdc, cr.right, cr.bottom);
+        if mem.is_null() || bmp.is_null() {
+            if !mem.is_null() {
+                DeleteDC(mem);
+            }
+            if !bmp.is_null() {
+                DeleteObject(bmp);
+            }
+            EndPaint(h, &ps);
+            return;
+        }
         let old = SelectObject(mem, bmp);
         let p = pal();
         ui::surface(mem, &self.px, cr);
@@ -514,6 +526,7 @@ impl Popup {
                 }
                 ui::text(mem, EMOJI[self.filt[i]].0, r, self.f_emoji, p.text, DT_CENTER);
             }
+            ui::scrollbar(mem, h, grid, self.filt.len(), vis, self.scroll);
         }
 
         ui::footer_sep(mem, &m, h);
@@ -575,7 +588,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let m = ui::metrics(h);
                 let tabs = p.tabs(&m);
                 if y >= tabs.top && y < tabs.bottom {
-                    let w = (tabs.right - tabs.left) / 5;
+                    let w = ((tabs.right - tabs.left) / 5).max(1);
                     let i = ((x - tabs.left) / w).clamp(0, 4) as u8;
                     p.cat = i;
                     p.query.clear();

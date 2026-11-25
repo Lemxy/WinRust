@@ -229,6 +229,8 @@ pub unsafe fn geometry(logical_w: i32, logical_h: i32) -> (i32, i32, i32, i32) {
     let w = (logical_w as f32 * scale).round() as i32;
     let h = (logical_h as f32 * scale).round() as i32;
     let (ww, wh) = (mon.work.right - mon.work.left, mon.work.bottom - mon.work.top);
+    let w = w.min(ww.max(1));
+    let h = h.min(wh.max(1));
     let x = mon.work.left + ((ww - w) / 2).max(0);
     let y = mon.work.top + ((wh - h) / 2).max(0);
     (x, y, w, h)
@@ -242,7 +244,8 @@ pub unsafe fn frost_bits(w: i32, h: i32, x: i32, y: i32) -> Vec<u32> {
 /// The pane itself: frost (or the solid background), the rounded edge and the optional border.
 pub unsafe fn surface(dc: HDC, px: &[u32], r: RECT) {
     let p = pal();
-    let drew = !px.is_empty() && frost::paint_capture(dc, px, r, p.bg, (255 * look::menu_alpha().max(60) as u32 / 100) as u8);
+    let want = ((r.right - r.left).max(0) * (r.bottom - r.top).max(0)) as usize;
+    let drew = px.len() == want && want > 0 && frost::paint_capture(dc, px, r, p.bg, (255 * look::menu_alpha().max(60) as u32 / 100) as u8);
     if !drew {
         fill(dc, r, p.bg);
     }

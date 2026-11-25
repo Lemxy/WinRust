@@ -47,7 +47,7 @@ fn parse(dib: &[u8]) -> Option<Dib> {
     let compression = le32(dib, 16);
     let size_image = le32(dib, 20);
     let colors = le32(dib, 32) as usize;
-    if w <= 0 || h == 0 || w > MAX_SIDE || h.abs() > MAX_SIDE || (w as i64) * (h.unsigned_abs() as i64) > MAX_PIXELS {
+    if w <= 0 || h == 0 || w > MAX_SIDE || h.unsigned_abs() > MAX_SIDE as u32 || (w as i64) * (h.unsigned_abs() as i64) > MAX_PIXELS {
         return None;
     }
     // BI_RGB and BI_BITFIELDS can be converted by GDI; JPEG/PNG payloads inside a DIB are rare and not a DIB we can read.
@@ -325,6 +325,47 @@ mod tests {
     }
 
     #[test]
+    fn turns_a_top_down_dib_into_a_bottom_up_bmp() {
+        // 2x2 top-down: top red/green, bottom blue/white.
+        let mut dib = vec![0u8; 40 + 16];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&2i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&(-2i32).to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+        dib[20..24].copy_from_slice(&16u32.to_le_bytes());
+        for (i, px) in [0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0x00FF_FFFF].into_iter().enumerate() {
+            dib[40 + i * 4..44 + i * 4].copy_from_slice(&px.to_le_bytes());
+        }
+        let dir = std::env::temp_dir().join(format!("rs-clip-imgtd-{}", std::process::id()));
+        let (bmp, thumb) = (dir.join("a.bmp"), dir.join("a.thumb.bmp"));
+        let _ = std::fs::create_dir_all(&dir);
+        assert_eq!(dib_to_images(&dib, &bmp, &thumb), Some((2, 2)));
+        let file = std::fs::read(&bmp).unwrap();
+        let px: Vec<u32> = (54..70).step_by(4).map(|i| u32::from_le_bytes(file[i..i + 4].try_into().unwrap())).collect();
+        assert_eq!(px, [0x0000_00FF, 0x00FF_FFFF, 0x00FF_0000, 0x0000_FF00]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reads_an_hbitmap_as_a_dib() {
+        use windows_sys::Win32::Graphics::Gdi::GetDC;
+        let scr = unsafe { GetDC(std::ptr::null_mut()) };
+        let (mem, bits, hb) = unsafe { super::dib_section(scr, 2, -2) }.unwrap();
+        let px = [0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0x00FF_FFFF];
+        unsafe { std::ptr::copy_nonoverlapping(px.as_ptr(), bits, 4) };
+        let dib = super::hbitmap_to_dib(hb).unwrap();
+        assert_eq!(i32::from_le_bytes(dib[4..8].try_into().unwrap()), 2);
+        assert_eq!(i32::from_le_bytes(dib[8..12].try_into().unwrap()), -2);
+        let got: Vec<u32> = (40..56).step_by(4).map(|i| u32::from_le_bytes(dib[i..i + 4].try_into().unwrap())).collect();
+        assert_eq!(got, px);
+        unsafe {
+            super::release(mem, hb);
+            windows_sys::Win32::Graphics::Gdi::ReleaseDC(std::ptr::null_mut(), scr);
+        }
+    }
+
+    #[test]
     fn converts_16_bpp_through_gdi() {
         // 2x2 RGB565, bottom-up: bottom blue/green, top red/white.
         let mut dib = vec![0u8; 40 + 16];
@@ -344,9 +385,9 @@ mod tests {
         let file = std::fs::read(&bmp).unwrap();
         // BI_RGB 16-bpp is RGB555; GDI expands the 5-bit channels with slight rounding, so compare with tolerance.
         let p = u32::from_le_bytes(file[54..58].try_into().unwrap());
-        assert_eq!((p & 0xFF, p >> 16), (255, 0)); // blue
+        assert_eq!((p & 0xFF >= 240, (p >> 8) & 0xFF, p >> 16), (true, 0, 0)); // blue
         let p = u32::from_le_bytes(file[58..62].try_into().unwrap());
-        assert_eq!((p & 0xFF, (p >> 8) & 0xFF, p >> 16 <= 16), (0, 255, true)); // green (RGB555's R bit is set by 0x07E0)
+        assert_eq!((p & 0xFF, (p >> 8) & 0xFF >= 250, p >> 16 <= 16), (0, true, true)); // green (0x07E0 has RGB555's R bit)
         let p = u32::from_le_bytes(file[62..66].try_into().unwrap());
         assert_eq!((p & 0xFF, (p >> 8) & 0xFF, p >> 16 >= 240), (0, 0, true)); // red
         let p = u32::from_le_bytes(file[66..70].try_into().unwrap());

@@ -24,6 +24,7 @@ use windows_sys::Win32::{
         },
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
         Ole::{CF_BITMAP, CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT},
+        SystemInformation::GetTickCount64,
     },
     UI::{
         Shell::{DragQueryFileW, DROPFILES, HDROP},
@@ -38,8 +39,20 @@ const HIDDEN_FORMATS: [&str; 2] = ["ExcludeClipboardContentFromMonitorProcessing
 const HISTORY_SWITCHES: [&str; 2] = ["CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"];
 
 /// Hash of the bytes this process has just put on the clipboard: the next WM_CLIPBOARDUPDATE is ours, not a copy.
-/// 0 = nothing is expected.
-pub static LAST_WRITE: AtomicU64 = AtomicU64::new(0);
+/// 0 = nothing is expected. The timestamp absorbs the duplicate notifications a single copy can produce while still
+/// letting the same glyph be copied into the history a few seconds later.
+static LAST_WRITE: AtomicU64 = AtomicU64::new(0);
+static LAST_WRITE_AT: AtomicU64 = AtomicU64::new(0);
+const OWN_WINDOW_MS: u64 = 2_000;
+
+fn note_write(hash: u64) {
+    LAST_WRITE_AT.store(unsafe { GetTickCount64() }, Relaxed);
+    LAST_WRITE.store(hash, Relaxed);
+}
+
+fn clear_write() {
+    LAST_WRITE.store(0, Relaxed);
+}
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -83,7 +96,11 @@ pub fn history_limit() -> usize {
     let text = std::env::var_os("ProgramData")
         .map(|p| PathBuf::from(p).join(r"WinRust\look.txt"))
         .and_then(|p| fs::read_to_string(p).ok());
-    for line in text.unwrap_or_default().lines() {
+    parse_limit(&text.unwrap_or_default())
+}
+
+fn parse_limit(text: &str) -> usize {
+    for line in text.lines() {
         if let Some((k, v)) = line.split_once('=') {
             if k.trim() == "clip-history" {
                 return v.trim().parse::<usize>().map_or(100, |n| n.clamp(1, 100));
@@ -200,7 +217,7 @@ impl Store {
             return false;
         }
         let grabbed = if sensitive() {
-            LAST_WRITE.store(0, Relaxed); // a new copy superseded any paste of ours that was still expected
+            clear_write(); // a new copy superseded any paste of ours that was still expected
             log("skipped: clipboard content marked private");
             None
         } else {
@@ -209,7 +226,9 @@ impl Store {
         unsafe { CloseClipboard() };
         let Some(g) = grabbed else { return false };
 
-        // Our own paste: the watcher must not turn the entry into a new history row.
+        // Our own paste: the watcher must not turn the entry into a new history row. Keep the mark for a couple of
+        // seconds because one copy can produce more than one notification; after that even the same bytes are a real
+        // copy again.
         let own = match &g {
             Grabbed::Text(s) => hash_text(s),
             Grabbed::Files(v) => hash_files(v),
@@ -217,10 +236,13 @@ impl Store {
         };
         let expected = LAST_WRITE.load(Relaxed);
         if expected != 0 {
-            LAST_WRITE.store(0, Relaxed);
             if expected == own {
-                return false;
+                let age = unsafe { GetTickCount64() }.saturating_sub(LAST_WRITE_AT.load(Relaxed));
+                if age < OWN_WINDOW_MS {
+                    return false;
+                }
             }
+            clear_write();
         }
 
         self.limit = history_limit();
@@ -532,6 +554,10 @@ unsafe fn dib(format: u32) -> Option<Vec<u8>> {
     if len < 40 {
         return None;
     }
+    // A DIB this large cannot pass `parse` anyway; do not copy half a gigabyte just to reject it.
+    if len > 256 * 1024 * 1024 {
+        return None;
+    }
     let p = GlobalLock(h);
     if p.is_null() {
         return None;
@@ -597,10 +623,10 @@ pub fn put_text(s: &str) -> bool {
     let mut units: Vec<u16> = s.encode_utf16().collect();
     units.push(0);
     let bytes = units.len() * 2;
-    LAST_WRITE.store(hash_text(s), Relaxed);
+    note_write(hash_text(s));
     unsafe {
         if !open(std::ptr::null_mut()) {
-            LAST_WRITE.store(0, Relaxed);
+            clear_write();
             return false;
         }
         EmptyClipboard();
@@ -626,7 +652,7 @@ pub fn put_text(s: &str) -> bool {
         };
         CloseClipboard();
         if !ok {
-            LAST_WRITE.store(0, Relaxed);
+            clear_write();
         }
         ok
     }
@@ -634,10 +660,10 @@ pub fn put_text(s: &str) -> bool {
 
 /// CF_DIB (and CF_BITMAP when the BMP can be loaded), for pasting an image entry.
 pub fn put_dib(dib: &[u8], bmp: &Path) -> bool {
-    LAST_WRITE.store(hash_bytes(dib), Relaxed);
+    note_write(hash_bytes(dib));
     unsafe {
         if !open(std::ptr::null_mut()) {
-            LAST_WRITE.store(0, Relaxed);
+            clear_write();
             return false;
         }
         EmptyClipboard();
@@ -664,7 +690,7 @@ pub fn put_dib(dib: &[u8], bmp: &Path) -> bool {
         }
         CloseClipboard();
         if !ok {
-            LAST_WRITE.store(0, Relaxed);
+            clear_write();
         }
         ok
     }
@@ -683,10 +709,10 @@ pub fn put_files(paths: &[String]) -> bool {
     list.push(0);
     let header = std::mem::size_of::<DROPFILES>();
     let bytes = header + list.len() * 2;
-    LAST_WRITE.store(hash_files(paths), Relaxed);
+    note_write(hash_files(paths));
     unsafe {
         if !open(std::ptr::null_mut()) {
-            LAST_WRITE.store(0, Relaxed);
+            clear_write();
             return false;
         }
         EmptyClipboard();
@@ -714,8 +740,31 @@ pub fn put_files(paths: &[String]) -> bool {
         };
         CloseClipboard();
         if !ok {
-            LAST_WRITE.store(0, Relaxed);
+            clear_write();
         }
         ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_limit, preview, Kind};
+
+    #[test]
+    fn reads_the_history_limit() {
+        assert_eq!(parse_limit(""), 100);
+        assert_eq!(parse_limit("bar-blur=1\nclip-history=25\n"), 25);
+        assert_eq!(parse_limit("clip-history = 7"), 7);
+        assert_eq!(parse_limit("clip-history=abc"), 100);
+        assert_eq!(parse_limit("clip-history=0"), 1);
+        assert_eq!(parse_limit("clip-history=500"), 100);
+    }
+
+    #[test]
+    fn previews_text_and_files() {
+        assert_eq!(preview("first line\nsecond", Kind::Text), "first line");
+        assert_eq!(preview("\n\n  kept  \n", Kind::Text), "kept");
+        assert_eq!(preview(r"C:\a\one.txt", Kind::Files), "one.txt");
+        assert_eq!(preview("C:\\a\\one.txt\nC:\\b\\two.txt\nC:\\c\\three.txt\nC:\\d\\four.txt", Kind::Files), "one.txt, two.txt, three.txt  +1");
     }
 }
