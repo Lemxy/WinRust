@@ -91,8 +91,9 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
                 return 1;
             }
             // Win+Space / Win+Shift+Space: without explorer nobody switches the keyboard layout (Alt+Shift still works, the
-            // system handles that one itself)
-            if !EXPLORER_UP.load(Relaxed) && k.vkCode == VK_SPACE as u32 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_CONTROL) && !held(VK_MENU) {
+            // system handles that one itself). Our own Start in front: the system switcher's request never reaches the elevated
+            // bar (UIPI drops it), so it is done here too (#105).
+            if (!EXPLORER_UP.load(Relaxed) || own_foreground()) && k.vkCode == VK_SPACE as u32 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_CONTROL) && !held(VK_MENU) {
                 if down0 {
                     WIN_ALONE.store(false, Relaxed);
                     keybd_event(0xE8, 0, 0, 0); // a key between Win down and up: no Start menu on release
@@ -101,13 +102,23 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
                 }
                 return 1;
             }
-            // Win+R: without explorer nobody opens the Run box
-            if !EXPLORER_UP.load(Relaxed) && k.vkCode == b'R' as u32 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_CONTROL) && !held(VK_MENU) && !held(VK_SHIFT) {
+            // Win+R: always our Run box, also while Explorer runs (lent to Settings, or not replaced): its own box is the plain one
+            if k.vkCode == b'R' as u32 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_CONTROL) && !held(VK_MENU) && !held(VK_SHIFT) {
                 if down0 {
                     WIN_ALONE.store(false, Relaxed);
                     keybd_event(0xE8, 0, 0, 0); // a key between Win down and up: no Start menu on release
                     keybd_event(0xE8, 0, KEYEVENTF_KEYUP, 0);
                     run_box();
+                }
+                return 1;
+            }
+            // Win+X: our power-user menu (the one Start's right click opens); Explorer's needs its own taskbar, which is hidden
+            if k.vkCode == b'X' as u32 && (held(VK_LWIN) || held(VK_RWIN)) && !held(VK_CONTROL) && !held(VK_MENU) && !held(VK_SHIFT) {
+                if down0 {
+                    WIN_ALONE.store(false, Relaxed);
+                    keybd_event(0xE8, 0, 0, 0); // a key between Win down and up: no Start menu on release
+                    keybd_event(0xE8, 0, KEYEVENTF_KEYUP, 0);
+                    PostMessageW(BAR.load(Relaxed) as HWND, WIN_X, 0, 0);
                 }
                 return 1;
             }

@@ -6,6 +6,17 @@ Each item says how far it was checked: **tests** (unit tests), **built** (compil
 
 ## Done
 
+### v0.5.8
+- **Fixes from issues:** search no longer freezes on a cloud-only or offline file (icons load on a worker thread, #134); the IME composition and candidate list open under the typed text instead of behind the search card (#138); a second click on the clock, Wi-Fi, volume or battery closes its panel instead of replaying the opening animation (#140); windows asking for attention light up their bar button until activated (#129); two pins of one exe (Firefox / Chrome profiles) keep their own windows by AppUserModelID (#132); Explorer's other tray icons (printer queue, Safely Remove Hardware, microphone in use) are shown, only volume / network / power are drawn by the bar itself (#127); the Task View button opens our window grid when Explorer is not the shell (#120); the desktop menu opens on a secondary monitor (#125, icons there still only on the primary). *built, tests; installed and started here, the IME and printer cases not tried on a live system*
+- Win+E and rs-shell no longer start leftover copies from `%LOCALAPPDATA%\plugin-launcher\bin` (an old rust-explorer without an icon opened while rust-explorer was not even installed). *ran*
+- Releases carry only `WinRust.exe` (plus the signed manifest); the auto-updater swaps it in and the new copy updates the installed plugins from the ones it carries, once per version. *built; first live run with this release*
+
+### v0.5.7
+- **Lighter in the background:** topbar follows window events (WinEvent hooks) instead of listing every window twice a second, caches each window's app ID and icon, draws its background and fonts once instead of every frame; the 250 ms pointer watch runs only for auto-hide / dock / desktop. Idle CPU 6.3 → 0.5 ms/s. rs-launcher ends SearchHost on a window event instead of a full process refresh every 2 s (6.3 ms/s → 0, 800 → 110 handles, 12.7 → 1.4 MB private). rs-shell: no reg.exe, no snapshots (2.1 ms/s → 0). Task Manager in the tray looks every 5 s. Search index slots 12 → 10 bytes. *measured: README, Background load*
+- **Setup wizard:** the installer is a dark step-by-step wizard: Express (the recommended set, nothing removed) or Custom (check boxes, the old warnings), a progress page, a results page. *built; pages screenshot-checked except the progress page*
+- Settings pages open again with Explorer replaced (a marker keeps rs-shell from raising the desktop under the lent Explorer; a stale frame host is restarted); Win+R is always our Run box; Win+X opens our menu from the keyboard; Start search asks the search service's pipe directly. *built, installed; the keys not pressed by hand*
+- Community: Simplified Chinese (#104), the Win key ignored (#119), sharper preview icons (#128), programs started with the user's token (#114).
+
 ### Installer
 - One `plugin-launcher.exe` with every plugin embedded (unpacked into Program Files, not %TEMP%), static CRT, dark Win32/GDI window. *ran*
 - "Install WinRust" installs what is missing in order (topbar before rust-explorer), updates when everything is there; "Remove all" removes in reverse order. *built*
@@ -54,6 +65,11 @@ emoved.txt`. `purge.exe` lists, `--ask` asks for YES (the bar's right-click menu
 0. **Scripted shell customization** (#39, Windhawk-style): a way to load small user mods that change the bar, Start panel and file manager without rebuilding WinRust. Not started: needs a mod format (script or DLL), a sandbox, and a stable API of the shell parts first.
 0. **Phones and safe removal in rust-explorer** (#2): not started, too big for a quick fix. (a) MTP/PTP phones have no drive letter, so they need the Windows Portable Devices API (`IPortableDeviceManager`, `IPortableDeviceContent`, enumerate objects, read and write through `IPortableDeviceResources` streams) behind a second "file system" in rust-explorer next to the path-based one; copy, paste, delete and drag and drop have to be redone on it. (b) Safe removal: a tray icon in topbar (it already hosts tray icons) that lists removable drives, and `CM_Request_Device_Eject` on the device node of the chosen drive (flush first, report "in use" with the process that holds it). (b) is the smaller half and works for USB sticks and disks; (a) is what the issue is mostly about. Needs a real phone and a USB stick to test: nothing here can be checked by unit tests alone.
 0. **Taskbar-style reordering in topbar** (#6, wish): dragging a file onto the bar already pins it. Missing: dragging the window buttons to change their order, and dragging a button off the bar to unpin. Needs the order stored (like `topbar-start.txt`) and a drag state in `topbar` (mouse capture, an insertion marker, a repaint per move).
+0. **Windows 98 / 7 themes, the rest** (#101): the colours, corners and font are in; the 3D raised / sunken bevels and etched separators are not drawn yet.
+0. **Win+V and Win+.** (#65): clipboard history and the emoji panel without Explorer. They are Windows shell features, so they need our own panels.
+0. **topbar: pins keep their arguments** (#79): pinning a running app drops its arguments, so browser profiles collapse into one pin; and a choice of window when an app has several. A pull request is welcome.
+0. **topbar: Snap Assist** (#78): a bigger drop zone, a drag preview and the Windows 11 suggestions step for window snapping. A pull request is welcome.
+0. **rust-explorer: Network and a scrollbar** (#75): a Network entry (shares, computers) and a scrollbar for long Quick access lists.
 1. **Test on a clean Windows 11 VM**: install, uninstall, rollback, reboot, for each plugin. Nothing has been checked on another machine yet.
 2. **One undo journal for every plugin**: each change (registry value, service, file) written as "before → after" before it is made; uninstall and rollback replay it backwards. Replaces the hand-written uninstall of each plugin. Needs step 1 first, and a migration for installs made by the current version.
 3. **Registry through the Win32 API** (`RegGetValueW`/`RegSetValueExW`) instead of running `reg.exe` and parsing its output.
@@ -68,3 +84,4 @@ emoved.txt`. `purge.exe` lists, `--ask` asks for YES (the bar's right-click menu
 - System components are disabled or bypassed (reversibly), not removed: deleting `taskmgr.exe` or Windows Search outright would break system protection.
 - Administrator rights are required.
 - Win+S and Start still open Windows Search.
+- With rust-explorer as the shell, Store apps that Explorer hosts (Windows Settings pages rust-settings lacks, the Microsoft sign-in window in Outlook/Teams, #98, #109) need Explorer running; sign in once with Explorer as the shell.
