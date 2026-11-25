@@ -521,6 +521,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-calc"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows-sys",
+ "winrust-common",
+]
+
+[[package]]
+name = "rs-clip"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows-sys",
+ "winrust-common",
+]
+
+[[package]]
 name = "rs-du"
 version = "0.1.0"
 dependencies = [
@@ -599,6 +617,15 @@ dependencies = [
  "windows-sys",
  "winrust-common",
  "zip",
+]
+
+[[package]]
+name = "rust-notepad"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows-sys",
+ "winrust-common",
 ]
 
 [[package]]

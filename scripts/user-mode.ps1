@@ -49,6 +49,15 @@ foreach ($k in $folderKeys) {
     Set-ItemProperty "$k\command" -Name 'DelegateExecute' -Value ''
 }
 'folders: open in rust-explorer (undo: scripts\user-mode.ps1 -Undo)'
+# URI handlers are opt-in, per user, and applied by rs-shell itself:
+#   New-Item "$env:ProgramData\WinRust\handlers-enabled" -Force      # ms-settings: -> rust-settings --system "%1"
+#                                                                      # ms-screenclip:/ms-snippingtool: -> rs-shot
+#   "$bin\rs-shell.exe" --restore                                     # undo (values kept in handlers.json)
+# Nothing is written without that marker. If rust-settings or rs-shot is missing, its handler is restored.
+# control.exe -> rust-control is left to the provisioning script: it is a system executable, so it needs HKLM, namely
+#   HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\control.exe
+#   Debugger = "<...>\rust-control.exe"
+# (App Paths cannot win over System32\control.exe; that is why the elevated provisioning step owns it).
 cmd /c "schtasks /query /tn topbar >nul 2>&1"   # through cmd: schtasks' stderr would be a terminating error under $ErrorActionPreference = Stop
 if ($LASTEXITCODE -eq 0) {
     ''

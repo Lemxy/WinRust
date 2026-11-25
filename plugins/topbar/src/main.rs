@@ -262,6 +262,7 @@ const NEXT_LANG: u32 = WM_APP + 16; // posted by the keyboard hook: Win+Space wi
 const VOLKEY: u32 = WM_APP + 14; // posted by the keyboard hook: a volume key (wp 0 up, 1 down, 2 mute)
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
 const HOTKEY_SHOT: i32 = 0x5253; // RegisterHotKey id for PrintScreen -> rs-shot (WM_HOTKEY reaches the main loop)
+const HOTKEY_RUN: i32 = 0x5252; // RegisterHotKey backup for Win+R: the low-level hook above normally takes the key first
 static EXPLORER_UP: AtomicBool = AtomicBool::new(true); // explorer's taskbar exists (it handles PrtSc itself then); refreshed by the bar
 
 struct Pin {
@@ -3562,6 +3563,15 @@ fn main() {
             screenshot();
             return;
         }
+        // `topbar --run`: the WinRust Run box on its own (no bar, no hook), e.g. to try it or to bind it from a launcher
+        if std::env::args().any(|a| a == "--run") {
+            SetProcessDPIAware();
+            let (mut tok, mut inp): (usize, GdiplusStartupInput) = (0, zeroed());
+            inp.GdiplusVersion = 1;
+            GdiplusStartup(&mut tok, &inp, null_mut());
+            run_dialog();
+            return;
+        }
         // `topbar --preview quick|wifi`: one flyout on its own (no bar, no hooks), to look at a style change; the process is closed by hand
         if let Some(p) = std::env::args().skip_while(|a| a != "--preview").nth(1) {
             SetProcessDPIAware();
@@ -3680,10 +3690,17 @@ fn main() {
         if shot::rs_shot().is_some() {
             RegisterHotKey(null_mut(), HOTKEY_SHOT, MOD_NOREPEAT, VK_SNAPSHOT as u32);
         }
+        // Win+R backup. Windows normally owns it (Explorer, the shell host) and this fails harmlessly; when WinRust is the
+        // shell it succeeds, so the box still opens if Windows drops our low-level hook (it does after a slow callback).
+        RegisterHotKey(null_mut(), HOTKEY_RUN, MOD_WIN | MOD_NOREPEAT, 'R' as u32);
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
             if m.message == WM_HOTKEY && m.wParam == HOTKEY_SHOT as usize {
                 shot::rs_shot_start(&[]);
+                continue;
+            }
+            if m.message == WM_HOTKEY && m.wParam == HOTKEY_RUN as usize {
+                run_box();
                 continue;
             }
             TranslateMessage(&m);

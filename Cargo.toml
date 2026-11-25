@@ -44,9 +44,12 @@ members = [
     "plugins/wiztree",
     "plugins/photoview",
     "plugins/rs-shot",
+    "plugins/rs-clip",
     "plugins/debloat",
     "plugins/purge",
     "plugins/rust-settings",
+    "plugins/rs-calc",
+    "plugins/rust-notepad",
     "plugins/rust-control",
     "tools/winrust-sign",
 ]

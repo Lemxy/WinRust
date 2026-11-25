@@ -15,6 +15,10 @@ pub(crate) fn st_dir() -> PathBuf {
     program_files().join("rust-settings")
 }
 
+pub(crate) fn ca_dir() -> PathBuf {
+    program_files().join("rs-calc")
+}
+
 pub(crate) fn pu_dir() -> PathBuf {
     program_files().join("purge")
 }
@@ -68,6 +72,32 @@ pub(crate) fn st_uninstall() -> Result<(), String> {
     // what the night-light switch left for the user: its autostart value and its setting
     let _ = run("reg", &["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "WinRustNightLight", "/f"]);
     let _ = run("reg", &["delete", r"HKCU\Software\WinRust\NightLight", "/f"]);
+    Ok(())
+}
+
+/// rs-calc: one exe and a Start menu shortcut. calc.exe itself is NOT redirected here: IFEO stays the user's
+/// choice (see plugins/rs-calc/README.md).
+pub(crate) fn ca_install() -> Result<(), String> {
+    tool_install("rs-calc.exe", &ca_dir(), Some("WinRust Calculator"))
+}
+
+pub(crate) fn ca_uninstall() -> Result<(), String> {
+    tool_remove("rs-calc.exe", &ca_dir(), Some("WinRust Calculator"));
+    Ok(())
+}
+
+pub(crate) fn np_dir() -> PathBuf {
+    program_files().join("rust-notepad")
+}
+
+/// rust-notepad: one exe and a Start menu shortcut. notepad.exe itself is NOT redirected here: the IFEO
+/// value stays the user's choice (see plugins/rust-notepad/README.md).
+pub(crate) fn np_install() -> Result<(), String> {
+    tool_install("rust-notepad.exe", &np_dir(), Some("WinRust Notepad"))
+}
+
+pub(crate) fn np_uninstall() -> Result<(), String> {
+    tool_remove("rust-notepad.exe", &np_dir(), Some("WinRust Notepad"));
     Ok(())
 }
 

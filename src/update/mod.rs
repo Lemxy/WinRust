@@ -35,7 +35,7 @@ fn targets(name: &str) -> Vec<PathBuf> {
         "debloat.exe" => vec![tm_dir().join(name), db_dir().join(name)],
         "topbar.exe" | "reshell.exe" | "rs-notify.exe" => vec![bar_dir().join(name)],
         "rust-explorer.exe" | "rs-shell.exe" => vec![rx_dir().join(name)],
-        "wiztree.exe" | "photoview.exe" | "rust-settings.exe" | "purge.exe" => vec![pf.join(name.trim_end_matches(".exe")).join(name)],
+        "wiztree.exe" | "photoview.exe" | "rust-settings.exe" | "rs-calc.exe" | "purge.exe" => vec![pf.join(name.trim_end_matches(".exe")).join(name)],
         _ => vec![],
     }
 }

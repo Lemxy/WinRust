@@ -14,6 +14,8 @@
 use std::{os::windows::process::CommandExt, path::PathBuf, process::Command, ptr, thread, time::{Duration, Instant}};
 use windows_sys::{core::BOOL, Win32::{Foundation::{HWND, LPARAM, RECT}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
 
+mod handlers;
+
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
 const NO_WINDOW: u32 = 0x0800_0000;
 
@@ -219,7 +221,7 @@ fn set_wallpaper() {
 }
 
 /// Appends a line to %LOCALAPPDATA%\rs-shell\log.txt: a shell has no console, so this is the only way to see what it did.
-fn log(msg: &str) {
+pub(crate) fn log(msg: &str) {
     use std::io::Write;
     let Ok(base) = std::env::var("LOCALAPPDATA") else { return };
     let dir = PathBuf::from(base).join("rs-shell");
@@ -231,6 +233,7 @@ fn log(msg: &str) {
 fn run_shell() {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
     log("start");
+    handlers::ensure_handlers(); // only with %ProgramData%\WinRust\handlers-enabled
     // without explorer a minimized window is drawn as a little caption stub on the desktop (apps started with
     // --minimized left grey rectangles over the icons): hide them, the bar lists the windows anyway
     let mut mm = MINIMIZEDMETRICS { cbSize: size_of::<MINIMIZEDMETRICS>() as u32, iWidth: 0, iHorzGap: 0, iVertGap: 0, iArrange: ARW_HIDE as i32 };
@@ -249,6 +252,9 @@ fn run_shell() {
     if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
     let hotkeys = find_exe("reshell.exe"); // lives in topbar's folder, not ours
     if hotkeys.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hotkeys).spawn().map(|_| ()))); }
+    // Win+V / Win+.: its own resident process (a second copy exits at once)
+    let clip = find_exe("rs-clip.exe");
+    if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
     let desktop = dir().join("rust-explorer.exe");
     // the rust-explorer desktop: class "Progman" (so Wallpaper Engine finds it), title "rs-desktop" (explorer's is "Program Manager")
     let desktop_up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
@@ -376,12 +382,15 @@ fn overlay() {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
     let replace = replace_on();
     log(&format!("overlay start (replace explorer: {replace})"));
+    handlers::ensure_handlers(); // only with %ProgramData%\WinRust\handlers-enabled
     let wp = thread::spawn(wallpaper_bmp); // the BMP the desktop window paints; the system wallpaper stays Explorer's
     if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
     // Win+I / Win+E / Win+D live in reshell: its Run entry may be missing (another account's HKCU), and without it Explorer's own Win+I
     // fails once the shell is gone. A second copy exits at once (one hook per session).
     let hk = find_exe("reshell.exe");
     if hk.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hk).spawn().map(|_| ()))); }
+    let clip = find_exe("rs-clip.exe");
+    if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
     let _ = wp.join(); // the BMP conversion (only on a fresh install or a new wallpaper) finishes before the desktop paints it
     let desktop = dir().join("rust-explorer.exe");
     let up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
@@ -475,6 +484,7 @@ fn main() {
             autostart().iter().for_each(|c| println!("autostart: {c}"));
             println!("topbar: {} ({})", find_exe("topbar.exe").display(), if find_exe("topbar.exe").exists() { "found" } else { "MISSING" });
             println!("explorer ran this session's autostart: {}", startup_run());
+            println!("URI handlers enabled: {}", handlers::enabled());
             0
         }
         ["--enable"] => {
@@ -493,7 +503,16 @@ fn main() {
             println!("done: normal shell at the next sign-in");
             0
         }
-        _ => { eprintln!("usage: rs-shell [--enable | --disable | --dry-run]"); 2 }
+        ["--restore"] => {
+            // handlers.json only: HKCU\Software\Classes values the marker let us change, never the system's own keys
+            if handlers::restore() { println!("done: the previous ms-settings / screen-capture handlers are back"); }
+            else { println!("nothing to restore (no %ProgramData%\\WinRust\\handlers.json)"); }
+            if handlers::enabled() {
+                println!("note: %ProgramData%\\WinRust\\handlers-enabled still exists, so the next rs-shell start applies them again");
+            }
+            0
+        }
+        _ => { eprintln!("usage: rs-shell [--enable | --disable | --restore | --dry-run]"); 2 }
     };
     std::process::exit(code);
 }

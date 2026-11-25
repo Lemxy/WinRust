@@ -478,7 +478,7 @@ asociación, quitar AppX, quitar capability.
 | Recortes | `SnippingTool.exe` (Win32 en LTSC; AppX `Microsoft.ScreenSketch` en retail) | `ms-screenclip:` | Hecho parcial: `rs-shot` por hotkey | Handler `ms-screenclip:` + `App Paths` | Medio |
 | Escritorio remoto | `mstsc.exe` | n/a | No | Dejar | Bajo |
 | Bloc de notas | `C:\Windows\System32\notepad.exe` (capability en LTSC; AppX en retail) | `Microsoft.Windows.Notepad~~~~0.0.1.0` | **No** | Desarrollar `rust-notepad` + `Applications\notepad.exe` + `App Paths` | Medio |
-| Calculadora | `calc.exe` (stub de la AppX) | `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App` (retail) | **No** | Desarrollar `rust-calc`; redirect por IFEO/App Paths | Medio |
+| Calculadora | `calc.exe` (stub de la AppX) | `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App` (retail) | Hecho: `rs-calc` (estándar, científica, memoria, historial, CLI) | IFEO de `calc.exe` -> `rs-calc.exe` (ver `plugins/rs-calc/README.md`); el instalador no lo aplica | Medio |
 | Paint | `mspaint.exe` (capability en LTSC; AppX `Microsoft.Paint` en retail) | `ms-paint:` (retail) | **No** | Desarrollar `rust-paint` o mantener; handler `ms-paint:` | Medio |
 | Fotos | AppX `Microsoft.Windows.Photos` (retail); en LTSC no hay visor moderno | `ms-photos:` | Parcial: `photoview` | Registrar `ms-photos:` -> `photoview`; `OpenWithProgids` de imágenes | Bajo |
 | Reproductor multimedia | `wmplayer.exe` (capability `Media.WindowsMediaPlayer`) / AppX Media Player | n/a | **No** | Opcional (`rust-media`) o dejar | Bajo |
@@ -882,7 +882,7 @@ Reglas:
 | **Imprescindible** | Cobertura `ms-settings:` | Las páginas de `rust-settings` + las de `rust-control` (red, fecha, accesibilidad) | router | S | Bajo |
 | **Imprescindible** | `ms-screenclip:` | Handler -> `rs-shot --region`; `App Paths` de SnippingTool | `rs-shot` | S | Bajo |
 | **Imprescindible** | Alt+Tab/Task View estables sin Explorer | Ventanas, previews, escritorios, multi-monitor | `topbar` | M | Bajo |
-| **Deseable** | `rust-calc` | Científica, historial, conversión de unidades | n/a | S | Bajo |
+| **Deseable** | `rs-calc` | Hecho: científica, memoria, historial, CLI. Falta conversión de unidades | n/a | S | Bajo |
 | **Deseable** | `rust-paint` | Bitmap, formas, texto, recorte, guardar PNG/JPG; `ms-paint:` | WIC/GDI+ | M | Bajo |
 | **Deseable** | Fotos completa | Galería, zoom, rotar, recortar, EXIF; `ms-photos:` | `photoview` | M | Bajo |
 | **Deseable** | Servicios (página) | Listar, iniciar/parar, tipo de inicio, dependencias (SCM) | `rust-control` | S | Bajo |

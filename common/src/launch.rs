@@ -65,11 +65,30 @@ pub fn program(target: &str) -> bool {
 
 /// The shell's own "open" association: the last resort, and the normal way for `.msc` / `.cpl` / `.bat`.
 fn shell_execute(target: &str) -> bool {
+    shell_execute_params(target, "")
+}
+
+/// The same with arguments: `line(r"C:\Windows\notepad.exe", r"C:\notes.txt")`. ShellExecuteW passes `params` to the
+/// program untouched, with the user's normal token: the Run box never elevates by itself.
+fn shell_execute_params(target: &str, params: &str) -> bool {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{UI::Shell::ShellExecuteW, UI::WindowsAndMessaging::SW_SHOWNORMAL};
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let (verb, file) = (wide("open"), wide(target));
-    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) as isize > 32 }
+    let (verb, file, args) = (wide("open"), wide(target), wide(params));
+    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), args.as_ptr(), null(), SW_SHOWNORMAL) as isize > 32 }
+}
+
+/// Runs a command line whose program and arguments are already split (`split_command` in the Run box does that without
+/// guessing quoting rules). A program without arguments keeps [`program`]'s unelevated `runas` path.
+pub fn line(exe: &str, args: &str) -> bool {
+    let exe = exe.trim().trim_matches('"');
+    if exe.is_empty() {
+        return false;
+    }
+    if args.trim().is_empty() {
+        return program(exe);
+    }
+    shell_execute_params(exe, args.trim())
 }
 
 #[cfg(test)]
