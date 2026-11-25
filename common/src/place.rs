@@ -7,6 +7,7 @@
 //! Fullscreen works the same way. A game's swap chain follows the monitor of its window, so moving the window before it
 //! goes fullscreen moves the game; a late fullscreen resize (a game that was windowed for a second) is caught by a short
 //! watch. Only the window that was placed is touched, never the dialogs the app opens on its own.
+#![allow(unsafe_op_in_unsafe_fn)] // every function here is Win32 calls; the unsafe ones are marked as such
 
 use std::{
     ffi::c_void,
