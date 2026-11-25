@@ -158,10 +158,12 @@ que conserva sus claves (`Compact`, `HideOnlineAccountScreens`) y añade:
    `sources\$OEM$\$$\Setup\Scripts\`.
 3. Fusiona el `autounattend.xml` de la raíz con los nodos anteriores (XML DOM, preservando NTLite).
 4. Reconstruye el ISO:
-   - **BIOS (SeaBIOS / QEMU)**: IMAPI2 (`IMAPI2FS.MsftFileSystemImage` + `BootOptions` con
-     `boot\etfsboot.com`, `PlatformId=0`, sin emulación). Es lo que usa la VM del test.
-   - **UEFI**: IMAPI2 no permite dos entradas El Torito; para UEFI real usar `oscdimg` del ADK:
-     `oscdimg -m -o -u2 -udfver102 -bootdata:2#p0,e,b...\boot\etfsboot.com#pEF,e,b...\efi\microsoft\boot\efisys.bin <media> <out.iso>`.
+   - **Preferido: `oscdimg` (ADK Deployment Tools)**, BIOS + UEFI en un solo ISO:
+     `oscdimg -m -o -u2 -udfver102 -bootdata:2#p0,e,b...\boot\etfsboot.com#pEF,e,b...\efi\microsoft\boot\efisys.bin -lWINRUST_TINY11 <media> <out.iso>`.
+     `iso-inject.ps1` lo detecta en `%ProgramFiles(x86)%\Windows Kits\10\...\Oscdimg\`.
+   - **Respaldo: IMAPI2** (`IMAPI2FS.MsftFileSystemImage` + `BootOptions` con `boot\etfsboot.com`,
+     `PlatformId=0`): solo BIOS. En esta máquina el binder COM de PowerShell no acepta el `IStream` del
+     `BootImage`; por eso se instala el ADK y se usa oscdimg.
    - **Instalación totalmente desatendida**: `-AutoDisk` añade `DiskConfiguration` y `InstallTo` y **borra el
      disco 0** creando una partición activa NTFS (BIOS/MBR, el caso de la VM). Sin ese flag, Setup pide el
      disco como hasta ahora. En UEFI haría falta GPT con EFI+MSR; no usar `-AutoDisk` ahí.
@@ -169,7 +171,12 @@ que conserva sus claves (`Compact`, `HideOnlineAccountScreens`) y añade:
 
 ### 6.1 Prueba automatizada
 
-`tools\iso-autotest.ps1` crea un disco nuevo y arranca el ISO con monitor HMP:
+`tools\iso-autotest.ps1` crea un disco nuevo y arranca el ISO con monitor HMP. Por defecto calcula **la mitad
+del hardware real** (en este host: 3C/6T y 16 GB de 32) y pone el disco de **120 GB en `C:` (NVMe)**, no en el
+HDD lento de datos. Para el rendimiento, `tools\vm-bench.ps1` (ejecutado dentro de la VM, elevado) escribe
+`C:\WinRust\bench.md` con la RAM/CPU en reposo de `rs-shell`/`topbar` y los tiempos de arranque de
+`rs-calc`, `rust-notepad`, `rust-settings` y `rust-control`; se compara con `docs\PERFORMANCE.md`, medido en el
+host completo (6C/12T).
 
 ```powershell
 # ISO con el post-setup (sin -AutoDisk: hay que pulsar Next en la página del disco)

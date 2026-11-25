@@ -163,6 +163,28 @@ $outDir = Split-Path $OutIso -Parent
 New-Item -ItemType Directory $outDir -Force | Out-Null
 $bootFile = Join-Path $WorkDir 'boot\etfsboot.com'
 Need $bootFile 'BIOS boot sector (boot\etfsboot.com)'
+$efiFile = Join-Path $WorkDir 'efi\microsoft\boot\efisys.bin'
+
+# Prefer oscdimg (ADK Deployment Tools): BIOS + UEFI and no IMAPI2 COM quirks.
+$oscdimg = @(
+    (Join-Path $env:ProgramFiles 'Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\Oscdimg\oscdimg.exe')
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+
+if ($oscdimg) {
+    Need $efiFile 'UEFI boot sector (efi\microsoft\boot\efisys.bin)'
+    L "oscdimg: $oscdimg"
+    $bootData = "-bootdata:2#p0,e,b$bootFile#pEF,e,b$efiFile"
+    & $oscdimg -m -o -u2 -udfver102 $bootData "-l$VolumeLabel" $WorkDir $OutIso
+    if ($LASTEXITCODE -ne 0) { throw "oscdimg failed with exit code $LASTEXITCODE" }
+    $h = Get-FileHash $OutIso -Algorithm SHA256
+    $gb = [math]::Round((Get-Item $OutIso).Length / 1GB, 2)
+    L ("ISO written: {0}  SHA256 {1}  ({2} GB)" -f $OutIso, $h.Hash, $gb)
+    L "Work dir kept for inspection: $WorkDir"
+    exit 0
+}
+
+L 'oscdimg not found (install the ADK Deployment Tools); falling back to IMAPI2, BIOS-only.'
 
 Add-Type -TypeDefinition @'
 using System;
