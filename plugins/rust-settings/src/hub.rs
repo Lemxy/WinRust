@@ -98,6 +98,8 @@ enum Op {
     StartRanked,
     StartIcon(u8),
     StartIconReset(u8),
+    StartIconButton,
+    StartIconButtonClear,
     ClearHistory,
     PinsFolder,
     Lang(u8),
@@ -436,6 +438,21 @@ fn rows(cat: u8) -> Vec<Row> {
             v.push(head(t!("Приложения", "Apps", ja: "アプリ", pt: "Aplicativos", zh: "应用")));
             v.push(action(t!("Открыть папку закреплённых программ", "Open the pinned apps folder", ja: "ピン留めしたアプリのフォルダーを開く", pt: "Abrir a pasta de aplicativos fixados", zh: "打开固定应用文件夹"), "›", Op::PinsFolder));
             // --- icons of the pinned entries -------------------------------------------------------------
+            v.push(head(t!("Кнопка «Пуск»", "Start button", ja: "スタート ボタン", pt: "Botão Iniciar", zh: "开始按钮")));
+            let chosen = winrust_common::look::start_icon();
+            let hint = if chosen.is_empty() {
+                t!("Выбрать…", "Choose…", ja: "選択…", pt: "Escolher…", zh: "选择…").to_string()
+            } else {
+                std::path::Path::new(&chosen).file_name().unwrap_or_default().to_string_lossy().into_owned()
+            };
+            v.push(Row {
+                label: t!("Значок кнопки", "Button icon", ja: "ボタンのアイコン", pt: "Ícone do botão", zh: "按钮图标").to_string(),
+                hint,
+                kind: Kind::Action,
+                op: Op::StartIconButton,
+                del: if chosen.is_empty() { Op::None } else { Op::StartIconButtonClear },
+                dot: u32::MAX,
+            });
             v.push(head(t!("Значки", "Icons", ja: "アイコン", pt: "Ícones", zh: "图标")));
             v.push(info(t!(
                 "Значок закреплённого приложения в «Пуске»: нажмите на строку и выберите файл .ico, .exe или .dll.",
@@ -1092,6 +1109,12 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
                 let _ = winrust_common::starticons::clear(&path);
             }
         }
+        Op::StartIconButton => {
+            if let Some(icon) = winrust_common::starticons::pick(h) {
+                winrust_common::look::start_icon_set(&icon.to_string_lossy());
+            }
+        }
+        Op::StartIconButtonClear => winrust_common::look::start_icon_set(""),
         Op::ClearHistory => clear_history(),
         Op::PinsFolder => open_target("shell:Programs"),
         Op::Lang(i) => {

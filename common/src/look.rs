@@ -103,6 +103,15 @@ pub fn bar_search_set(on: bool) {
     set("bar-search", i32::from(on));
 }
 
+/// An icon file for the bar's Start button (`.ico`, `.exe`, `.dll`). Empty = the grid drawn from the accent colour.
+pub fn start_icon() -> String {
+    get("start-icon").unwrap_or_default()
+}
+
+pub fn start_icon_set(path: &str) {
+    set("start-icon", path.trim());
+}
+
 /// The Task View button in the bar.
 pub fn bar_taskview() -> bool {
     flag("bar-taskview", true)

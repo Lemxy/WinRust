@@ -1677,6 +1677,17 @@ unsafe fn glow(dc: HDC, key: i32, on: bool, r: RECT, from: u32, to: u32, rad: i3
 
 /// The Windows logo: four tiles lit from the top left, growing a little on hover and squeezing on click.
 unsafe fn start_logo(dc: HDC, r: RECT, th: f32, tp: f32) {
+    // an icon the user chose wins over the grid drawn from the accent colour
+    let path = winrust_common::look::start_icon();
+    if !path.is_empty() {
+        let sz = ((sc(18) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+        let ic = start_icon_cached(&path, sz.max(8));
+        if !ic.is_null() {
+            let (cx, mid) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+            DrawIconEx(dc, cx - sz / 2, mid - sz / 2, ic, sz, sz, 0, null_mut(), DI_NORMAL);
+            return;
+        }
+    }
     let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
     let g = sc(1).max(1);
     let (cx, mid) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
@@ -1690,6 +1701,22 @@ unsafe fn start_logo(dc: HDC, r: RECT, th: f32, tp: f32) {
 thread_local! {
     static PRESS: Cell<(i32, u64)> = const { Cell::new((i32::MIN, 0)) }; // last clicked element and when
     static SEEN: RefCell<HashMap<isize, u64>> = RefCell::new(HashMap::new()); // when each taskbar button first showed
+    /// The Start button's chosen icon, by path and size: the bar repaints many times per second.
+    static SICON: RefCell<Option<(String, i32, HICON)>> = const { RefCell::new(None) };
+}
+
+/// The icon file rendered by the shell at `px` (an `.ico`, an exe's icon, a dll's), cached for the next repaints.
+unsafe fn start_icon_cached(path: &str, px: i32) -> HICON {
+    SICON.with_borrow_mut(|c| {
+        if let Some((p, s, h)) = c.as_ref() {
+            if p == path && *s == px {
+                return *h;
+            }
+        }
+        let ic = item_icon(path, px);
+        *c = Some((path.to_string(), px, ic));
+        ic
+    })
 }
 
 /// Marks `key` as just clicked / dropped on: its highlight flashes and its icon squeezes for a moment.
@@ -1842,6 +1869,18 @@ fn app_windows() -> Vec<HWND> {
     BTNS.with_borrow(|b| b.iter().flat_map(|b| b.wins.iter().copied()).collect())
 }
 
+/// rs-shot's capture overlay (`rs-shot-overlay`) covers the whole virtual screen on purpose. It is not a window "in the
+/// way": dodging the bars for it slid them out in the middle of a screenshot (its own frozen picture already shows them
+/// where they were). Cheap enough for the 120 ms dodge tick: one class-name read per candidate.
+unsafe fn capture_overlay(h: HWND) -> bool {
+    if h.is_null() {
+        return false;
+    }
+    let mut c = [0u16; 32];
+    let n = GetClassNameW(h, c.as_mut_ptr(), 32);
+    n > 0 && String::from_utf16_lossy(&c[..n as usize]) == "rs-shot-overlay"
+}
+
 unsafe fn fs_update(hwnd: HWND) {
     // a look file edited outside the settings window (or a broadcast that raced the one-second cache): auto-hide and
     // "dodge windows" decide whether the bar reserves its strip, so the work area has to be taken or given back
@@ -1860,9 +1899,10 @@ unsafe fn fs_update(hwnd: HWND) {
     }
     let desk = now.saturating_sub(DESK_T.get()) >= 2000;
     let mut moved = DESK_HIDE.swap(desk, Relaxed) != desk;
-    let fg = app_foreground();
+    let fg = app_foreground().filter(|(h, _)| !capture_overlay(*h));
     // the windows of every monitor, the active one included: a window on another screen still takes its own bar's strip
     let mut wins = app_windows();
+    wins.retain(|&w| !capture_overlay(w)); // rs-shot's overlay is not something to dodge
     if let Some((h, _)) = fg {
         if !wins.contains(&h) {
             wins.push(h); // a fullscreen game or a player that the taskbar list filters out (tool window) still counts
