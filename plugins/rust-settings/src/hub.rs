@@ -81,7 +81,7 @@ enum Op {
     DeskFolder,
     BarSide(u8),
     BarSize(u8),
-    BarMonitor(i8),
+    BarMonitor(u8),
     BarBlur,
     BarRadius(i32),
     Autohide,
@@ -391,12 +391,20 @@ fn rows(cat: u8) -> Vec<Row> {
             }
             let mons = MONS.with(|m| m.get());
             if mons > 1 {
-                v.push(head(t!("Монитор", "Monitor", ja: "モニター", pt: "Monitor", zh: "显示器")));
-                v.push(choice(t!("Все экраны", "All screens", ja: "すべての画面", pt: "Todas as telas", zh: "所有屏幕"), lk::bar_monitor() < 0, Op::BarMonitor(-1)));
-                for i in 0..mons {
-                    let name = format!("{} {}", t!("Монитор", "Monitor", ja: "モニター", pt: "Monitor", zh: "显示器"), i + 1);
-                    v.push(choice(&name, lk::bar_monitor() == i, Op::BarMonitor(i as i8)));
+                v.push(head(t!("Мониторы", "Monitors", ja: "モニター", pt: "Monitores", zh: "显示器")));
+                let chosen = lk::bar_monitors();
+                let all = winrust_common::monitors::all();
+                for i in 0..mons as usize {
+                    let primary = all.get(i).is_some_and(|m| m.primary);
+                    let name = if primary {
+                        format!("{} {} ({})", t!("Монитор", "Monitor", ja: "モニター", pt: "Monitor", zh: "显示器"), i + 1, t!("основной", "primary", ja: "メイン", pt: "principal", zh: "主"))
+                    } else {
+                        format!("{} {}", t!("Монитор", "Monitor", ja: "モニター", pt: "Monitor", zh: "显示器"), i + 1)
+                    };
+                    let on = chosen.as_ref().map_or(true, |l| l.contains(&i));
+                    v.push(check(&name, on, Op::BarMonitor(i as u8)));
                 }
+                v.push(info(t!("Снимите галочку, чтобы убрать панель с этого экрана.", "Uncheck a screen to leave the bar off it.", ja: "チェックを外すと、その画面にバーを表示しません。", pt: "Desmarque uma tela para deixar a barra fora dela.", zh: "取消勾选即可不在该屏幕显示任务栏。")));
             }
             v.push(head(t!("Размытие", "Blur", ja: "ぼかし", pt: "Desfoque", zh: "模糊")));
             v.push(check(t!("Размытие за панелью", "Blur behind the bar", ja: "バーの後ろをぼかす", pt: "Desfoque atrás da barra", zh: "任务栏后模糊"), lk::bar_blur(), Op::BarBlur));
@@ -1047,10 +1055,20 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             changed();
         }
         Op::BarMonitor(i) => {
-            lk::bar_monitor_set(i as i32);
-            changed(); // close the bars that are not wanted, create the missing ones, place them all
-            changed();
+            // a checkbox per monitor: the bar is created or closed right away by relook() -> bars_sync()
+            let n = winrust_common::monitors::all().len().max(1);
+            let mut list = lk::bar_monitors().unwrap_or_else(|| (0..n).collect::<Vec<usize>>());
+            let i = i as usize;
+            if list.contains(&i) {
+                if list.len() > 1 {
+                    list.retain(|&x| x != i); // never leave the shell without a bar
+                }
+            } else {
+                list.push(i);
+            }
+            lk::bar_monitors_set(&list);
             MONS.with(|m| m.set(winrust_common::monitors::all().len().max(1) as i32));
+            changed();
         }
         Op::BarBlur => {
             lk::bar_blur_set(!lk::bar_blur());

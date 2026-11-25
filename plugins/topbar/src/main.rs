@@ -107,9 +107,6 @@ thread_local! {
     /// The bar whose message is being handled: the geometry helpers read its monitor from here. UI thread only, set at
     /// the top of `wndproc` (and by the code that repositions a bar). No races: everything runs on the one thread.
     static CURRENT: Cell<HWND> = const { Cell::new(null_mut()) };
-    /// The monitor `bar-monitor` points at, used before any bar exists (`--preview`, start-up) and as a fallback. Cached:
-    /// the geometry helpers run on every paint and enumerating monitors each time is not free.
-    static CFG_MON: Cell<(i32, RECT)> = const { Cell::new((-2, RECT { left: 0, top: 0, right: 0, bottom: 0 })) };
 }
 
 fn bar_list() -> Vec<Bar> {
@@ -156,16 +153,13 @@ pub(crate) unsafe fn cur_bar() -> HWND {
     if is_bar(h) { h } else { leader_bar() }
 }
 
-/// The monitor `bar-monitor` names (all = the primary: its bar is the leader).
+/// The monitor a call without a bar in context falls back to: the leader bar's screen, or the primary before the first
+/// bar exists.
 fn configured_mon() -> RECT {
-    let i = winrust_common::look::bar_monitor();
-    let (k, r) = CFG_MON.get();
-    if k == i && r.right > r.left {
-        return r;
+    if let Some(b) = bar_of(leader_bar()) {
+        return b.mon.rc;
     }
-    let r = if i < 0 { winrust_common::monitors::primary().rc } else { winrust_common::monitors::nth(i as usize).rc };
-    CFG_MON.set((i, r));
-    r
+    winrust_common::monitors::primary().rc
 }
 
 /// Screen rect of a bar's monitor (what every popup is anchored to).
@@ -3434,18 +3428,26 @@ pub(crate) fn bars_list() -> String {
     })
 }
 
-/// Reconciles the bar windows with `bar-monitor` and the current monitor list: `all` (-1) keeps one per monitor, any
-/// other value one on that monitor. Keeps the existing windows (and their leaders/hooks) where it can.
+/// Reconciles the bar windows with `bar-monitors` and the current monitor list: one bar per checked monitor (or one per
+/// monitor when nothing is listed). Keeps the existing windows (and their leaders/hooks) where it can.
 pub(crate) unsafe fn bars_sync() {
     let before = bars_list();
-    CFG_MON.set((-2, RECT { left: 0, top: 0, right: 0, bottom: 0 })); // the fallback monitor may have moved
     let mons = winrust_common::monitors::all();
-    let cfg = winrust_common::look::bar_monitor();
-    let want: Vec<(Mon, bool)> = if cfg < 0 {
-        mons.iter().copied().map(|m| (m, m.primary)).collect()
-    } else {
-        vec![(winrust_common::monitors::nth(cfg as usize), true)]
-    };
+    let cfg = winrust_common::look::bar_monitors();
+    let mut want: Vec<(Mon, bool)> = mons
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| cfg.as_ref().map_or(true, |l| l.contains(i)))
+        .map(|(_, m)| (*m, m.primary))
+        .collect();
+    // every monitor unchecked (or the file names one that is gone): the shell never runs without a bar
+    if want.is_empty() {
+        want.push((winrust_common::monitors::primary(), true));
+    }
+    // the primary's screen may be the one left out: the first bar then owns the tray, the hooks and the shortcuts
+    if !want.iter().any(|(_, leader)| *leader) {
+        want[0].1 = true;
+    }
     let old_lead = leader_bar();
     // a bar whose monitor is gone goes; drop the leader flag first so its WM_DESTROY is not the app's shutdown
     let keep: Vec<*mut std::ffi::c_void> = want.iter().map(|(m, _)| m.handle).collect();

@@ -139,14 +139,45 @@ pub fn menu_alpha_set(v: u8) {
     set("menu-alpha", v.clamp(25, 100));
 }
 
-/// Which monitor the bar lives on: 0 = the first monitor (the primary in the usual layout, default), 1.. = the others
-/// in left-to-right order, -1 = one bar on every monitor (the primary's bar is the leader).
+/// Which monitor the bar lives on: 0 = the first monitor (the primary in the usual layout), 1.. = the others in
+/// left-to-right order, -1 = one bar on every monitor (the primary's bar is the leader). Still read for an existing
+/// `look.txt`; new settings use [`bar_monitors`].
 pub fn bar_monitor() -> i32 {
     num("bar-monitor", 0, -1, 16)
 }
 
 pub fn bar_monitor_set(i: i32) {
     set("bar-monitor", i.clamp(-1, 16));
+}
+
+/// The monitors that get a bar (`bar-monitors=0,2`), or `None` for all of them. The per-monitor choice is what the
+/// settings window edits; `bar-monitor` (all = -1) is the old single-value form, still honoured when the new key is
+/// missing so an existing look.txt keeps working.
+pub fn bar_monitors() -> Option<Vec<usize>> {
+    if let Some(v) = get("bar-monitors") {
+        let list: Vec<usize> = v.split(',').filter_map(|s| s.trim().parse::<usize>().ok()).collect();
+        if !list.is_empty() {
+            return Some(list);
+        }
+    }
+    match bar_monitor() {
+        i if i < 0 => None,
+        i => Some(vec![i as usize]),
+    }
+}
+
+/// True when the monitor at index `i` should have its own bar.
+pub fn bar_on_monitor(i: usize) -> bool {
+    bar_monitors().map_or(true, |l| l.contains(&i))
+}
+
+/// Writes the per-monitor list (`0,2`). Sorted and without duplicates; an empty list is ignored by the bar, which keeps
+/// the primary's so the shell never ends without one.
+pub fn bar_monitors_set(list: &[usize]) {
+    let mut v = list.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    set("bar-monitors", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
 }
 
 /// Blur radius behind the context menu, in pixels before scaling.

@@ -60,6 +60,8 @@ fn launch_settings(page: &str) -> bool {
 
 /// Repaints the bars in the new look; `moved` = their place or size may have changed too.
 pub(crate) unsafe fn relook(moved: bool) {
+    // the monitor checkboxes: create the missing bars and close the ones the user turned off, before placing them
+    bars_sync();
     let bar = leader_bar();
     place_all();
     if moved {
