@@ -49,33 +49,50 @@ fn is_uri(t: &str) -> bool {
 /// Starts a program with the desktop user's normal token, without a UAC prompt: true when something was started.
 /// `runas` starts executables only (it cannot pass them arguments), so the console and control-panel files go through the
 /// shell's own association, which is also where their elevation comes from.
+///
+/// The program's own folder is the working directory: `runas` inherits the caller's, and a game or a portable app that
+/// looks for its data next to the exe then exits at once (Blur.exe from `H:\Blur` did, started from `C:\Windows\System32`).
 pub fn program(target: &str) -> bool {
     use std::os::windows::process::CommandExt;
     let target = target.trim().trim_matches('"');
     if target.is_empty() {
         return false;
     }
-    if matches!(ext_of(target).as_str(), "exe" | "com" | "scr")
-        && Command::new("runas").args(["/trustlevel:0x20000", target]).creation_flags(NO_WINDOW).spawn().is_ok()
-    {
-        return true;
+    if matches!(ext_of(target).as_str(), "exe" | "com" | "scr") {
+        let mut cmd = Command::new("runas");
+        cmd.args(["/trustlevel:0x20000", target]).creation_flags(NO_WINDOW);
+        if let Some(dir) = parent_of(target) {
+            cmd.current_dir(dir);
+        }
+        if cmd.spawn().is_ok() {
+            return true;
+        }
     }
-    shell_execute(target)
+    shell_execute_in(target, "", parent_of(target).as_deref())
+}
+
+/// The folder the program lives in, when the target has one (a bare `notepad.exe` has none).
+fn parent_of(target: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(target);
+    p.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf())
 }
 
 /// The shell's own "open" association: the last resort, and the normal way for `.msc` / `.cpl` / `.bat`.
 fn shell_execute(target: &str) -> bool {
-    shell_execute_params(target, "")
+    shell_execute_in(target, "", parent_of(target).as_deref())
 }
 
 /// The same with arguments: `line(r"C:\Windows\notepad.exe", r"C:\notes.txt")`. ShellExecuteW passes `params` to the
-/// program untouched, with the user's normal token: the Run box never elevates by itself.
-fn shell_execute_params(target: &str, params: &str) -> bool {
+/// program untouched, with the user's normal token: the Run box never elevates by itself. `dir` is the working
+/// directory the handler starts in.
+fn shell_execute_in(target: &str, params: &str, dir: Option<&std::path::Path>) -> bool {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::{UI::Shell::ShellExecuteW, UI::WindowsAndMessaging::SW_SHOWNORMAL};
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (verb, file, args) = (wide("open"), wide(target), wide(params));
-    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), args.as_ptr(), null(), SW_SHOWNORMAL) as isize > 32 }
+    let dir = dir.map(|d| wide(&d.to_string_lossy()));
+    let dir_ptr = dir.as_ref().map_or(null(), |d| d.as_ptr());
+    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), args.as_ptr(), dir_ptr, SW_SHOWNORMAL) as isize > 32 }
 }
 
 /// Runs a command line whose program and arguments are already split (`split_command` in the Run box does that without
@@ -88,12 +105,19 @@ pub fn line(exe: &str, args: &str) -> bool {
     if args.trim().is_empty() {
         return program(exe);
     }
-    shell_execute_params(exe, args.trim())
+    shell_execute_in(exe, args.trim(), parent_of(exe).as_deref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::is_program;
+
+    #[test]
+    fn the_program_folder_is_its_working_directory() {
+        assert_eq!(super::parent_of(r"H:\Blur\Blur.exe"), Some(std::path::PathBuf::from(r"H:\Blur")));
+        // a bare name has no folder of its own: it keeps the caller's
+        assert_eq!(super::parent_of("notepad.exe"), None);
+    }
 
     #[test]
     fn programs_are_told_from_shell_targets() {

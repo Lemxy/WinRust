@@ -666,10 +666,51 @@ unsafe fn start(exe: &Path, args: &str, file: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Extensions Windows runs instead of handing to a document handler. Their ProgID's command is `"%1" %*`: the program
+/// is the file itself, so resolving it like a document handler ends in `resolve_exe("%1")`, which is not a file. That
+/// was the bug: double clicking any `.exe` said "Could not start the program: %1" (the same for `.bat` and `.cmd`).
+fn is_program(file: &Path) -> bool {
+    file.extension()
+        .is_some_and(|e| ["exe", "com", "scr", "bat", "cmd"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// Starts the program with its own folder as the working directory: a game or an app looks for its data next to the
+/// exe, not in the folder the file manager happens to have open. `.bat`/`.cmd` need the command interpreter, which is
+/// what `"%1" %*` means to the shell.
+unsafe fn start_program(file: &Path) -> Result<(), String> {
+    let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let r = if ext == "bat" || ext == "cmd" {
+        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        start(Path::new(&comspec), &format!(r#"/c ""{}""#, file.display()), file)
+    } else {
+        start(file, "", file)
+    };
+    if r.is_ok() || shell_open(file) {
+        return Ok(());
+    }
+    r
+}
+
+/// The shell's own "open", for a program only: an exe whose manifest asks for elevation fails in CreateProcessW with
+/// 740 (ERROR_ELEVATION_REQUIRED) and only the shell can raise the consent prompt. Documents never come here - the
+/// shell's picker cannot render without explorer.exe (see the module docs).
+unsafe fn shell_open(file: &Path) -> bool {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let (verb, target) = (wc("open"), wc(&file.to_string_lossy()));
+    ShellExecuteW(ptr::null_mut(), verb.as_ptr(), target.as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL) as isize > 32
+}
+
 /// What a double click and our own "Abrir" do: the type's handler, started here. The shell is never asked - with a
 /// broken association `ShellExecute` lands in `OpenWith.exe`, the picker that cannot render, and that must not happen
 /// from any action of this program.
 pub unsafe fn open_file(owner: HWND, file: &Path) {
+    // A program is its own handler: no association lookup, no `%1`.
+    if !file.is_dir() && is_program(file) {
+        if let Err(e) = start_program(file) {
+            MessageBoxW(owner, wc(&e).as_ptr(), wc("WinRust Explorer").as_ptr(), MB_ICONWARNING);
+        }
+        return;
+    }
     if !file.is_dir() && associated(file) {
         if let Some((exe, args)) = handler_for(file) {
             match start(&exe, &args, file) {
@@ -1288,7 +1329,39 @@ pub unsafe fn open(owner: HWND, file: &Path) {
 #[cfg(test)]
 mod tests {
     use super::{args_after, parse_exe};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn programs_are_run_directly_not_as_documents() {
+        // `"%1" %*` types: the program is the file, so the association lookup cannot resolve it
+        for p in [r"C:\Games\Blur\Blur.exe", r"C:\x\a.BAT", r"C:\x\setup.cmd", "a.com", "b.scr"] {
+            assert!(super::is_program(Path::new(p)), "{p} is a program");
+        }
+        for p in [r"C:\x\a.txt", r"C:\x\a.pdf", r"C:\x\a.exe.txt"] {
+            assert!(!super::is_program(Path::new(p)), "{p} is a document");
+        }
+    }
+
+    #[test]
+    fn a_program_starts_with_its_own_folder_as_the_working_directory() {
+        // what a game needs: `Blur.exe` from `H:\Blur` reads its data from the current directory, and the Run box used
+        // to hand it `C:\Windows\System32`.
+        let dir = std::env::temp_dir().join(format!("winrust-openwith-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bat = dir.join("where.cmd");
+        std::fs::write(&bat, "@echo %CD%> where.txt\r\n").unwrap();
+        unsafe { super::start_program(&bat).expect("start the cmd") };
+        let out = dir.join("where.txt");
+        for _ in 0..50 {
+            if out.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let text = std::fs::read_to_string(&out).unwrap_or_default().trim().to_string();
+        assert!(text.eq_ignore_ascii_case(&dir.display().to_string()), "cwd was {text:?}, wanted {dir:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn reads_the_exe_out_of_a_command() {
