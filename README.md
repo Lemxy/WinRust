@@ -177,18 +177,53 @@ the tint needed for readable text washes the window out.
 
 ## Performance
 
-Measured on this machine; method and numbers in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+Measured on this machine (Ryzen 5 5500, 32 GB, two displays) with `scripts\metrics.ps1`; every row, the method and the
+exact conditions are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Re-run the script to refresh both:
 
-| Component | Binary | RAM (idle) | CPU (idle) | Window visible |
-|---|---|---|---|---|
-| Bar (`topbar`) | 1.03 MB | 43 MB | ~0.9 % | — |
-| Desktop (`rust-explorer`) | 1.21 MB | 20–33 MB | 0 % | 78 ms |
-| Shell (`rs-shell`) | 0.43 MB | 6.6 MB | 0 % | — |
-| Control Panel | 0.74 MB | 14 MB | 0 % | 17 ms |
-| Task Manager | 1.11 MB | 30 MB | 1.2 % | 28 ms |
-| `rs-notify` | 0.28 MB | — (one shot) | — | — |
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\metrics.ps1
+```
 
-The bar's idle CPU is the live blur refresh; set `bar-blur=0` (or `menu-blur=0`) to trade the blur for ~0 %.
+**The whole shell, idle** — bar, desktop, supervisor, clipboard helper and hotkeys — costs **101.9 MB** and **3 % of one
+core** (0.25 % of this 12-thread CPU). The bar is the expensive part: it holds the blurred backdrop of every monitor.
+Setting `bar-blur=0` (or `menu-blur=0`) in `%ProgramData%\WinRust\look.txt` trades the frost for ~0 %.
+
+| Process | RAM (idle) | CPU (idle, 1 core) |
+|---|---:|---:|
+| Bar (`topbar`) | 49.8 MB | 3.00 % |
+| Desktop (`rust-explorer --desktop`) | 30.2 MB | 0.00 % |
+| Supervisor (`rs-shell`) | 8.0 MB | 0.00 % |
+| Clipboard helper (`rs-clip`) | 7.4 MB | 0.00 % |
+| Desktop hotkeys (`reshell`) | 6.5 MB | 0.00 % |
+| **Total** | **101.9 MB** | **3.00 %** |
+
+**Opening an app** — median of 3, `CreateProcess` to the first visible frame — and what it holds while idle:
+
+| App | Window visible | RAM (idle) |
+|---|---:|---:|
+| `rs-calc` | 17 ms | 19.7 MB |
+| `rust-control` (Control Panel) | 29 ms | 19.7 MB |
+| `rtaskmgr-win32` (Task Manager) | 29 ms | 34.7 MB |
+| `photoview` | 30 ms | 18.3 MB |
+| `rust-notepad` | 30 ms | 22.9 MB |
+| File manager (new window) | 77 ms | 29.1 MB |
+| `rust-settings` | 136 ms | 30.9 MB |
+
+**UI and I/O**:
+
+| Operation | Latency |
+|---|---:|
+| Open the Start menu | 35 ms |
+| Open the bar menu (right click) | 26 ms |
+| Open the notification centre | 31 ms |
+| Raise a notification (`rs-notify`, median of 10) | 9.0 ms |
+| Search the whole `C:` (`rs.exe winrust`, 101 hits) | 16 ms |
+| Supervisor brings the bar back after a kill | 5.3 s |
+| …and the desktop | 2.3 s |
+
+The 16 programs on disk add up to **10.6 MB**; the installer with all of them embedded is **13.5 MB**.
+Windows Search is not in the table because `rust-search` turns the WSearch service off: the comparison is on the
+`rust-search` page, where a full-drive scan is ~3 orders of magnitude slower.
 
 ## Roadmap
 

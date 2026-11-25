@@ -1,78 +1,109 @@
-# Performance
+﻿# WinRust metrics
 
-Measured on the machine this fork runs on:
+Measured on 2026-11-25 16:25 on the machine below. Method at the end; `scripts\metrics.ps1` reproduces every row.
 
 | | |
 |---|---|
 | CPU | AMD Ryzen 5 5500 (6C / 12T) |
 | RAM | 32 GB |
-| GPU | Radeon RX 580 |
-| OS | Windows 11 Enterprise LTSC (build 26300) |
-| Displays | 1360×768 (primary) + 1440×900, 100 % DPI |
+| GPU | Radeon RX 580 Series |
+| OS | Microsoft Windows 11 Enterprise LTSC (build 26300) |
+| Displays | 1360x768 (primary) + 1440x900 |
+| Build | release (GNU), rtaskmgr with MSVC |
 
-Everything is a `--release` build with the GNU toolchain, except `rtaskmgr-win32` (MSVC).
+## Binaries
+
+| Program | File | Size |
+|---|---|---:|
+| topbar | `topbar.exe` | 1.06 MB |
+| rs-shell | `rs-shell.exe` | 0.44 MB |
+| desktop | `rust-explorer.exe` | 1.25 MB |
+| rs-clip | `rs-clip.exe` | 0.50 MB |
+| reshell | `reshell.exe` | 0.38 MB |
+| rs-calc | `rs-calc.exe` | 0.48 MB |
+| rust-notepad | `rust-notepad.exe` | 0.43 MB |
+| rust-settings | `rust-settings.exe` | 0.98 MB |
+| rust-control | `rust-control.exe` | 0.73 MB |
+| rtaskmgr | `rtaskmgr-win32.exe` | 1.15 MB |
+| photoview | `photoview.exe` | 0.41 MB |
+| wiztree | `wiztree.exe` | 0.50 MB |
+| rs-shot | `rs-shot.exe` | 0.69 MB |
+| rs-notify | `rs-notify.exe` | 0.24 MB |
+| rs.exe | `rs.exe` | 0.50 MB |
+| rs-launcher | `rs-launcher.exe` | 0.82 MB |
+| **Total** | | **10.6 MB** |
+
+## Idle cost of the shell
+
+RAM: `WorkingSet64` after 5 s of no work. CPU: `TotalProcessorTime` delta over the same window, as a percentage of ONE logical core (12 cores).
+
+| Process | RAM | CPU (1 core) |
+|---|---:|---:|
+| Bar | 49.8 MB | 3.00 % |
+| Desktop | 30.2 MB | 0.00 % |
+| Supervisor | 8.0 MB | 0.00 % |
+| Clipboard (Win+V) | 7.4 MB | 0.00 % |
+| Desktop hotkeys | 6.5 MB | 0.00 % |
+| **Shell total** | **101.9 MB** | **3.00 %** |
+
+## Cold start and idle cost of each app
+
+`CreateProcess` -> `MainWindowHandle != 0`, median of 3 runs; RAM and CPU 5 s after the window appeared. Each app is closed afterwards.
+
+| App | Window visible (ms) | RAM | CPU (1 core) |
+|---|---:|---:|---:|
+| rs-calc | 17 | 19.7 MB | 0.00 % |
+| rust-notepad | 30 | 22.9 MB | 0.00 % |
+| rust-settings | 136 | 30.9 MB | 0.00 % |
+| rust-control | 29 | 19.7 MB | 0.00 % |
+| Task Manager | 29 | 34.7 MB | 22.00 % |
+| photoview | 30 | 18.3 MB | 0.00 % |
+| File manager (new window) | 77 | 29.1 MB | 1.00 % |
+
+## Opening the UI
+
+Real mouse click on the bar -> first visible frame of the window it opens, median of 3. The bar dodges windows, so the pointer touches the screen edge first.
+
+| Action | Latency (ms) |
+|---|---:|
+| Start menu | 35.0 |
+| Bar menu (right click) | 26.1 |
+| Notification centre (bell) | 31.0 |
+
+## Notifications
+
+`rs-notify` process start -> toast on screen: **9.0 ms** (median of 10, range 8-28 ms).
+
+## File search
+
+| Search | Median (ms) | Hits |
+|---|---:|---:|
+| `rs.exe winrust` (MFT) | 16 | 101 |
+| Windows Search | not available | - |
+
+## Recovery: the supervisor restarts the shell
+
+`rs-shell` watches the bar and the desktop. Each number is the time from killing the process to its window being visible again, median of 2. Killing them is safe: the supervisor restarts them, which is exactly what this measures.
+
+| Piece | Back after |
+|---|---:|
+| Bar (`topbar`) | 5.25 s |
+| Desktop (`rust-explorer --desktop`) | 2.30 s |
+
+## Installer
+
+`WinRust.exe` with every plugin embedded: **13.5 MB**; the installed programs above add up to 10.6 MB.
 
 ## Method
 
-- **Binary size**: `target/release/<exe>` on disk.
-- **RAM**: `Process.WorkingSet64` after the process has been idle for five seconds (no measurements during startup).
-- **CPU**: `TotalProcessorTime` delta over five seconds of idle, as a percentage of **one** logical core (12 cores
-  available; 0.9 % here is ≈ 0.08 % of the whole CPU).
-- **Window visible**: three cold starts per app, `Stopwatch` from `CreateProcess` to `MainWindowHandle != 0`, median.
-  The bar cannot be measured this way (single instance, it is part of the shell start); the desktop figure is a new
-  `rust-explorer.exe <folder>` window.
+- Binary size: the installed file on disk.
+- RAM: `Process.WorkingSet64` after the process has been idle for 5 s (never during startup).
+- CPU: `TotalProcessorTime` delta over 5 s of idle, as a percentage of ONE logical core (12 cores available).
+- Window visible: `Stopwatch` from `CreateProcess` to `MainWindowHandle != 0`, median of 3; the first run of an app is discarded only when it fails to show a window.
+- Flyouts: a real click on the bar, `Stopwatch` from the click to the flyout window (class `topbar_fly` / `topbar_notify`) being visible, median of 3.
+- Notifications: `rs-notify` process start to the toast window being visible, median of 10.
+- Search: `rs.exe <term>` to process exit vs the same term through Windows Search (ADO), median of 3.
+- Recovery: the supervisor (`rs-shell`) is watched while the bar or the desktop is killed, median of 2.
+- The bar idle CPU is the live blur: `bar-blur=0` in `%ProgramData%\WinRust\look.txt` trades it for ~0 %.
 
-## Results
-
-| Component | Binary | RAM (idle) | CPU (idle) | Window visible |
-|---|---|---|---|---|
-| Bar (`topbar.exe`) | 1.03 MB | 43.2 MB | 0.94 % | — |
-| Desktop (`rust-explorer.exe --desktop`) | 1.21 MB | 20.5–33.1 MB | 0 % | 78 ms (new window) |
-| Shell supervisor (`rs-shell.exe`) | 0.43 MB | 6.6 MB | 0 % | — |
-| Control Panel (`rust-control.exe`) | 0.74 MB | 13.9 MB | 0 % | 17 ms |
-| Task Manager (`rtaskmgr-win32.exe`) | 1.11 MB | 29.9 MB | 1.25 % | 28 ms |
-| Settings (`rust-settings.exe`) | 0.84 MB | — | — | — |
-| `rs-notify.exe` | 0.28 MB | one shot | — | — |
-
-Notes:
-
-- The bar's CPU is the **live blur**: it captures the strip behind the bar, blurs it and repaints while it is visible.
-  Setting `bar-blur=0` in `look.txt` removes it (the bar then uses the flat tint).
-- The desktop holds the wallpaper bitmap for the virtual screen (2800×900 here), which is most of its memory.
-- `rust-control` pays for its GDI+ surfaces on first paint; the window itself appears in ~17 ms.
-- The whole shell (bar + desktop + supervisor) sits at **≈ 70 MB** and under 1 % of one core in normal use.
-
-## The shell group (bar + desktop + supervisor)
-
-Measured together, idle, same machine:
-
-| Process | RAM | CPU (one core) |
-|---|---|---|
-| `topbar` (bar) | 38.7 MB | 1.56 % |
-| `rust-explorer` (desktop) | 23.9 MB | 0 % |
-| `rs-shell` (supervisor) | 7.0 MB | 0 % |
-| **Total** | **69.6 MB** | **1.56 %** |
-
-The bar's CPU is the live blur: with `bar-blur=0` it drops to ~0 %.
-
-## Operation latency
-
-| Operation | Median |
-|---|---|
-| Open the Control Panel | 40 ms |
-| Open Task Manager | 29 ms |
-| Open Settings | 97 ms |
-| New file-manager window | 83 ms |
-| Raise a notification (`rs-notify` → pipe) | 8.7 ms (8.3–13.3) |
-
-Method: median of 3 runs (10 for the pipe), `Stopwatch` from `CreateProcess` to `MainWindowHandle != 0`. The first Settings run took 2125 ms (cold DLL load) and the median discards it.
-
-> A like-for-like comparison with Explorer + ShellExperienceHost + SearchHost is not in this table because Explorer is
-> not running on this machine (WinRust is the shell); starting it only to measure would bring the stock taskbar back.
-> The numbers above are what the whole shell costs instead.
-
-## Startup of the session
-
-`rs-shell` is the logon shell. It frees the console, starts the Run keys and the Startup folder through `cmd /c start`
-(without waiting for them), paints the wallpaper and starts the bar and the desktop. On this machine the bar is on screen
-before the autostart programs finish appearing; the supervisor then keeps the bar and the desktop alive.
+_Measured on a real desktop with the fork look (Win7-style Start, dodge windows, blur on)._
