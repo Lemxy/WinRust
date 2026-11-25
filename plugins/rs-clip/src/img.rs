@@ -116,7 +116,7 @@ fn save_bmp(path: &Path, w: i32, h: i32, px: &[u32]) -> std::io::Result<()> {
     out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&32u16.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
-    out.extend_from_slice(&(stride * h as usize).to_le_bytes());
+    out.extend_from_slice(&((stride * h as usize) as u32).to_le_bytes());
     out.extend_from_slice(&2835i32.to_le_bytes());
     out.extend_from_slice(&2835i32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
@@ -159,52 +159,88 @@ fn thumbnail(px: &[u32], w: i32, h: i32) -> (i32, i32, Vec<u32>) {
     (tw, th, out)
 }
 
+/// 32-bpp and 24-bpp BI_RGB DIBs (the overwhelming majority of clipboard images) are copied directly: no GDI batching,
+/// no DC, no surprises. Paletted, 16-bpp and bitfield DIBs go through GDI below.
+fn direct(dib: &[u8], d: &Dib) -> Option<Vec<u32>> {
+    if le32(dib, 16) != BI_RGB || (d.bpp != 32 && d.bpp != 24) {
+        return None;
+    }
+    let (w, h) = (d.w as usize, d.h.unsigned_abs() as usize);
+    let bytes = d.bpp as usize / 8;
+    let stride = ((w * d.bpp as usize + 31) / 32) * 4;
+    let end = d.offset.checked_add(stride.checked_mul(h)?)?;
+    if end > dib.len() {
+        return None;
+    }
+    let src = &dib[d.offset..end];
+    let mut out = vec![0u32; w * h];
+    for y in 0..h {
+        let sy = if d.h > 0 { h - 1 - y } else { y };
+        let row = &src[sy * stride..sy * stride + stride];
+        for x in 0..w {
+            let i = x * bytes;
+            out[y * w + x] = if bytes == 4 {
+                u32::from_le_bytes([row[i], row[i + 1], row[i + 2], row[i + 3]]) & 0x00FF_FFFF
+            } else {
+                row[i] as u32 | (row[i + 1] as u32) << 8 | (row[i + 2] as u32) << 16
+            };
+        }
+    }
+    Some(out)
+}
+
 /// DIB -> original BMP + thumbnail BMP. Returns the image size when the BMP was written.
 pub fn dib_to_images(dib: &[u8], bmp: &Path, thumb: &Path) -> Option<(i32, i32)> {
     let d = parse(dib)?;
     let w = d.w;
     let h = d.h.abs();
-    unsafe {
-        let scr = GetDC(std::ptr::null_mut());
-        if scr.is_null() {
-            return None;
-        }
-        let (mem, bits, hb) = match dib_section(scr, w, -h) {
-            Some(v) => v,
-            None => {
-                ReleaseDC(std::ptr::null_mut(), scr);
-                return None;
-            }
-        };
-        // GDI converts every uncompressed DIB layout (palette, 16/24/32 bpp, either orientation) into our 32-bpp surface.
-        let lines = SetDIBitsToDevice(
-            mem,
-            0,
-            0,
-            w as u32,
-            h as u32,
-            0,
-            0,
-            0,
-            h as u32,
-            dib[d.offset..].as_ptr().cast(),
-            dib.as_ptr().cast::<BITMAPINFO>(),
-            DIB_RGB_COLORS,
-        );
-        let ok = lines == h;
-        let px = if ok { slice::from_raw_parts(bits, (w * h) as usize).to_vec() } else { Vec::new() };
-        release(mem, hb);
-        ReleaseDC(std::ptr::null_mut(), scr);
-        if !ok {
-            return None;
-        }
-        save_bmp(bmp, w, h, &px).ok()?;
-        let (tw, th, tpx) = thumbnail(&px, w, h);
-        if save_bmp(thumb, tw, th, &tpx).is_err() {
-            let _ = fs::remove_file(thumb);
-        }
-        Some((w, h))
+    let mut px = direct(dib, &d);
+    if px.is_none() {
+        px = unsafe { convert_with_gdi(dib, &d, w, h) };
     }
+    let px = px?;
+    save_bmp(bmp, w, h, &px).ok()?;
+    let (tw, th, tpx) = thumbnail(&px, w, h);
+    if save_bmp(thumb, tw, th, &tpx).is_err() {
+        let _ = fs::remove_file(thumb);
+    }
+    Some((w, h))
+}
+
+unsafe fn convert_with_gdi(dib: &[u8], d: &Dib, w: i32, h: i32) -> Option<Vec<u32>> {
+    let scr = GetDC(std::ptr::null_mut());
+    if scr.is_null() {
+        return None;
+    }
+    let (mem, bits, hb) = match dib_section(scr, w, -h) {
+        Some(v) => v,
+        None => {
+            ReleaseDC(std::ptr::null_mut(), scr);
+            return None;
+        }
+    };
+    // StretchDIBits converts palettes and 16-bpp layouts and respects the DIB's own orientation.
+    let lines = StretchDIBits(
+        mem,
+        0,
+        0,
+        w,
+        h,
+        0,
+        0,
+        w,
+        h,
+        dib[d.offset..].as_ptr().cast(),
+        dib.as_ptr().cast::<BITMAPINFO>(),
+        DIB_RGB_COLORS,
+        SRCCOPY,
+    );
+    // GDI batches drawing: without this the DIB section can still read as zeros.
+    GdiFlush();
+    let px = if lines > 0 { slice::from_raw_parts(bits, (w * h) as usize).to_vec() } else { Vec::new() };
+    release(mem, hb);
+    ReleaseDC(std::ptr::null_mut(), scr);
+    (!px.is_empty()).then_some(px)
 }
 
 /// CF_BITMAP fallback: some apps put only an HBITMAP on the clipboard. Read it as a 32-bpp top-down DIB.
@@ -269,7 +305,7 @@ pub fn bmp_to_dib(path: &Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{dib_to_images, parse};
 
     #[test]
     fn parses_a_plain_header() {
@@ -286,5 +322,96 @@ mod tests {
         dib[32..36].copy_from_slice(&2u32.to_le_bytes());
         dib.resize(40 + 8 + 16, 0);
         assert_eq!(parse(&dib).unwrap().offset, 48);
+    }
+
+    #[test]
+    fn converts_16_bpp_through_gdi() {
+        // 2x2 RGB565, bottom-up: bottom blue/green, top red/white.
+        let mut dib = vec![0u8; 40 + 16];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&2i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&2i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&16u16.to_le_bytes());
+        dib[20..24].copy_from_slice(&16u32.to_le_bytes());
+        for (i, px) in [0x001Fu16, 0x07E0, 0xF800, 0xFFFF].into_iter().enumerate() {
+            dib[40 + i * 2..42 + i * 2].copy_from_slice(&px.to_le_bytes());
+        }
+        let dir = std::env::temp_dir().join(format!("rs-clip-img16-{}", std::process::id()));
+        let (bmp, thumb) = (dir.join("a.bmp"), dir.join("a.thumb.bmp"));
+        let _ = std::fs::create_dir_all(&dir);
+        assert_eq!(dib_to_images(&dib, &bmp, &thumb), Some((2, 2)));
+        let file = std::fs::read(&bmp).unwrap();
+        // BI_RGB 16-bpp is RGB555; GDI expands the 5-bit channels with slight rounding, so compare with tolerance.
+        let p = u32::from_le_bytes(file[54..58].try_into().unwrap());
+        assert_eq!((p & 0xFF, p >> 16), (255, 0)); // blue
+        let p = u32::from_le_bytes(file[58..62].try_into().unwrap());
+        assert_eq!((p & 0xFF, (p >> 8) & 0xFF, p >> 16 <= 16), (0, 255, true)); // green (RGB555's R bit is set by 0x07E0)
+        let p = u32::from_le_bytes(file[62..66].try_into().unwrap());
+        assert_eq!((p & 0xFF, (p >> 8) & 0xFF, p >> 16 >= 240), (0, 0, true)); // red
+        let p = u32::from_le_bytes(file[66..70].try_into().unwrap());
+        assert_eq!((p & 0xFF >= 240, (p >> 8) & 0xFF >= 240, p >> 16 >= 240), (true, true, true)); // white
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converts_a_paletted_dib() {
+        // 2x2, 8-bpp with a four-colour palette: bottom blue/green, top red/white.
+        let mut dib = vec![0u8; 40 + 16 + 8];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&2i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&2i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&8u16.to_le_bytes());
+        dib[20..24].copy_from_slice(&8u32.to_le_bytes());
+        dib[32..36].copy_from_slice(&4u32.to_le_bytes()); // biClrUsed
+        for (i, (b, g, r)) in [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)].into_iter().enumerate() {
+            let o = 40 + i * 4;
+            dib[o] = b;
+            dib[o + 1] = g;
+            dib[o + 2] = r;
+        }
+        // stride 4: [blue, green, pad, pad] then [red, white, pad, pad]
+        dib[56..64].copy_from_slice(&[0, 1, 0, 0, 2, 3, 0, 0]);
+        let dir = std::env::temp_dir().join(format!("rs-clip-img8-{}", std::process::id()));
+        let (bmp, thumb) = (dir.join("a.bmp"), dir.join("a.thumb.bmp"));
+        let _ = std::fs::create_dir_all(&dir);
+        assert_eq!(dib_to_images(&dib, &bmp, &thumb), Some((2, 2)));
+        let file = std::fs::read(&bmp).unwrap();
+        let px: Vec<u32> = (54..70).step_by(4).map(|i| u32::from_le_bytes(file[i..i + 4].try_into().unwrap())).collect();
+        assert_eq!(px, [0x0000_00FF, 0x0000_FF00, 0x00FF_0000, 0x00FF_FFFF]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn keeps_the_picture_the_right_way_up() {
+        // 2x2, bottom-up: the bottom row is blue/green, the top row red/white (BGRA in memory).
+        let mut dib = vec![0u8; 40 + 16];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&2i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&2i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+        dib[20..24].copy_from_slice(&16u32.to_le_bytes());
+        for (i, px) in [0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0x00FF_FFFF].into_iter().enumerate() {
+            dib[40 + i * 4..44 + i * 4].copy_from_slice(&px.to_le_bytes());
+        }
+        let dir = std::env::temp_dir().join(format!("rs-clip-img-{}", std::process::id()));
+        let (bmp, thumb) = (dir.join("a.bmp"), dir.join("a.thumb.bmp"));
+        let _ = std::fs::create_dir_all(&dir);
+        assert_eq!(dib_to_images(&dib, &bmp, &thumb), Some((2, 2)));
+        let file = std::fs::read(&bmp).unwrap();
+        assert_eq!(&file[..2], b"BM");
+        // BMP rows are bottom-up too: the first pixel row in the file is the bottom blue/green one.
+        assert_eq!(u32::from_le_bytes(file[54..58].try_into().unwrap()), 0x00FF_0000);
+        assert_eq!(u32::from_le_bytes(file[58..62].try_into().unwrap()), 0x0000_FF00);
+        assert_eq!(u32::from_le_bytes(file[62..66].try_into().unwrap()), 0x0000_00FF);
+        assert_eq!(u32::from_le_bytes(file[66..70].try_into().unwrap()), 0x00FF_FFFF);
+        assert!(thumb.is_file());
+        // CF_DIB for pasting is the same file without the 14-byte header, with its positive (bottom-up) height.
+        let round = super::bmp_to_dib(&bmp).unwrap();
+        assert_eq!(round.len(), 40 + 16);
+        assert_eq!(i32::from_le_bytes(round[8..12].try_into().unwrap()), 2);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

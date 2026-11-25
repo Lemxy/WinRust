@@ -285,6 +285,13 @@ fn last_top_op(s: &str) -> Option<(usize, char)> {
     found
 }
 
+/// True when the text is more than one number: a function name, a parenthesis, an operator after the first character.
+fn complex(s: &str) -> bool {
+    let mut chars = s.char_indices();
+    let _ = chars.next();
+    s.chars().any(|c| c.is_ascii_alphabetic()) || chars.any(|(_, c)| matches!(c, '+' | '-' | '*' | '/' | '%' | '^' | '(' | ')' | '!'))
+}
+
 /// Flips the sign of the value being typed without evaluating the whole expression: `5-3` -> `5--3`, `-5` -> `5`.
 fn toggle_sign_text(input: &str) -> String {
     if input.is_empty() {
@@ -565,13 +572,17 @@ fn equals(a: &mut App) {
     match calc::eval(&expr, a.angle) {
         Ok(v) => {
             if let Some(s) = calc::format(v, '.') {
-                a.history.insert(0, (expr.clone(), v));
-                a.history.truncate(20);
+                if complex(&expr) {
+                    a.history.insert(0, (expr.clone(), v));
+                    a.history.truncate(20);
+                    a.last = Some((expr, v));
+                    a.hist_scroll = 0;
+                } else {
+                    a.last = None;
+                }
                 a.input = s;
                 a.fresh = true;
-                a.last = Some((expr, v));
                 a.err = false;
-                a.hist_scroll = 0;
                 save(a);
             } else {
                 a.err = true;
@@ -1028,14 +1039,7 @@ fn inset(r: RECT, n: i32) -> RECT {
 
 /// The live preview: only worth a line when the input is more than a plain number.
 fn preview(a: &App) -> Option<String> {
-    if a.input.is_empty() || a.fresh || a.err {
-        return None;
-    }
-    let mut chars = a.input.char_indices();
-    let _ = chars.next();
-    let complex = a.input.chars().any(|c| c.is_ascii_alphabetic())
-        || chars.any(|(_, c)| matches!(c, '+' | '-' | '*' | '/' | '%' | '^' | '(' | ')' | '!'));
-    if !complex {
+    if a.input.is_empty() || a.fresh || a.err || !complex(&a.input) {
         return None;
     }
     calc::eval(&a.input, a.angle).ok().and_then(|v| calc::format(v, '.'))
