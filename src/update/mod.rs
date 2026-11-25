@@ -9,11 +9,13 @@ use crate::*;
 mod manifest;
 mod swap;
 use manifest::{sha256_hex, verify, ver};
-use swap::swap_all;
+pub(crate) use swap::swap_all; // also used by the rust-explorer install: a running shell is renamed aside, not killed
 
 /// The owner's ed25519 public key (`winrust-sign keygen`). The private half never enters the repository.
 const KEY: &str = include_str!("../../update-key.pub");
-pub(crate) const BASE: &str = "https://github.com/Lemxy/WinRust/releases";
+// The fork's own releases: the custom shell must never be replaced by an upstream build that has neither rs-shell as the
+// shell nor the fork's binaries (an unsigned fork release fails verification and installs nothing, which is the safe case).
+pub(crate) const BASE: &str = "https://github.com/RexxColder/WinRust/releases";
 const TASK: &str = "WinRust-update";
 
 fn home() -> PathBuf {
@@ -33,9 +35,11 @@ fn targets(name: &str) -> Vec<PathBuf> {
         "Task manager.exe" => vec![tm_dir().join("rtaskmgr-win32.exe")],
         "rs-du.exe" => vec![tm_dir().join(name)],
         "debloat.exe" => vec![tm_dir().join(name), db_dir().join(name)],
-        "topbar.exe" | "reshell.exe" | "rs-notify.exe" => vec![bar_dir().join(name)],
-        "rust-explorer.exe" | "rs-shell.exe" => vec![rx_dir().join(name)],
-        "wiztree.exe" | "photoview.exe" | "rust-settings.exe" | "rs-calc.exe" | "purge.exe" => vec![pf.join(name.trim_end_matches(".exe")).join(name)],
+        "topbar.exe" | "reshell.exe" | "rs-notify.exe" | "rs-notify-bridge.exe" => vec![bar_dir().join(name)],
+        "rust-explorer.exe" | "rs-shell.exe" | "rs-clip.exe" => vec![rx_dir().join(name)],
+        "rust-settings.exe" => vec![st_dir().join(name)],
+        "rust-control.exe" => vec![ctrl_dir().join(name)],
+        "wiztree.exe" | "photoview.exe" | "rs-calc.exe" | "purge.exe" => vec![pf.join(name.trim_end_matches(".exe")).join(name)],
         _ => vec![],
     }
 }

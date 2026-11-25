@@ -28,6 +28,18 @@ const RX_SVCS: [(&str, u32); 5] = [("PcaSvc", 4), ("InventorySvc", 4), ("lfsvc",
 const SPLIT_KEY: &str = r"HKLM\SYSTEM\CurrentControlSet\Control";
 const SPLIT_VALUE: &str = "SvcHostSplitThresholdInKB";
 
+/// The Windows pieces WinRust replaces, blocked with an IFEO "cmd.exe /c exit" once rs-shell is the shell (the same
+/// mechanism as taskmgr.exe). SearchHost belongs to rust-search, which owns the same entry; explorer.exe is never
+/// blocked, folder windows and URL hand-offs still go through it. Originals go to the plugin's journal.
+const RX_BLOCKS: [&str; 6] = ["StartMenuExperienceHost.exe", "SearchApp.exe", "SearchUI.exe", "Widgets.exe", "Cortana.exe", "ShellExperienceHost.exe"];
+const IFEO_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
+
+fn rx_journal() -> Result<Journal, String> {
+    // An install from before the journal let tools\shell-phase2.ps1 block these; that script owns their restore, so the
+    // legacy list is empty and uninstall only takes back what this installer wrote.
+    Journal::open("rust-explorer", || vec![])
+}
+
 fn trim_settings() -> impl Iterator<Item = (&'static str, String, &'static str, u32)> {
     RX_SVCS.into_iter()
         .map(|(service, start)| (service, svc_key(service), "Start", start))
@@ -137,14 +149,37 @@ pub(crate) fn rx_install() -> Result<(), String> {
     // An older installation may already have applied the tweaks without saving the originals.
     let fresh = !rx_dir().join("rust-explorer.exe").is_file()
         && trim_read((RX_STATE, "AutoRestartShell"))?.is_none();
-    with_payload(&["rust-explorer.exe", "rs-shell.exe"], |d| {
-        for n in ["rs-shell.exe", "rust-explorer.exe"] {
-            let _ = run("taskkill", &["/f", "/im", n]); // an update: a running exe cannot be overwritten
-        }
+    let running_shell = shell_mode(); // an update in shell mode must never leave the session without one
+    let j = rx_journal()?; // before anything changes: uninstall restores the IFEO values from it
+    with_payload(&["rust-explorer.exe", "rs-shell.exe", "rs-clip.exe"], |d| {
         fs::create_dir_all(rx_dir()).map_err(|e| e.to_string())?;
-        let (fm, sh) = (rx_dir().join("rust-explorer.exe"), rx_dir().join("rs-shell.exe"));
-        put(&d.join("rust-explorer.exe"), &fm)?;
-        put(&d.join("rs-shell.exe"), &sh)?;
+        let (fm, sh, clip) = (rx_dir().join("rust-explorer.exe"), rx_dir().join("rs-shell.exe"), rx_dir().join("rs-clip.exe"));
+        // A running exe cannot be overwritten, but it can be renamed aside. With rs-shell as the session's shell these
+        // three ARE the session (shell, desktop, Win+V helper), so they are swapped in place instead of killed: the old
+        // process keeps running until sign-in, the new file is on disk for the next start.
+        for n in ["rust-explorer.exe", "rs-shell.exe", "rs-clip.exe"] {
+            let dst = if n == "rust-explorer.exe" { &fm } else if n == "rs-shell.exe" { &sh } else { &clip };
+            if running_shell && dst.is_file() {
+                swap_all(&d.join(n), &[dst.clone()])?;
+            } else {
+                let _ = run("taskkill", &["/f", "/im", n]); // an update: a running exe cannot be overwritten
+                put(&d.join(n), dst)?;
+            }
+        }
+        // The user's shell: HKCU Winlogon\Shell = rs-shell.exe (the supported per-user route; the system's value stays as
+        // it is). Saved once; a value that is already ours counts as "Windows had none", so uninstall takes it away.
+        if reg_dword(RX_STATE, "ShellHad").is_none() {
+            match reg_str(WINLOGON_USER, "Shell").filter(|v| !v.to_lowercase().contains("rs-shell")) {
+                Some(v) => {
+                    run("reg", &["add", RX_STATE, "/v", "Shell", "/t", "REG_SZ", "/d", &v, "/f"])?;
+                    run("reg", &["add", RX_STATE, "/v", "ShellHad", "/t", "REG_DWORD", "/d", "1", "/f"])?;
+                }
+                None => {
+                    let _ = run("reg", &["add", RX_STATE, "/v", "ShellHad", "/t", "REG_DWORD", "/d", "0", "/f"]);
+                }
+            }
+        }
+        run("reg", &["add", WINLOGON_USER, "/v", "Shell", "/t", "REG_SZ", "/d", &sh.display().to_string(), "/f"])?;
         // what Windows had, saved once (an update must not overwrite it with our own 0)
         if reg_dword(RX_STATE, "AutoRestartShell").is_none() {
             let v = reg_dword(WINLOGON_KEY, "AutoRestartShell").unwrap_or(1);
@@ -164,30 +199,34 @@ pub(crate) fn rx_install() -> Result<(), String> {
             run("reg", &["add", &c, "/ve", "/t", "REG_SZ", "/d", &format!("\"{}\" \"%1\"", fm.display()), "/f"])?;
             run("reg", &["add", &c, "/v", "DelegateExecute", "/t", "REG_SZ", "/d", "", "/f"])?;
         }
-        // A logon task starts the overlay right at sign-in; Explorer runs the Run key only after its own startup delay (~20 s of
-        // plain Windows on screen). Limited run level: the shell side must never run elevated. Fallback: the Run key.
-        let task = format!("{} Register-ScheduledTask -TaskName rs-overlay -Force -Action (New-ScheduledTaskAction -Execute '{}' -Argument '--overlay') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), sh.display());
-        let task_ok = run("powershell", &["-NoProfile", "-Command", &task]).is_ok();
-        if task_ok {
-            let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
-        } else {
-            WARN.lock().unwrap().push(t!("задача rs-overlay не создана: запуск через Run, с задержкой Windows", "rs-overlay task was not created: it starts via Run, with a Windows startup delay", ja: "rs-overlay タスクを作成できませんでした: Windows の起動遅延付きで Run 経由で起動します", pt: "a tarefa rs-overlay não foi criada: ela inicia pelo Run, com o atraso de inicialização do Windows", zh: "rs-overlay 计划任务未创建：它将通过 Run 启动，会有 Windows 启动延迟").into());
-            run("reg", &["add", RUN_KEY, "/v", "rs-overlay", "/t", "REG_SZ", "/d", &format!("\"{}\" --overlay", sh.display()), "/f"])?;
+        // One shell only: rs-shell starts the bar, the desktop and the user's Run keys itself. The old overlay task (and
+        // the bar's elevated logon tasks) would start a second bar next to the shell, so they go.
+        for name in ["rs-overlay", "topbar", "reshell"] {
+            let _ = run("schtasks", &["/delete", "/tn", name, "/f"]);
+            let _ = run("reg", &["delete", RUN_KEY, "/v", name, "/f"]);
         }
         run("reg", &["add", RX_SWITCH, "/v", "ReplaceExplorer", "/t", "REG_DWORD", "/d", "1", "/f"])?;
         run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", "0", "/f"])?;
         if fresh {
             apply_service_trim();
         }
+        // The Windows pieces WinRust replaces cannot start. journaled first, so uninstall puts every original back.
+        // A block that is already ours (shell-phase2.ps1, or an earlier install without a journal) is journaled as
+        // "delete", never as an original: restoring it would leave Start and Search dead after uninstalling.
+        for exe in RX_BLOCKS {
+            let key = format!(r"{IFEO_KEY}\{exe}");
+            let ours = reg_str(&key, "Debugger").is_some_and(|v| v.trim().eq_ignore_ascii_case("cmd.exe /c exit"));
+            soft(exe, if ours { j.reclaim_reg(&key, "Debugger") } else { j.set_reg(&key, "Debugger", "REG_SZ", "cmd.exe /c exit") });
+            let _ = run("taskkill", &["/f", "/im", exe]);
+        }
         // the bar's Start panel and the search list Start Menu shortcuts only: without one rust-explorer has no entry (and no icon) there
         soft(t!("ярлык «Rust Explorer» в меню Пуск не создан", "Start menu shortcut 'Rust Explorer' was not created", ja: "スタート メニューのショートカット「Rust Explorer」を作成できませんでした", pt: "O atalho 'Rust Explorer' do menu Iniciar não foi criado", zh: "开始菜单快捷方式「Rust Explorer」未创建"), shortcut(&start_lnk("Rust Explorer"), &fm, ""));
-        // Start it now, with the user's normal token. The logon task does exactly that (the user's limited token, --overlay);
-        // `explorer.exe <shortcut>` is only the fallback: with Explorer not the shell it shows "File system error
-        // (-2147219195)" instead of opening the shortcut.
-        let lnk = rx_lnk();
-        let _ = fs::create_dir_all(lnk.parent().unwrap());
-        soft(t!("overlay не запущен сейчас: он стартует при следующем входе", "overlay is not running now: it starts at the next logon", ja: "オーバーレイは現在動作していません: 次回のログオン時に起動します", pt: "o overlay não está em execução agora: ele inicia no próximo logon", zh: "rs-overlay 当前未运行：它会在下次登录时启动"), shortcut(&lnk, &sh, "--overlay"));
-        if !(task_ok && run("schtasks", &["/run", "/tn", "rs-overlay"]).is_ok()) {
+        // Explorer is still this session's shell (a fresh install, shell mode starts at the next sign-in): run the overlay
+        // now, or the desktop icons would be gone until then. `explorer.exe <shortcut>` starts it with the user's token.
+        if !running_shell {
+            let lnk = rx_lnk();
+            let _ = fs::create_dir_all(lnk.parent().unwrap());
+            soft(t!("overlay не запущен сейчас: он стартует при следующем входе", "overlay is not running now: it starts at the next logon", ja: "オーバーレイは現在動作していません: 次回のログオン時に起動します", pt: "o overlay não está em execução agora: ele inicia no próximo logon", zh: "rs-overlay 当前未运行：它会在下次登录时启动"), shortcut(&lnk, &sh, "--overlay"));
             let _ = Command::new("explorer.exe").arg(&lnk).spawn();
         }
         Ok(())
@@ -196,9 +235,31 @@ pub(crate) fn rx_install() -> Result<(), String> {
 
 pub(crate) fn rx_uninstall() -> Result<(), String> {
     restore_service_trim()?;
+    // The IFEO blocks this installer wrote (an older install by shell-phase2.ps1 is that script's to restore).
+    rx_journal()?.undo()?;
+    // The marker let rs-shell change ms-settings: / ms-screenclip:; --restore puts the previous commands back.
+    let sh = rx_dir().join("rs-shell.exe");
+    if sh.is_file() {
+        let _ = run(sh.to_str().unwrap(), &["--restore"]);
+    }
+    let _ = fs::remove_file(winrust_data().join("handlers-enabled"));
     // Windows may restart its shell again; our hooks off; then the shell back, unelevated, only if none is running
     let back = reg_dword(RX_STATE, "AutoRestartShell").unwrap_or(1);
     let r = run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &back.to_string(), "/f"]);
+    // this user's shell: the saved value, or no value at all (= Windows starts Explorer) when there was none before
+    match reg_dword(RX_STATE, "ShellHad") {
+        Some(1) => {
+            if let Some(v) = reg_str(RX_STATE, "Shell") {
+                let _ = run("reg", &["add", WINLOGON_USER, "/v", "Shell", "/t", "REG_SZ", "/d", &v, "/f"]);
+            }
+        }
+        _ => {
+            // no saved state (an install from before this version): only remove a value that is ours
+            if reg_str(WINLOGON_USER, "Shell").is_some_and(|v| v.to_lowercase().contains("rs-shell")) {
+                let _ = run("reg", &["delete", WINLOGON_USER, "/v", "Shell", "/f"]);
+            }
+        }
+    }
     let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "rs-overlay", "/f"]);
     let _ = run("reg", &["delete", RX_SWITCH, "/f"]);
@@ -209,7 +270,7 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
             soft(&tf!("привязка папок {k} не возвращена", "folder verbs {k} were not restored", ja: "フォルダー動詞 {k} を復元できませんでした", pt: "os verbos de pasta {k} não foram restaurados", zh: "文件夹菜单命令 {k} 未恢复"), run("reg", &["import", &bak.display().to_string()]));
         }
     }
-    for n in ["rs-shell.exe", "rust-explorer.exe"] {
+    for n in ["rs-shell.exe", "rust-explorer.exe", "rs-clip.exe"] {
         let _ = run("taskkill", &["/f", "/im", n]);
     }
     let _ = run("powershell", &["-NoProfile", "-Command", r#"if (-not (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?(\s+/NoUACCheck)?\s*$' })) { runas /trustlevel:0x20000 C:\Windows\explorer.exe }"#]);

@@ -46,34 +46,54 @@ pub(crate) fn shells_run(script: &str) -> Result<(), String> {
 }
 
 pub(crate) fn bar_install() -> Result<(), String> {
-    with_payload(&["topbar.exe", "rs-notify.exe", "rs-du.exe", "reshell.exe"], |d| {
+    let shell = shell_mode(); // rs-shell is the session's shell: it starts the bar and reshell itself
+    with_payload(&["topbar.exe", "rs-notify.exe", "rs-notify-bridge.exe", "rs-du.exe", "reshell.exe"], |d| {
         let dst = bar_dir().join("topbar.exe");
         let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);
         fs::create_dir_all(bar_dir()).map_err(|e| e.to_string())?;
         put(&d.join("topbar.exe"), &dst)?;
         put(&d.join("rs-notify.exe"), &bar_dir().join("rs-notify.exe"))?; // raises a toast through topbar's pipe
+        put(&d.join("rs-notify-bridge.exe"), &bar_dir().join("rs-notify-bridge.exe"))?; // optional native-toast bridge (started by tools\notify-bridge.ps1)
         fs::create_dir_all(tm_dir()).map_err(|e| e.to_string())?;
         put(&d.join("rs-du.exe"), &tm_dir().join("rs-du.exe"))?; // topbar menu "Чистильщик диска"
         let rsh = bar_dir().join("reshell.exe"); // Win+1/2/3 desktop hotkeys, no args = hotkeys
-        let _ = run("taskkill", &["/f", "/im", "reshell.exe"]);
-        put(&d.join("reshell.exe"), &rsh)?;
-        if logon_task("reshell", &rsh) {
+        if shell && rsh.is_file() {
+            // a session helper like rs-shell: swap it while it runs, the new file is used at the next sign-in
+            swap_all(&d.join("reshell.exe"), &[rsh.clone()])?;
+        } else {
+            let _ = run("taskkill", &["/f", "/im", "reshell.exe"]);
+            put(&d.join("reshell.exe"), &rsh)?;
+        }
+        if shell {
+            // the shell starts reshell from this folder; a logon task would add a second hook
+            let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);
+            let _ = run("schtasks", &["/delete", "/tn", "reshell", "/f"]);
+        } else if logon_task("reshell", &rsh) {
             let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);
         } else {
             run("reg", &["add", RUN_KEY, "/v", "reshell", "/t", "REG_SZ", "/d", &format!("\"{}\"", rsh.display()), "/f"])?; // fallback
         }
-        let _ = winrust_common::launch::program(&rsh.to_string_lossy());
+        if !shell {
+            let _ = winrust_common::launch::program(&rsh.to_string_lossy());
+        }
         run(dst.to_str().unwrap(), &["--restore"])?; // clean state in case a killed instance left the taskbar hidden
-        // The bar runs elevated (a task with the highest run level starts it at logon without a UAC prompt): that lets it close
-        // elevated windows and click elevated apps' tray icons. It starts everything else through explorer, i.e. unelevated.
-        // Fallback when the task cannot be made: the plain Run key and a normal-rights bar.
-        let task = format!("{} Register-ScheduledTask -TaskName topbar -Force -Action (New-ScheduledTaskAction -Execute '{}') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), dst.display());
-        if run("powershell", &["-NoProfile", "-Command", &task]).is_ok() && run("schtasks", &["/run", "/tn", "topbar"]).is_ok() {
+        if shell {
+            // the shell keeps the bar alive; one logon task would start a second (elevated) bar next to it
             let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
+            let _ = run("schtasks", &["/delete", "/tn", "topbar", "/f"]);
+            let _ = winrust_common::launch::program(&dst.to_string_lossy()); // normal user token; a duplicate exits on its mutex
         } else {
-            WARN.lock().unwrap().push(t!("задача topbar не создана: запуск через Run, без прав администратора", "topbar task was not created: it starts via Run, without administrator rights", ja: "topbar タスクを作成できませんでした: 管理者権限なしで Run 経由で起動します", pt: "a tarefa topbar não foi criada: ela inicia pelo Run, sem direitos de administrador", zh: "topbar 计划任务未创建：它将通过 Run 启动，没有管理员权限").into());
-            run("reg", &["add", RUN_KEY, "/v", "topbar", "/t", "REG_SZ", "/d", &format!("\"{}\"", dst.display()), "/f"])?;
-            let _ = winrust_common::launch::program(&dst.to_string_lossy()); // normal user token, like rs-launcher
+            // The bar runs elevated (a task with the highest run level starts it at logon without a UAC prompt): that lets it close
+            // elevated windows and click elevated apps' tray icons. It starts everything else through explorer, i.e. unelevated.
+            // Fallback when the task cannot be made: the plain Run key and a normal-rights bar.
+            let task = format!("{} Register-ScheduledTask -TaskName topbar -Force -Action (New-ScheduledTaskAction -Execute '{}') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $u) -Principal (New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)) | Out-Null", task_user(), dst.display());
+            if run("powershell", &["-NoProfile", "-Command", &task]).is_ok() && run("schtasks", &["/run", "/tn", "topbar"]).is_ok() {
+                let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
+            } else {
+                WARN.lock().unwrap().push(t!("задача topbar не создана: запуск через Run, без прав администратора", "topbar task was not created: it starts via Run, without administrator rights", ja: "topbar タスクを作成できませんでした: 管理者権限なしで Run 経由で起動します", pt: "a tarefa topbar não foi criada: ela inicia pelo Run, sem direitos de administrador", zh: "topbar 计划任务未创建：它将通过 Run 启动，没有管理员权限").into());
+                run("reg", &["add", RUN_KEY, "/v", "topbar", "/t", "REG_SZ", "/d", &format!("\"{}\"", dst.display()), "/f"])?;
+                let _ = winrust_common::launch::program(&dst.to_string_lossy()); // normal user token, like rs-launcher
+            }
         }
         soft(t!("профиль PowerShell не записан", "PowerShell profile was not written", ja: "PowerShell プロファイルを書き込めませんでした", pt: "o perfil do PowerShell não foi gravado", zh: "PowerShell 配置文件未写入"), profile_install()); // a shell nicety, must not fail the bar install
         Ok(())

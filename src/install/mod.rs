@@ -38,6 +38,41 @@ pub(crate) fn program_data() -> PathBuf {
     PathBuf::from(env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into()))
 }
 
+/// Machine-wide WinRust data: the language, the bar's look/behaviour files and the shell's handler marker.
+pub(crate) fn winrust_data() -> PathBuf {
+    program_data().join("WinRust")
+}
+
+pub(crate) const WINLOGON_USER: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
+
+/// rs-shell is the user's shell (HKCU Winlogon\Shell). Written by this installer since the fork replaced Explorer.
+pub(crate) fn shell_mode() -> bool {
+    reg_str(WINLOGON_USER, "Shell").is_some_and(|s| s.to_lowercase().contains("rs-shell"))
+}
+
+/// The defaults every WinRust program reads from `%ProgramData%\WinRust`. Written once, never over an existing file:
+/// a missing lang.txt means English, autohide/dodge mean off and look.txt falls back to the values in common/src/look.rs,
+/// but a fresh setup should look complete without opening a settings window first. `handlers-enabled` is the shell's
+/// marker for the ms-settings: / ms-screenclip: handlers: rs-shell applies them on its next start and journals the old
+/// commands in handlers.json, so `rs-shell --restore` (which uninstall runs) puts them back.
+pub(crate) fn ensure_data_defaults() {
+    let d = winrust_data();
+    let _ = fs::create_dir_all(&d);
+    for (name, value) in [("lang.txt", i18n::lang().code()), ("autohide.txt", "0"), ("dodge.txt", "0")] {
+        let f = d.join(name);
+        if !f.exists() {
+            let _ = fs::write(f, value);
+        }
+    }
+    if !d.join("look.txt").exists() {
+        i18n::look::reset_all(); // the same values the settings window's "reset everything" writes
+    }
+    let marker = d.join("handlers-enabled");
+    if !marker.exists() {
+        let _ = fs::write(marker, "1\n");
+    }
+}
+
 /// Start Menu shortcut: search and the bar's Start panel list Start Menu shortcuts only.
 pub(crate) fn start_lnk(name: &str) -> PathBuf {
     program_data().join(format!(r"Microsoft\Windows\Start Menu\Programs\{name}.lnk"))
@@ -140,6 +175,7 @@ pub(crate) fn install_plugin(i: usize) -> Result<String, String> {
         log(&format!("{}: {rollback}", p.name));
         return Err(format!("{e} ({rollback})"));
     }
+    ensure_data_defaults(); // language, bar look/behaviour and the handler marker: every program reads them from ProgramData
     updater_sync(); // first install: the WinRust-update task appears (a failure is a warning)
     let w = WARN.lock().unwrap().clone();
     log(&format!("{}: {} {}", p.name, if was { t!("обновлён", "updated", ja: "更新済み", pt: "atualizado", zh: "已更新") } else { t!("установлен", "installed", ja: "インストール済み", pt: "instalado", zh: "已安装") }, w.join(" | ")));

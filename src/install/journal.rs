@@ -60,6 +60,25 @@ impl Journal {
         run("reg", &["add", key, "/v", name, "/t", ty, "/d", data, "/f"])
     }
 
+    /// Records that `name` must be **deleted** on uninstall, dropping any entry that saved our own value as the original.
+    ///
+    /// The IFEO blocks are the case: `tools\shell-phase2.ps1` and installs from before the journal already set them to
+    /// `cmd.exe /c exit`. Recording that as the old value would write the block back on uninstall and leave Start and
+    /// Search dead; the install was ours either way, so the undo is "remove it".
+    pub(crate) fn reclaim_reg(&self, key: &str, name: &str) -> Result<(), String> {
+        let want = Entry::Reg { key: key.into(), name: name.into(), old: None };
+        let entries = self.entries()?;
+        if entries.iter().any(|e| e.same(&want) && matches!(&e, Entry::Reg { old: None, .. })) {
+            return Ok(()); // already recorded as "delete"
+        }
+        let keep: Vec<Entry> = entries.into_iter().filter(|e| !e.same(&want)).collect();
+        let text: String = keep.iter().filter_map(Entry::line).map(|l| l + "\n").collect();
+        let tmp = self.0.with_extension("new");
+        fs::write(&tmp, &text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        fs::rename(&tmp, &self.0).map_err(|e| format!("{}: {e}", self.0.display()))?;
+        self.record(want)
+    }
+
     pub(crate) fn set_svc(&self, name: &str, mode: &str) -> Result<(), String> {
         let k = svc_key(name);
         let old = svc_mode(reg_dword(&k, "Start"), reg_dword(&k, "DelayedAutostart")).ok_or(tf!("служба {name}: неизвестный тип запуска", "service {name}: unknown start type", ja: "サービス {name}: 開始の種類が不明です", pt: "serviço {name}: tipo de início desconhecido", zh: "服务 {name}：未知的启动类型"))?;

@@ -20,6 +20,10 @@
     -Apply writes the changes and records every original value in tools\state\shell-phase2.backup.json.
     -Restore puts the recorded values back and re-enables the overlay task.
 
+    Since the fork's launcher replaced Explorer itself, these steps are part of the rust-explorer plugin install
+    (src/install/explorer.rs): HKCU Winlogon\Shell, the rs-shell/rs-overlay task switch and the IFEO blocks. This
+    script stays for machines provisioned before that, and as the -Restore path for what it changed by itself.
+
     The shell change only applies at the next sign-in; the IFEO/service changes apply at once. Recovery from a
     black screen after signing in: Ctrl+Alt+Del -> Task Manager -> File > Run new task -> explorer.exe, then
     run `rs-shell.exe --disable` (or this script with -Restore) from an elevated PowerShell.

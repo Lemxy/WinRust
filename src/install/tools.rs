@@ -15,6 +15,11 @@ pub(crate) fn st_dir() -> PathBuf {
     program_files().join("rust-settings")
 }
 
+/// The Control Panel (rust-control) that rust-settings' hub opens from its own Program Files folder.
+pub(crate) fn ctrl_dir() -> PathBuf {
+    program_files().join("rust-control")
+}
+
 pub(crate) fn ca_dir() -> PathBuf {
     program_files().join("rs-calc")
 }
@@ -64,11 +69,20 @@ pub(crate) fn tool_remove(exe: &str, dir: &Path, lnk: Option<&str>) {
 }
 
 pub(crate) fn st_install() -> Result<(), String> {
-    tool_install("rust-settings.exe", &st_dir(), Some("WinRust Settings"))
+    tool_install("rust-settings.exe", &st_dir(), Some("WinRust Settings"))?;
+    // The hub's Control Panel page opens rust-control.exe from Program Files\rust-control (plugins/rust-settings/src/hub.rs).
+    with_payload(&["rust-control.exe"], |d| {
+        let _ = run("taskkill", &["/f", "/im", "rust-control.exe"]);
+        fs::create_dir_all(ctrl_dir()).map_err(|e| e.to_string())?;
+        put(&d.join("rust-control.exe"), &ctrl_dir().join("rust-control.exe"))
+    })
 }
 
 pub(crate) fn st_uninstall() -> Result<(), String> {
     tool_remove("rust-settings.exe", &st_dir(), Some("WinRust Settings")); // also ends the night-light helper (same exe)
+    // only our file and the folder when empty: this one may have been created by hand before the installer knew it
+    let _ = fs::remove_file(ctrl_dir().join("rust-control.exe"));
+    let _ = fs::remove_dir(ctrl_dir());
     // what the night-light switch left for the user: its autostart value and its setting
     let _ = run("reg", &["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "WinRustNightLight", "/f"]);
     let _ = run("reg", &["delete", r"HKCU\Software\WinRust\NightLight", "/f"]);
