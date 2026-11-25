@@ -672,6 +672,7 @@ unsafe fn start(exe: &Path, args: &str, file: &Path) -> Result<(), String> {
     }
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+    winrust_common::place::after_start(pi.dwProcessId); // the monitor under the cursor, not the primary one
     Ok(())
 }
 
@@ -706,10 +707,34 @@ unsafe fn start_program(file: &Path) -> Result<(), String> {
 /// The shell's own "open". Two places need it: a program whose manifest asks for elevation (CreateProcessW fails with
 /// 740 and only the shell can raise the consent prompt), and a type the shell opens through an extension rather than a
 /// command (`.lnk`, `.cpl`, `.iso`). A type with no association at all never comes here: that one still gets our picker.
+///
+/// `SEE_MASK_NOCLOSEPROCESS` gives the started process, so following a shortcut also lands on the monitor under the
+/// cursor: the window belongs to the program the shell started, not to the shortcut.
 unsafe fn shell_open(file: &Path) -> bool {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::GetProcessId,
+        UI::{
+            Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+            WindowsAndMessaging::SW_SHOWNORMAL,
+        },
+    };
     let (verb, target) = (wc("open"), wc(&file.to_string_lossy()));
-    ShellExecuteW(ptr::null_mut(), verb.as_ptr(), target.as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL) as isize > 32
+    let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
+    sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = verb.as_ptr();
+    sei.lpFile = target.as_ptr();
+    sei.nShow = SW_SHOWNORMAL;
+    if ShellExecuteExW(&mut sei) == 0 {
+        return false;
+    }
+    let pid = if sei.hProcess.is_null() { 0 } else { GetProcessId(sei.hProcess) };
+    if !sei.hProcess.is_null() {
+        CloseHandle(sei.hProcess);
+    }
+    winrust_common::place::after_start(pid); // 0 (a DDE host): nothing to place
+    true
 }
 
 /// A shortcut is resolved by the shell itself and has no `shell\open\command` to read, so it is the one type that goes

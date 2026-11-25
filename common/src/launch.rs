@@ -65,25 +65,41 @@ pub fn program(target: &str) -> bool {
     }
     let dir = parent_of(target);
     if matches!(ext_of(target).as_str(), "exe" | "com" | "scr") {
-        if !crate::proc::elevated() && shell_execute_in(target, "", dir.as_deref()) {
-            return true;
+        if !crate::proc::elevated() {
+            if let Some(pid) = shell_execute_in(target, "", dir.as_deref()) {
+                crate::place::after_start(pid);
+                return true;
+            }
         }
+        let name = std::path::Path::new(target).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let before = crate::proc::pids(&name);
         let mut cmd = Command::new("runas");
         cmd.args(["/trustlevel:0x20000", target]).creation_flags(NO_WINDOW);
         if let Some(d) = &dir {
             cmd.current_dir(d);
         }
         if let Ok(mut child) = cmd.spawn() {
+            if !name.is_empty() {
+                crate::place::after_start_named(name, before);
+            }
             let (t, d) = (target.to_string(), dir.clone());
             std::thread::spawn(move || {
                 if child.wait().map(|s| !s.success()).unwrap_or(true) {
-                    shell_execute_in(&t, "", d.as_deref());
+                    if let Some(pid) = shell_execute_in(&t, "", d.as_deref()) {
+                        crate::place::after_start(pid);
+                    }
                 }
             });
             return true;
         }
     }
-    shell_execute_in(target, "", dir.as_deref())
+    match shell_execute_in(target, "", dir.as_deref()) {
+        Some(pid) => {
+            crate::place::after_start(pid);
+            true
+        }
+        None => false,
+    }
 }
 
 /// The folder the program lives in, when the target has one (a bare `notepad.exe` has none).
@@ -92,22 +108,38 @@ fn parent_of(target: &str) -> Option<std::path::PathBuf> {
     p.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf())
 }
 
-/// The shell's own "open" association: the last resort, and the normal way for `.msc` / `.cpl` / `.bat`.
-fn shell_execute(target: &str) -> bool {
-    shell_execute_in(target, "", parent_of(target).as_deref())
-}
-
-/// The same with arguments: `line(r"C:\Windows\notepad.exe", r"C:\notes.txt")`. ShellExecuteW passes `params` to the
+/// The same with arguments: `line(r"C:\Windows\notepad.exe", r"C:\notes.txt")`. The shell passes `params` to the
 /// program untouched, with the user's normal token: the Run box never elevates by itself. `dir` is the working
-/// directory the handler starts in.
-fn shell_execute_in(target: &str, params: &str, dir: Option<&std::path::Path>) -> bool {
-    use std::ptr::{null, null_mut};
-    use windows_sys::Win32::{UI::Shell::ShellExecuteW, UI::WindowsAndMessaging::SW_SHOWNORMAL};
+/// directory the handler starts in, and the pid comes back so the window can be moved to the monitor under the cursor.
+fn shell_execute_in(target: &str, params: &str, dir: Option<&std::path::Path>) -> Option<u32> {
+    use std::{mem::size_of, ptr::null};
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::GetProcessId,
+        UI::{
+            Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+            WindowsAndMessaging::SW_SHOWNORMAL,
+        },
+    };
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (verb, file, args) = (wide("open"), wide(target), wide(params));
     let dir = dir.map(|d| wide(&d.to_string_lossy()));
-    let dir_ptr = dir.as_ref().map_or(null(), |d| d.as_ptr());
-    unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), args.as_ptr(), dir_ptr, SW_SHOWNORMAL) as isize > 32 }
+    let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS; // the pid, for the monitor placement
+    sei.lpVerb = verb.as_ptr();
+    sei.lpFile = file.as_ptr();
+    sei.lpParameters = args.as_ptr();
+    sei.lpDirectory = dir.as_ref().map_or(null(), |d| d.as_ptr());
+    sei.nShow = SW_SHOWNORMAL;
+    if unsafe { ShellExecuteExW(&mut sei) } == 0 {
+        return None;
+    }
+    let pid = if sei.hProcess.is_null() { 0 } else { unsafe { GetProcessId(sei.hProcess) } };
+    if !sei.hProcess.is_null() {
+        unsafe { CloseHandle(sei.hProcess) };
+    }
+    Some(pid)
 }
 
 /// Runs a command line whose program and arguments are already split (`split_command` in the Run box does that without
@@ -120,7 +152,13 @@ pub fn line(exe: &str, args: &str) -> bool {
     if args.trim().is_empty() {
         return program(exe);
     }
-    shell_execute_in(exe, args.trim(), parent_of(exe).as_deref())
+    match shell_execute_in(exe, args.trim(), parent_of(exe).as_deref()) {
+        Some(pid) => {
+            crate::place::after_start(pid);
+            true
+        }
+        None => false,
+    }
 }
 
 #[cfg(test)]

@@ -27,6 +27,15 @@ This fork builds on [Lemxy/WinRust](https://github.com/Lemxy/WinRust) and adds, 
 - **Windows icons instead of ours**: Explorer and Settings entries borrow `explorer.exe` / `SystemSettings.exe` icons
   (`common::icon`, jumbo 256 px assets scaled down with an alpha-aware area average) in the bar, the Start menu and the
   desktop icon list.
+- **Custom icon per Start entry** (`common/src/starticons.rs`, `%ProgramData%\WinRust\icons.txt`): right-click an app in
+  the Start menu → *Choose icon…*, or pick a pinned app's row in Settings → Start menu → Icons. Any `.ico`, `.exe`, `.dll`
+  or picture is accepted; the entry key is the app's path, and the bar re-reads the file when its timestamp changes, so
+  the two processes need no IPC. The ✕ in Settings drops the override.
+- **Programs open on the monitor under the cursor** (`common/src/place.rs`): a new window is moved to the cursor's
+  monitor after start, windowed (kept size, centred in the work area) or fullscreen (whole monitor, including a late
+  fullscreen switch, which is how a game's swap chain follows its window). Covers the Start menu and pinned tiles
+  (`.exe` by pid, `.lnk` by following the target process), the Run box, Settings, the task manager and `rust-explorer`
+  double clicks; our own windows (`rust-notepad`, `rust-explorer`, `photoview`, `wiztree`) are created there directly.
 
 ## Language
 

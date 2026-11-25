@@ -449,6 +449,14 @@ fn system_icon_path(name: &str, path: &[u16]) -> Option<std::path::PathBuf> {
 /// The icon of a Start entry: the system's own for Explorer/Settings, else the one its shortcut points at, at `px`
 /// pixels (the tiles ask for 32, the rows for 24).
 unsafe fn row_icon(name: &str, path: &[u16], px: i32) -> HICON {
+    // an icon chosen for this entry (Start menu right-click, WinRust Settings) wins over the app's own
+    if let Some(chosen) = winrust_common::starticons::get(&wstr(path)) {
+        let s = chosen.to_string_lossy().into_owned();
+        let ic = ICONS.with_borrow_mut(|m| *m.entry((wide(&s), px)).or_insert_with(|| crate::item_icon(&s, px)));
+        if !ic.is_null() {
+            return ic;
+        }
+    }
     ICONS.with_borrow_mut(|m| {
         if let Some(exe) = system_icon_path(name, path) {
             let key = (wide(&exe.to_string_lossy()), px);
@@ -1247,16 +1255,21 @@ unsafe fn app_menu(hw: HWND, i: usize, x: i32, y: i32) {
     let path = wstr(&lnk);
     let file = !path.starts_with("shell:"); // Store apps have no file to run elevated or to show in a folder
     let pin_label = if start_pinned(&path) { t!("Убрать из Пуска", "Remove from Start", ja: "スタートから削除", pt: "Remover do Iniciar", zh: "从开始菜单移除") } else { t!("Добавить в Пуск", "Add to Start", ja: "スタートに追加", pt: "Adicionar ao Iniciar", zh: "添加到开始菜单") };
+    let has_icon = winrust_common::starticons::get(&path).is_some();
     let menu = [
         (1, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")),
         (2, t!("Запуск от имени администратора", "Run as administrator", ja: "管理者として実行", pt: "Executar como administrador", zh: "以管理员身份运行")),
         (3, t!("Расположение файла", "Open file location", ja: "ファイルの場所を開く", pt: "Abrir local do arquivo", zh: "打开文件所在位置")),
         (4, pin_label),
+        (6, t!("Выбрать значок…", "Choose icon…", ja: "アイコンを選択…", pt: "Escolher ícone…", zh: "选择图标…")),
     ];
     for (id, label) in menu {
-        if file || id == 1 || id == 4 {
+        if file || matches!(id, 1 | 4 | 6) {
             AppendMenuW(m, MF_STRING, id, wide(label).as_ptr());
         }
+    }
+    if has_icon {
+        AppendMenuW(m, MF_STRING, 7, wide(t!("Убрать значок", "Remove icon", ja: "アイコンを元に戻す", pt: "Remover ícone", zh: "移除图标")).as_ptr());
     }
     if file {
         // removing the program is a separate, destructive group
@@ -1281,6 +1294,19 @@ unsafe fn app_menu(hw: HWND, i: usize, x: i32, y: i32) {
             return; // stay open, the list just changed
         }
         5 => uninstall_app(&path),
+        6 => {
+            if let Some(icon) = winrust_common::starticons::pick(hw) {
+                if winrust_common::starticons::set(&path, &icon).is_ok() {
+                    ICONS.with_borrow_mut(|m| m.clear()); // the entry may have been drawn with the app's own icon
+                    note(&format!("{}: {}", t!("Значок", "Icon", ja: "アイコン", pt: "Ícone", zh: "图标"), icon.file_name().unwrap_or_default().to_string_lossy()));
+                }
+            }
+        }
+        7 => {
+            let _ = winrust_common::starticons::clear(&path);
+            ICONS.with_borrow_mut(|m| m.clear());
+            note(t!("Значок приложения восстановлен", "App icon restored", ja: "アプリのアイコンに戻しました", pt: "Ícone do app restaurado", zh: "已恢复应用图标"));
+        }
         _ => return,
     }
     close();

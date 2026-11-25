@@ -96,6 +96,8 @@ enum Op {
     StartStyle(u8),
     StartScale(u8),
     StartRanked,
+    StartIcon(u8),
+    StartIconReset(u8),
     ClearHistory,
     PinsFolder,
     Lang(u8),
@@ -267,9 +269,48 @@ thread_local! {
     static PAINTS: Cell<u32> = const { Cell::new(0) };
     static PAINT_AT: Cell<u64> = const { Cell::new(0) };
     static PAINT_SLOW: Cell<u64> = const { Cell::new(0) };
+    /// The pinned Start entries the icon rows were built for: `Op` is `Copy`, so the row keeps an index, not a path.
+    static START_ICONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The same list read once: `rows()` runs on every paint and must not touch the disk each time.
+    static START_PINS: RefCell<(u64, Vec<String>)> = const { RefCell::new((0, Vec::new())) };
 }
 
 const EMPTY: [bool; 5] = [false; 5];
+
+/// The apps pinned to the WinRust Start menu: topbar's list, one path per line (`%APPDATA%\topbar-start.txt`).
+/// Re-read when the file changes, not on every paint: `rows()` runs for each frame.
+fn start_pin_paths() -> Vec<String> {
+    let Some(appdata) = std::env::var_os("APPDATA") else { return Vec::new() };
+    let path = std::path::PathBuf::from(appdata).join("topbar-start.txt");
+    let stamp = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    START_PINS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != stamp {
+            c.1 = std::fs::read_to_string(&path)
+                .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+                .unwrap_or_default();
+            c.0 = stamp;
+        }
+        c.1.clone()
+    })
+}
+
+/// The name of a Start entry: the shortcut's or exe's file name, or the display part of a Store app id.
+fn pin_label(path: &str) -> String {
+    let last = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    let mut name = last.split('!').next().unwrap_or(last).to_string();
+    for ext in [".lnk", ".exe", ".url"] {
+        if name.len() > ext.len() && name[name.len() - ext.len()..].eq_ignore_ascii_case(ext) {
+            name.truncate(name.len() - ext.len());
+        }
+    }
+    name
+}
 
 fn rows(cat: u8) -> Vec<Row> {
     let mut v = Vec::new();
@@ -388,6 +429,41 @@ fn rows(cat: u8) -> Vec<Row> {
             v.push(action(t!("Очистить историю приложений", "Clear the app history", ja: "アプリの履歴を消去", pt: "Limpar o histórico de aplicativos", zh: "清除应用历史记录"), "", Op::ClearHistory));
             v.push(head(t!("Приложения", "Apps", ja: "アプリ", pt: "Aplicativos", zh: "应用")));
             v.push(action(t!("Открыть папку закреплённых программ", "Open the pinned apps folder", ja: "ピン留めしたアプリのフォルダーを開く", pt: "Abrir a pasta de aplicativos fixados", zh: "打开固定应用文件夹"), "›", Op::PinsFolder));
+            // --- icons of the pinned entries -------------------------------------------------------------
+            v.push(head(t!("Значки", "Icons", ja: "アイコン", pt: "Ícones", zh: "图标")));
+            v.push(info(t!(
+                "Значок закреплённого приложения в «Пуске»: нажмите на строку и выберите файл (.ico, .exe, .dll или картинку).",
+                "The icon of an app pinned to Start: tap a row and choose a file (.ico, .exe, .dll or a picture).",
+                ja: "スタートにピン留めしたアプリのアイコン: 行をタップしてファイル (.ico、.exe、.dll、画像) を選びます。",
+                pt: "O ícone de um app fixado no Iniciar: toque numa linha e escolha um arquivo (.ico, .exe, .dll ou imagem).",
+                zh: "固定到开始菜单的应用图标：点击一行并选择文件（.ico、.exe、.dll 或图片）。"
+            )));
+            let pins = start_pin_paths();
+            START_ICONS.with(|s| *s.borrow_mut() = pins.clone());
+            for (i, p) in pins.iter().enumerate().take(u8::MAX as usize) {
+                let custom = winrust_common::starticons::get(p);
+                let hint = match &custom {
+                    Some(icon) => icon.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                    None => t!("Выбрать…", "Choose…", ja: "選択…", pt: "Escolher…", zh: "选择…").to_string(),
+                };
+                v.push(Row {
+                    label: pin_label(p),
+                    hint,
+                    kind: Kind::Action,
+                    op: Op::StartIcon(i as u8),
+                    del: if custom.is_some() { Op::StartIconReset(i as u8) } else { Op::None },
+                    dot: if custom.is_some() { 0x0020_78D4 } else { u32::MAX }, // amber: this one has an icon of its own
+                });
+            }
+            if pins.is_empty() {
+                v.push(info(t!(
+                    "Закрепите приложение в «Пуске», чтобы выбрать ему значок.",
+                    "Pin an app to Start to choose its icon.",
+                    ja: "スタートにアプリをピン留めすると、アイコンを選べます。",
+                    pt: "Fixe um app no Iniciar para escolher o ícone dele.",
+                    zh: "将应用固定到开始菜单后即可选择其图标。"
+                )));
+            }
         }
         LANG => {
             v.push(head(t!("Язык всех программ WinRust", "The language of every WinRust program", ja: "すべての WinRust プログラムの言語", pt: "O idioma de todos os programas da WinRust", zh: "所有 WinRust 程序的语言")));
@@ -994,6 +1070,20 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         Op::StartStyle(i) => lk::start_style_set(i as i32),
         Op::StartScale(i) => lk::start_scale_set(i as i32),
         Op::StartRanked => lk::start_ranked_set(!lk::start_ranked()),
+        Op::StartIcon(i) => {
+            if let Some(path) = START_ICONS.with(|v| v.borrow().get(i as usize).cloned()) {
+                if let Some(icon) = winrust_common::starticons::pick(h) {
+                    if winrust_common::starticons::set(&path, &icon).is_err() {
+                        eprintln!("rust-settings: icons.txt could not be written (run the installer as administrator to apply it everywhere)");
+                    }
+                }
+            }
+        }
+        Op::StartIconReset(i) => {
+            if let Some(path) = START_ICONS.with(|v| v.borrow().get(i as usize).cloned()) {
+                let _ = winrust_common::starticons::clear(&path);
+            }
+        }
         Op::ClearHistory => clear_history(),
         Op::PinsFolder => open_target("shell:Programs"),
         Op::Lang(i) => {

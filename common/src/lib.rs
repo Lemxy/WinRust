@@ -22,10 +22,12 @@ pub mod mem;
 pub mod mft;
 pub mod notify;
 pub mod monitors;
+pub mod place;
 pub mod proc;
 pub mod reg;
 pub mod search;
 pub mod settings;
+pub mod starticons;
 pub mod style;
 
 pub use lang::{get, lang, set, set_lang, Lang};

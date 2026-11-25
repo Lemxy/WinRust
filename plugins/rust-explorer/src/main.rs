@@ -2620,8 +2620,10 @@ fn main() {
             let d = CreateWindowExW(WS_EX_TOOLWINDOW, pm.as_ptr(), w("rs-desktop").as_ptr(), WS_POPUP, vx, vy, vw, vh, 0 as _, 0 as _, inst, ptr::null());
             SetWindowPos(d, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else {
-            // where it was last closed, maximized again if it was (#71); a first start gets the default size
-            let win = CreateWindowExW(0, cls.as_ptr(), ptr::null(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, ui::sc(1000), ui::sc(660), 0 as _, 0 as _, inst, ptr::null());
+            // where it was last closed, maximized again if it was (#71); a first start opens on the monitor of the cursor
+            let (cw, ch2) = (ui::sc(1000), ui::sc(660));
+            let (fx, fy, fw, fh) = winrust_common::place::centered(cw, ch2);
+            let win = CreateWindowExW(0, cls.as_ptr(), ptr::null(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, fx, fy, fw, fh, 0 as _, 0 as _, inst, ptr::null());
             match saved_place() {
                 // the same API that saved it: rcNormalPosition is in work-area coordinates, which CreateWindow does not use
                 Some((max, r)) => {

@@ -2617,8 +2617,8 @@ unsafe fn open_now(p: &str) {
         return;
     }
     let lower = p.to_lowercase();
-    let (aumid, store) = if lower.starts_with(r"shell:appsfolder\") {
-        (Some(p[r"shell:appsfolder\".len()..].to_string()), true)
+    let (aumid, store, target) = if lower.starts_with(r"shell:appsfolder\") {
+        (Some(p[r"shell:appsfolder\".len()..].to_string()), true, String::new())
     } else {
         // A pinned Store shortcut points into the versioned package folder, which goes away with every update: repair it
         // here (package APIs + rewriting the .lnk), never in the click handler where it ran with PINS borrowed.
@@ -2631,7 +2631,7 @@ unsafe fn open_now(p: &str) {
                 target = new;
             }
         }
-        (aumid_for_target(&target), store)
+        (aumid_for_target(&target), store, target)
     };
     if let Some(id) = aumid {
         let t0 = std::time::Instant::now();
@@ -2678,8 +2678,19 @@ unsafe fn open_now(p: &str) {
     // cannot receive files dragged in from normal windows (UIPI), and PrtSc / Win+Shift+S (ms-screenclip:) do not work
     // when started elevated. With an argument and no explorer shell running, explorer.exe hands the target to its COM
     // host and does not become a shell or raise a taskbar.
+    //
+    // A shortcut to a program: Explorer knows the process it starts, the bar does not, so the app is followed by name and
+    // its window opens on the monitor under the cursor (the same as a .exe started from here).
+    let followed = if lower.ends_with(".lnk") && winrust_common::launch::is_program(&target) {
+        std::path::Path::new(&target).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let before = if followed.is_empty() { Vec::new() } else { winrust_common::proc::pids(&followed) };
     if Command::new("explorer.exe").arg(p).spawn().is_err() {
         ShellExecuteW(null_mut(), wide("open").as_ptr(), wide(p).as_ptr(), null(), null(), SW_SHOWNORMAL);
+    } else if !followed.is_empty() {
+        winrust_common::place::after_start_named(followed, before);
     }
 }
 

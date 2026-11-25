@@ -1504,15 +1504,17 @@ fn main() {
         let (want_w, want_h) = (p(dpi, 1000), p(dpi, 700));
         let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
         let (w, h) = (want_w.min(sw - p(dpi, 40)).max(p(dpi, 520)), want_h.min(sh - p(dpi, 60)).max(p(dpi, 360)));
+        // the monitor under the cursor, not the primary one: two screens and the cursor is on the right
+        let (x, y, cw, ch) = winrust_common::place::centered(w, h);
         let hwnd = CreateWindowExW(
             WS_EX_APPWINDOW,
             class.as_ptr(),
             wide(APP_NAME).as_ptr(),
             WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN | WS_VISIBLE,
-            (sw - w) / 2,
-            (sh - h) / 2,
-            w,
-            h,
+            x,
+            y,
+            cw,
+            ch,
             null_mut(),
             null_mut(),
             inst,

@@ -289,7 +289,8 @@ fn main() {
         let (inst, class) = (GetModuleHandleW(null()), wide("WinRustPhoto"));
         let wc = WNDCLASSW { style: CS_DBLCLKS, lpfnWndProc: Some(proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: inst, hIcon: null_mut(), hCursor: LoadCursorW(null_mut(), IDC_ARROW), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: class.as_ptr() };
         RegisterClassW(&wc);
-        let hwnd = CreateWindowExW(0, class.as_ptr(), wide(winrust_common::t!("Просмотр фото", "Photo viewer", ja: "フォト ビューアー", pt: "Visualizador de fotos", zh: "图片查看器")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800, null_mut(), null_mut(), inst, null());
+        let (x, y, w, h) = winrust_common::place::centered(1280, 800);
+        let hwnd = CreateWindowExW(0, class.as_ptr(), wide(winrust_common::t!("Просмотр фото", "Photo viewer", ja: "フォト ビューアー", pt: "Visualizador de fotos", zh: "图片查看器")).as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y, w, h, null_mut(), null_mut(), inst, null());
         if let Some(p) = std::env::args_os().nth(1) {
             open(hwnd, Path::new(&p));
         }
