@@ -110,7 +110,7 @@ pub fn pick(owner: HWND) -> Option<PathBuf> {
     let mut buf = vec![0u16; 1024];
     let filter: Vec<u16> = t!("Иконки", "Icons", ja: "アイコン", pt: "Ícones", zh: "图标")
         .encode_utf16()
-        .chain(wide("\0*.ico;*.exe;*.dll;*.png;*.jpg;*.bmp"))
+        .chain(wide("\0*.ico;*.exe;*.dll"))
         .chain(t!("Все файлы", "All files", ja: "すべてのファイル", pt: "Todos os arquivos", zh: "所有文件").encode_utf16())
         .chain(wide("\0*.*"))
         .chain([0u16])

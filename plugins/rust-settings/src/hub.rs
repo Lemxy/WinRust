@@ -432,11 +432,11 @@ fn rows(cat: u8) -> Vec<Row> {
             // --- icons of the pinned entries -------------------------------------------------------------
             v.push(head(t!("Значки", "Icons", ja: "アイコン", pt: "Ícones", zh: "图标")));
             v.push(info(t!(
-                "Значок закреплённого приложения в «Пуске»: нажмите на строку и выберите файл (.ico, .exe, .dll или картинку).",
-                "The icon of an app pinned to Start: tap a row and choose a file (.ico, .exe, .dll or a picture).",
-                ja: "スタートにピン留めしたアプリのアイコン: 行をタップしてファイル (.ico、.exe、.dll、画像) を選びます。",
-                pt: "O ícone de um app fixado no Iniciar: toque numa linha e escolha um arquivo (.ico, .exe, .dll ou imagem).",
-                zh: "固定到开始菜单的应用图标：点击一行并选择文件（.ico、.exe、.dll 或图片）。"
+                "Значок закреплённого приложения в «Пуске»: нажмите на строку и выберите файл .ico, .exe или .dll.",
+                "The icon of an app pinned to Start: tap a row and choose an .ico, .exe or .dll file.",
+                ja: "スタートにピン留めしたアプリのアイコン: 行をタップして .ico、.exe、.dll を選びます。",
+                pt: "O ícone de um app fixado no Iniciar: toque numa linha e escolha um arquivo .ico, .exe ou .dll.",
+                zh: "固定到开始菜单的应用图标：点击一行并选择 .ico、.exe 或 .dll 文件。"
             )));
             let pins = start_pin_paths();
             START_ICONS.with(|s| *s.borrow_mut() = pins.clone());
