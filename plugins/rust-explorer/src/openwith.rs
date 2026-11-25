@@ -584,22 +584,31 @@ fn args_after(cmd: &str, file: &Path) -> String {
         }
     };
     let mut args = rest.trim().to_string();
+    // `%*` is the program's own extra arguments, and the shell leaves it empty here. Filling it with the document
+    // duplicated the path for the 22 types that name it: `msiexec /i "x.msi" "x.msi"`, `mmc "x.msc" "x.msc"`,
+    // `wscript "x.vbs" "x.vbs"`, `mshta ... %*`.
     let mut filled = false;
+    for placeholder in ["\"%*\"", "%*"] {
+        if args.contains(placeholder) {
+            args = args.replace(placeholder, "");
+            filled = true;
+        }
+    }
     // the quoted form first: `"%1"` must not become `""C:\path""`
-    for placeholder in ["\"%1\"", "\"%L\"", "\"%l\"", "\"%*\""] {
+    for placeholder in ["\"%1\"", "\"%L\"", "\"%l\""] {
         if args.contains(placeholder) {
             args = args.replace(placeholder, &quoted);
             filled = true;
         }
     }
-    for placeholder in ["%1", "%L", "%l", "%*"] {
+    for placeholder in ["%1", "%L", "%l"] {
         if args.contains(placeholder) {
             args = args.replace(placeholder, &quoted);
             filled = true;
         }
     }
     if filled {
-        return args;
+        return args.trim().to_string();
     }
     if args.is_empty() {
         quoted
@@ -666,22 +675,25 @@ unsafe fn start(exe: &Path, args: &str, file: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Extensions Windows runs instead of handing to a document handler. Their ProgID's command is `"%1" %*`: the program
-/// is the file itself, so resolving it like a document handler ends in `resolve_exe("%1")`, which is not a file. That
-/// was the bug: double clicking any `.exe` said "Could not start the program: %1" (the same for `.bat` and `.cmd`).
+/// Extensions Windows runs instead of handing to a document handler. Their ProgID's command is `"%1" %*` (`.scr` is
+/// `"%1" /S`): the program is the file itself, so resolving it like a document handler ends in `resolve_exe("%1")`,
+/// which is not a file. That was the bug: double clicking any `.exe` said "Could not start the program: %1" - the same
+/// for `.bat`, `.cmd`, `.com`, `.scr` and `.pif`, which are all six of the self-referencing commands a stock Windows has.
 fn is_program(file: &Path) -> bool {
     file.extension()
-        .is_some_and(|e| ["exe", "com", "scr", "bat", "cmd"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .is_some_and(|e| ["exe", "com", "scr", "bat", "cmd", "pif"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 /// Starts the program with its own folder as the working directory: a game or an app looks for its data next to the
-/// exe, not in the folder the file manager happens to have open. `.bat`/`.cmd` need the command interpreter, which is
-/// what `"%1" %*` means to the shell.
+/// exe, not in the folder the file manager happens to have open. `.bat`/`.cmd` need the command interpreter and `.scr`
+/// is run with `/S` (the screensaver, not its settings box), both exactly as `shell\open\command` says.
 unsafe fn start_program(file: &Path) -> Result<(), String> {
     let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     let r = if ext == "bat" || ext == "cmd" {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
         start(Path::new(&comspec), &format!(r#"/c ""{}""#, file.display()), file)
+    } else if ext == "scr" {
+        start(file, "/S", file)
     } else {
         start(file, "", file)
     };
@@ -691,24 +703,41 @@ unsafe fn start_program(file: &Path) -> Result<(), String> {
     r
 }
 
-/// The shell's own "open", for a program only: an exe whose manifest asks for elevation fails in CreateProcessW with
-/// 740 (ERROR_ELEVATION_REQUIRED) and only the shell can raise the consent prompt. Documents never come here - the
-/// shell's picker cannot render without explorer.exe (see the module docs).
+/// The shell's own "open". Two places need it: a program whose manifest asks for elevation (CreateProcessW fails with
+/// 740 and only the shell can raise the consent prompt), and a type the shell opens through an extension rather than a
+/// command (`.lnk`, `.cpl`, `.iso`). A type with no association at all never comes here: that one still gets our picker.
 unsafe fn shell_open(file: &Path) -> bool {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     let (verb, target) = (wc("open"), wc(&file.to_string_lossy()));
     ShellExecuteW(ptr::null_mut(), verb.as_ptr(), target.as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL) as isize > 32
 }
 
-/// What a double click and our own "Abrir" do: the type's handler, started here. The shell is never asked - with a
-/// broken association `ShellExecute` lands in `OpenWith.exe`, the picker that cannot render, and that must not happen
-/// from any action of this program.
+/// A shortcut is resolved by the shell itself and has no `shell\open\command` to read, so it is the one type that goes
+/// to the shell without asking: `AssocQueryString` answers nothing at all for `.lnk` (it is a shell special case).
+fn is_shortcut(file: &Path) -> bool {
+    file.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
+}
+
+/// The shell knows the type even though its ProgID has no command: `AssocQueryString` answers a real exe for it
+/// (`.cpl` -> `control.exe`, `.iso` -> `Explorer.exe`), which is what tells it apart from a type nobody registered
+/// (`OpenWith.exe`, the picker that cannot render, is filtered out by `assoc_exe`).
+unsafe fn shell_resolves(file: &Path) -> bool {
+    let Some(ext) = file.extension() else { return false };
+    assoc_exe(&format!(".{}", ext.to_string_lossy().to_lowercase())).is_some()
+}
+
+/// What a double click and our own "Abrir" do: the type's handler, started here. With a broken association
+/// `ShellExecute` lands in `OpenWith.exe`, the picker that cannot render, so the shell is only asked when the type has
+/// a real owner (a command of its own, a shortcut, or a shell extension that has no command to read).
 pub unsafe fn open_file(owner: HWND, file: &Path) {
     // A program is its own handler: no association lookup, no `%1`.
     if !file.is_dir() && is_program(file) {
         if let Err(e) = start_program(file) {
             MessageBoxW(owner, wc(&e).as_ptr(), wc("WinRust Explorer").as_ptr(), MB_ICONWARNING);
         }
+        return;
+    }
+    if !file.is_dir() && is_shortcut(file) && shell_open(file) {
         return;
     }
     if !file.is_dir() && associated(file) {
@@ -721,6 +750,11 @@ pub unsafe fn open_file(owner: HWND, file: &Path) {
                     return;
                 }
             }
+        }
+        // The ProgID exists but carries no command: its handler lives in a shell extension (`.cpl`, `.iso`). Only the
+        // shell can open those, and it does not need to be the desktop shell to do it.
+        if shell_resolves(file) && shell_open(file) {
+            return;
         }
     }
     open(owner, file);
@@ -1334,7 +1368,7 @@ mod tests {
     #[test]
     fn programs_are_run_directly_not_as_documents() {
         // `"%1" %*` types: the program is the file, so the association lookup cannot resolve it
-        for p in [r"C:\Games\Blur\Blur.exe", r"C:\x\a.BAT", r"C:\x\setup.cmd", "a.com", "b.scr"] {
+        for p in [r"C:\Games\Blur\Blur.exe", r"C:\x\a.BAT", r"C:\x\setup.cmd", "a.com", "b.scr", "c.pif"] {
             assert!(super::is_program(Path::new(p)), "{p} is a program");
         }
         for p in [r"C:\x\a.txt", r"C:\x\a.pdf", r"C:\x\a.exe.txt"] {
@@ -1378,5 +1412,16 @@ mod tests {
         assert_eq!(args_after(r"%SystemRoot%\system32\NOTEPAD.EXE %1", &f), r#""C:\x\a b.txt""#);
         assert_eq!(args_after(r#""C:\App\app.exe" /n "%1""#, &f), r#"/n "C:\x\a b.txt""#);
         assert_eq!(args_after(r#""C:\App\app.exe""#, &f), r#""C:\x\a b.txt""#);
+    }
+
+    #[test]
+    fn the_extra_arguments_placeholder_is_not_the_document() {
+        // 22 types put `%*` after the document (.msi, .msc, .vbs, .js, .msu, .hta...): replacing it with the file
+        // again passed it twice, so msiexec got a second, bogus argument and mmc opened the console twice.
+        let f = PathBuf::from(r"C:\x\a b.msi");
+        assert_eq!(args_after(r#""C:\Windows\System32\msiexec.exe" /i "%1" %*"#, &f), r#"/i "C:\x\a b.msi""#);
+        assert_eq!(args_after(r#"C:\Windows\system32\mmc.exe "%1" %*"#, &f), r#""C:\x\a b.msi""#);
+        // a command that only has `%*`: no document is appended, because the type never asked for one
+        assert_eq!(args_after(r#""C:\App\app.exe" %*"#, &f), "");
     }
 }

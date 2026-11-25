@@ -52,23 +52,38 @@ fn is_uri(t: &str) -> bool {
 ///
 /// The program's own folder is the working directory: `runas` inherits the caller's, and a game or a portable app that
 /// looks for its data next to the exe then exits at once (Blur.exe from `H:\Blur` did, started from `C:\Windows\System32`).
+///
+/// The shell goes first unless WinRust itself is elevated. `runas /trustlevel` drops the token, which is what an
+/// elevated shell needs, but a restricted token cannot start a program whose manifest asks for elevation: runas exits
+/// with an error, nothing runs and no UAC prompt appears - the installer that "does nothing" when clicked. The shell
+/// handles both cases. When `runas` does fail, the shell gets its turn from a thread, so the click returns at once.
 pub fn program(target: &str) -> bool {
     use std::os::windows::process::CommandExt;
     let target = target.trim().trim_matches('"');
     if target.is_empty() {
         return false;
     }
+    let dir = parent_of(target);
     if matches!(ext_of(target).as_str(), "exe" | "com" | "scr") {
+        if !crate::proc::elevated() && shell_execute_in(target, "", dir.as_deref()) {
+            return true;
+        }
         let mut cmd = Command::new("runas");
         cmd.args(["/trustlevel:0x20000", target]).creation_flags(NO_WINDOW);
-        if let Some(dir) = parent_of(target) {
-            cmd.current_dir(dir);
+        if let Some(d) = &dir {
+            cmd.current_dir(d);
         }
-        if cmd.spawn().is_ok() {
+        if let Ok(mut child) = cmd.spawn() {
+            let (t, d) = (target.to_string(), dir.clone());
+            std::thread::spawn(move || {
+                if child.wait().map(|s| !s.success()).unwrap_or(true) {
+                    shell_execute_in(&t, "", d.as_deref());
+                }
+            });
             return true;
         }
     }
-    shell_execute_in(target, "", parent_of(target).as_deref())
+    shell_execute_in(target, "", dir.as_deref())
 }
 
 /// The folder the program lives in, when the target has one (a bare `notepad.exe` has none).
