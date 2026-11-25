@@ -93,6 +93,15 @@ pub(crate) struct Bar {
     pub(crate) leader: bool,
 }
 
+/// The slide of one bar: 0 = off screen, 1 = in place, plus the target it moves to. One per monitor, so a bar hides or
+/// comes back on its own (a window on one screen does not take the bar of the other).
+#[derive(Clone, Copy)]
+struct Slide {
+    p: f32,
+    target: f32,
+    t: u64,
+}
+
 thread_local! {
     static BARS: RefCell<Vec<Bar>> = const { RefCell::new(Vec::new()) };
     /// The bar whose message is being handled: the geometry helpers read its monitor from here. UI thread only, set at
@@ -174,7 +183,7 @@ pub(crate) fn mon_of(hwnd: HWND) -> RECT {
 
 /// Screen x of a side bar's current left edge, slid away by the show/hide animation.
 unsafe fn bar_x_m(m: RECT) -> i32 {
-    if i18n::style::side() == i18n::style::Side::Left { m.left - bar_off() } else { m.right - bar_h() + bar_off() }
+    if i18n::style::side() == i18n::style::Side::Left { m.left - bar_off_m(m) } else { m.right - bar_h() + bar_off_m(m) }
 }
 /// Screen x of a popup of width `w` next to a side bar.
 pub(crate) unsafe fn side_x_m(m: RECT, w: i32) -> i32 {
@@ -212,7 +221,7 @@ pub(crate) unsafe fn pop_y(h: i32) -> i32 {
 }
 /// Screen y of the bar's current top edge, slid away by the show/hide animation.
 unsafe fn bar_y_m(m: RECT) -> i32 {
-    if at_top() { m.top - bar_off() } else { bar_top_m(m) + bar_off() }
+    if at_top() { m.top - bar_off_m(m) } else { bar_top_m(m) + bar_off_m(m) }
 }
 /// Top-left of a bar window now.
 unsafe fn bar_pos_m(m: RECT) -> (i32, i32) {
@@ -254,7 +263,6 @@ const ALT_UP: u32 = WM_APP + 12; // posted by the keyboard hook: Alt released wh
 static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab switcher open (the hook thread reads it)
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static DESK_HIDE: AtomicBool = AtomicBool::new(false); // the desktop in front and the pointer away from the bar for 2 s
-static WINDOW_HIDE: AtomicBool = AtomicBool::new(false); // "dodge windows": the window in front reaches the bar's strip
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the leader bar window (tray, hooks, keyboard messages), for other threads
 const WIN_NUM: u32 = WM_APP + 15; // posted by the keyboard hook: Win+1..9 (wp 0..8) = the n-th button of the bar
@@ -372,8 +380,7 @@ thread_local! {
     static ORDER: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // unpinned windows in the order their buttons were added
     static HV: RefCell<HashMap<i32, (f32, u64)>> = RefCell::new(HashMap::new()); // hover fade per element: (0..1, last update ms)
     static BUSY: Cell<bool> = const { Cell::new(false) }; // a fade is still running: the painter asks for another frame
-    static BAR_P: Cell<f32> = const { Cell::new(0.0) }; // bar slide: 0 = off screen, 1 = in place
-    static BAR_T: Cell<u64> = const { Cell::new(0) };
+    static SLIDES: RefCell<HashMap<isize, Slide>> = RefCell::new(HashMap::new()); // one slide per bar window
     static DESK_T: Cell<u64> = const { Cell::new(0) }; // last moment the bar had a reason to stay on the desktop
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
     static OLD_STATE: Cell<usize> = const { Cell::new(ABS_ALWAYSONTOP as usize) };
@@ -675,7 +682,7 @@ unsafe fn show_tip(s: String, cx: i32) {
         return;
     }
     let x = (cx - w / 2).clamp(m.left + sc(4), m.right - w - sc(4));
-    SetWindowPos(tw, HWND_TOPMOST, x, if at_top() { m.top + bar_h() - bar_off() + sc(6) } else { bar_top_m(m) + bar_off() - h - sc(6) }, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetWindowPos(tw, HWND_TOPMOST, x, if at_top() { m.top + bar_h() - bar_off_m(m) + sc(6) } else { bar_top_m(m) + bar_off_m(m) - h - sc(6) }, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(tw, null(), 1);
 }
 
@@ -1718,69 +1725,101 @@ unsafe fn appear(key: isize) -> f32 {
     ease(t)
 }
 
-/// How far the bar sits below its place: it rises in at start and drops out of the way (and back) when a fullscreen
-/// window takes the screen.
-fn bar_off() -> i32 {
-    ((1.0 - ease(BAR_P.get())) * (bar_h() + dock_gap()) as f32) as i32
+/// The slide of one bar; a bar with no entry yet is a new one and starts off screen.
+fn slide(h: HWND) -> Slide {
+    SLIDES.with_borrow(|m| m.get(&(h as isize)).copied()).unwrap_or(Slide { p: 0.0, target: 1.0, t: 0 })
+}
+
+/// Sets the target of one bar; true when it changed, so the caller starts (or restarts) the animation.
+fn slide_target(h: HWND, target: f32) -> bool {
+    SLIDES.with_borrow_mut(|m| {
+        let e = m.entry(h as isize).or_insert(Slide { p: 0.0, target: 1.0, t: 0 });
+        let changed = e.target != target;
+        e.target = target;
+        changed
+    })
+}
+
+/// How far the bar of monitor `m` sits below its place: it rises in at start and drops out of the way (and back) when a
+/// fullscreen window takes that screen, while the pointer is away or a window reaches it ("dodge windows").
+fn bar_off_m(m: RECT) -> i32 {
+    let h = bar_on(m);
+    let p = if h.is_null() { 1.0 } else { slide(h).p }; // no bar there: the popups do not wait for one
+    ((1.0 - ease(p)) * (bar_h() + dock_gap()) as f32) as i32
 }
 
 unsafe fn bar_anim(hwnd: HWND) {
     if hwnd.is_null() {
         return;
     }
-    BAR_T.set(now_ms());
+    let now = now_ms();
+    SLIDES.with_borrow_mut(|m| m.values_mut().for_each(|s| s.t = now)); // no jump after a pause
     SetTimer(hwnd, 5, 15, None);
 }
 
 unsafe fn bar_step(hwnd: HWND) {
-    // hides for a fullscreen game or video, with "auto-hide" on while the pointer is away, and with "dodge windows" on
-    // while the window in front reaches the bar (never otherwise: not over the desktop, not in any style)
-    let away = (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) || (i18n::style::dodge() && WINDOW_HIDE.load(Relaxed));
-    let target = if FULLSCREEN.load(Relaxed) || away { 0.0 } else { 1.0 };
+    // One progress per bar: a fullscreen window, the pointer or a window in front of one monitor only moves that bar.
     let now = now_ms();
-    let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
-    let p = BAR_P.get();
-    let p = if p < target { (p + dt / 380.0).min(target) } else { (p - dt / 240.0).max(target) };
-    BAR_P.set(p);
     let bars = bar_list();
+    let mut done = true;
     for b in &bars {
-        if p > 0.0 && IsWindowVisible(b.hwnd) == 0 {
-            ShowWindow(b.hwnd, SW_SHOWNOACTIVATE);
-        }
-        let (px, py) = bar_pos_m(b.mon.rc);
-        SetWindowPos(b.hwnd, HWND_TOPMOST, px, py, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-    }
-    if p == target {
-        KillTimer(hwnd, 5);
-        if p == 0.0 {
-            // not just moved away: a hidden bar cannot cover a game
-            for b in &bars {
-                ShowWindow(b.hwnd, SW_HIDE);
+        let (p, target) = SLIDES.with_borrow_mut(|m| {
+            let s = m.entry(b.hwnd as isize).or_insert(Slide { p: 0.0, target: 1.0, t: now });
+            let dt = now.saturating_sub(s.t).min(50) as f32;
+            s.t = now;
+            let step = if s.p < s.target { dt / 380.0 } else { dt / 240.0 };
+            s.p = if s.p < s.target { (s.p + step).min(s.target) } else { (s.p - step).max(s.target) };
+            (s.p, s.target)
+        });
+        if p > 0.0 {
+            if IsWindowVisible(b.hwnd) == 0 {
+                ShowWindow(b.hwnd, SW_SHOWNOACTIVATE);
             }
+            let (px, py) = bar_pos_m(b.mon.rc);
+            SetWindowPos(b.hwnd, HWND_TOPMOST, px, py, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        } else if IsWindowVisible(b.hwnd) != 0 {
+            ShowWindow(b.hwnd, SW_HIDE); // not just moved away: a hidden bar cannot cover a game
         }
+        if p != target {
+            done = false;
+        }
+    }
+    if done {
+        KillTimer(hwnd, 5);
     }
 }
 
-/// True when the foreground window covers the whole primary monitor (game, F11 video, presentation).
-/// A maximized window does not: the bar's reserved strip keeps it below the bar.
-unsafe fn fullscreen_now(bar: HWND) -> bool {
+/// The window in front, when it is an application window: not ours (a bar, the tray, a flyout) and not the desktop.
+unsafe fn app_foreground() -> Option<(HWND, RECT)> {
     let fg = GetForegroundWindow();
-    if fg.is_null() || fg == bar || is_bar(fg) || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
-        return false;
+    if fg.is_null() || is_bar(fg) || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
+        return None;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(fg, &mut pid);
+    if pid == GetCurrentProcessId() {
+        return None; // one of our own panels: it must never hide a bar
     }
     let mut cls = [0u16; 64];
     let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
     if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
-        return false; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
+        return None; // the desktop itself is full size
     }
     let mut r: RECT = zeroed();
-    GetWindowRect(fg, &mut r);
-    let mut mi: MONITORINFO = zeroed();
-    mi.cbSize = size_of::<MONITORINFO>() as u32;
-    GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi);
-    let m = mi.rcMonitor;
+    if GetWindowRect(fg, &mut r) == 0 {
+        return None;
+    }
+    Some((fg, r))
+}
+
+/// True when `fg` covers the whole monitor of `b` (game, F11 video, presentation). A maximized framed window does not:
+/// it is the work area, and only a borderless one sized exactly to the monitor counts (#88).
+unsafe fn fullscreen_on(b: &Bar, fg: HWND, r: RECT) -> bool {
+    if MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) != b.mon.handle {
+        return false; // another screen is full: this bar stays
+    }
     let caption = GetWindowLongW(fg, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
-    (m.left, m.top) == (0, 0) && covers_monitor(r, m, caption, IsZoomed(fg) != 0)
+    covers_monitor(r, b.mon.rc, caption, IsZoomed(fg) != 0)
 }
 
 /// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); but a game in "borderless
@@ -1797,6 +1836,12 @@ unsafe fn desktop_now() -> bool {
     BTNS.with_borrow(|b| b.iter().flat_map(|b| &b.wins).all(|&w| IsIconic(w) != 0))
 }
 
+/// Every application window the bar knows about (all monitors, focused or not): "dodge windows" must not depend on
+/// which monitor has the focus.
+fn app_windows() -> Vec<HWND> {
+    BTNS.with_borrow(|b| b.iter().flat_map(|b| b.wins.iter().copied()).collect())
+}
+
 unsafe fn fs_update(hwnd: HWND) {
     // a look file edited outside the settings window (or a broadcast that raced the one-second cache): auto-hide and
     // "dodge windows" decide whether the bar reserves its strip, so the work area has to be taken or given back
@@ -1804,35 +1849,46 @@ unsafe fn fs_update(hwnd: HWND) {
     if MODES.replace(modes) != modes {
         place_all();
     }
-    let fs = fullscreen_now(hwnd);
-    // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
-    // edges all the time); Win opens Start, which brings the bar with it
     let mut pt = POINT { x: 0, y: 0 };
     GetCursorPos(&mut pt);
-    // desktop in front: the bar leaves 2 s after the pointer does and comes back at an edge of any bar (an open flyout
-    // keeps it)
     let now = now_ms();
-    let over = BARS.with_borrow(|bars| bars.iter().any(|b| over_bar(b.mon.rc, &pt)));
-    if fs || !(i18n::style::autohide() || desktop_now() || dock_covered()) || fly::any_open() || over {
+    let bars = bar_list();
+    // desktop in front: every bar leaves 2 s after the pointer does. An open flyout keeps them; coming back is decided
+    // per bar in the loop below (the pointer at the edge of one screen only brings that bar).
+    if !(i18n::style::autohide() || desktop_now() || dock_covered()) || fly::any_open() {
         DESK_T.set(now);
     }
-    let desk = !fs && now.saturating_sub(DESK_T.get()) >= 2000;
-    if DESK_HIDE.swap(desk, Relaxed) != desk {
-        bar_anim(hwnd);
-    }
-    // "dodge windows": the bar gets out of the way of the window in front (a maximized one, a video, one dragged to the
-    // edge) and comes back while the pointer is at the edge or one of our panels is open
-    let near = i18n::style::dodge() && !over && !fly::any_open() && window_over_bar();
-    if WINDOW_HIDE.swap(near, Relaxed) != near {
-        bar_anim(hwnd);
-    }
-    if FULLSCREEN.swap(fs, Relaxed) != fs {
-        if fs {
-            fly::close_now();
-            hide_tip(hwnd);
-            thumbs::hide_preview();
+    let desk = now.saturating_sub(DESK_T.get()) >= 2000;
+    let mut moved = DESK_HIDE.swap(desk, Relaxed) != desk;
+    let fg = app_foreground();
+    // the windows of every monitor, the active one included: a window on another screen still takes its own bar's strip
+    let mut wins = app_windows();
+    if let Some((h, _)) = fg {
+        if !wins.contains(&h) {
+            wins.push(h); // a fullscreen game or a player that the taskbar list filters out (tool window) still counts
         }
+    }
+    let mut fs_any = false;
+    for b in &bars {
+        let over = over_bar(b.mon.rc, &pt);
+        // a fullscreen game or video takes its own screen; a window in front makes only its own bar dodge, focused or not
+        let full = fg.map_or(false, |(h, r)| fullscreen_on(b, h, r));
+        fs_any |= full;
+        let near = i18n::style::dodge() && !over && !fly::any_open() && wins.iter().any(|&w| window_reaches(b, w));
+        // with "dodge windows" a fullscreen window is just another window that reaches the strip: the edge still brings
+        // the bar over it. Without it, a fullscreen game keeps the screen (the pointer at the edge does not bring it).
+        let hide = (full && !i18n::style::dodge()) || (i18n::style::autohide() && desk && !over) || near;
+        if slide_target(b.hwnd, if hide { 0.0 } else { 1.0 }) {
+            moved = true;
+        }
+    }
+    if moved {
         bar_anim(hwnd);
+    }
+    if FULLSCREEN.swap(fs_any, Relaxed) != fs_any && fs_any {
+        fly::close_now();
+        hide_tip(hwnd);
+        thumbs::hide_preview();
     }
     // the 250 ms watch is only needed while the pointer decides (auto-hide, dodge, dock, desktop, bar away); otherwise
     // the foreground event, ABN_FULLSCREENAPP and the 1 s tick call this
@@ -1853,32 +1909,13 @@ thread_local! {
     static MODES: Cell<(bool, bool)> = const { Cell::new((false, false)) }; // last (auto-hide, dodge) the strip was placed for
 }
 
-/// The window in front reaches the strip a bar occupies ("dodge windows"): a maximized window, a video, one dragged to
-/// the edge. Unlike `fullscreen_now` it looks at the bar of the window's own monitor and ignores our own panels and the
-/// desktop.
-unsafe fn window_over_bar() -> bool {
-    let fg = GetForegroundWindow();
-    if fg.is_null() || is_bar(fg) || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
+/// The window `w` reaches the strip this bar occupies ("dodge windows"): a maximized one, a video, one dragged to the
+/// edge. Any window of this bar's monitor counts, focused or not, so a maximized window on a screen nobody is using
+/// still takes that screen's bar; the other monitors keep theirs.
+unsafe fn window_reaches(b: &Bar, w: HWND) -> bool {
+    if IsWindowVisible(w) == 0 || IsIconic(w) != 0 {
         return false;
     }
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(fg, &mut pid);
-    if pid == GetCurrentProcessId() {
-        return false; // a panel of ours (tray, volume, notifications), not an application window
-    }
-    let mut cls = [0u16; 64];
-    let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
-    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
-        return false; // the desktop is as big as the screen and would keep the bar hidden for good
-    }
-    let mut r: RECT = zeroed();
-    if GetWindowRect(fg, &mut r) == 0 {
-        return false;
-    }
-    let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-    let Some(b) = BARS.with_borrow(|bars| bars.iter().find(|b| b.mon.handle == mon).copied()) else {
-        return false; // no bar on this monitor (bar-monitor picks a single screen)
-    };
     let m = b.mon.rc;
     let strip = if vert() {
         if i18n::style::side() == i18n::style::Side::Left {
@@ -1894,6 +1931,10 @@ unsafe fn window_over_bar() -> bool {
     } else {
         RECT { left: m.left, top: m.bottom - bar_h() - dock_gap(), right: m.right, bottom: m.bottom }
     };
+    let mut r: RECT = zeroed();
+    if GetWindowRect(w, &mut r) == 0 {
+        return false;
+    }
     // a window that is about to slip under the bar answers the same as one already over it
     let g = sc(2);
     r.left - g < strip.right && r.right + g > strip.left && r.top - g < strip.bottom && r.bottom + g > strip.top
@@ -1901,13 +1942,22 @@ unsafe fn window_over_bar() -> bool {
 
 /// The pointer is on the screen edge a bar of monitor `m` occupies (where auto-hide brings it back).
 unsafe fn over_bar(m: RECT, pt: &POINT) -> bool {
-    let on = BAR_P.get() > 0.0;
+    let h = bar_on(m);
+    let on = !h.is_null() && slide(h).p > 0.0; // this bar only: the others keep their own state
     if vert() {
+        if pt.y < m.top || pt.y >= m.bottom {
+            return false; // the pointer is on another monitor, not on this bar's edge
+        }
         if i18n::style::side() == i18n::style::Side::Left { pt.x <= m.left || (pt.x < m.left + bar_h() && on) } else { pt.x >= m.right - 1 || (pt.x >= m.right - bar_h() && on) }
-    } else if at_top() {
-        pt.y <= m.top || (pt.y < m.top + bar_h() && on)
     } else {
-        pt.y >= m.bottom - 1 || (pt.y >= m.bottom - bar_h() - dock_gap() && on)
+        if pt.x < m.left || pt.x >= m.right {
+            return false; // a bar below/above another screen must not answer the other screen's edge
+        }
+        if at_top() {
+            pt.y <= m.top || (pt.y < m.top + bar_h() && on)
+        } else {
+            pt.y >= m.bottom - 1 || (pt.y >= m.bottom - bar_h() - dock_gap() && on)
+        }
     }
 }
 

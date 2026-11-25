@@ -12,9 +12,12 @@ This fork builds on [Lemxy/WinRust](https://github.com/Lemxy/WinRust) and adds, 
 - **Settings window with tabs** (`plugins/topbar/src/settingswin.rs`): replaces the long dropdown with a popup that has
   a tab rail (Appearance, Start menu, Blur, Bar, Language), double-buffered, with the frost background.
 - **Dodge windows** (the settings hub, Bar → Behavior, `%ProgramData%\WinRust\dodge.txt`): the bar reserves no work area,
-  hides while the window in front reaches it and returns at the screen edge; a maximized window takes the whole screen.
-  Independent of auto-hide. `style::reread()` makes a settings change skip the one-second cache, so the work area is
-  given back or taken at once, and `fit_maximized` grows *and* trims already-maximized windows (they stay maximized).
+  hides while a window of its monitor reaches it and returns at that screen's edge; a maximized window takes the whole
+  screen. Independent of auto-hide. **Per monitor**: one slide per bar (`Slide`), the targets are computed from every
+  window of that monitor (not the focused one), and the edge of a screen only brings back its own bar (the pointer span
+  is checked, so a bar above/below another screen does not answer its edge). With dodge on, a fullscreen window is just
+  another window: the edge still reveals the bar over it. `style::reread()` makes a settings change skip the one-second
+  cache, and `fit_maximized` grows *and* trims already-maximized windows (they stay maximized).
 - **Bar layout**: Windows button at the left end (Start), search / Task View can be hidden, the tray hugs the clock and
   there is no hairline border.
 - **Start menu, three styles** (`start7.rs`, `start10.rs`, `start11.rs` behind `startctx.rs`): Windows 7 (two columns,

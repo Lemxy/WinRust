@@ -197,7 +197,7 @@ unsafe fn layout(pv: HWND, wins: Vec<HWND>, cx: i32) {
         SetWindowPos(pv, HWND_TOPMOST, side_x_m(m, w), y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     } else {
         let x = (cx - w / 2).clamp(m.left + sc(4), m.right - w - sc(4));
-        SetWindowPos(pv, HWND_TOPMOST, x, if at_top() { m.top + bar_h() - bar_off() + sc(6) } else { bar_top_m(m) + bar_off() - h - sc(6) }, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SetWindowPos(pv, HWND_TOPMOST, x, if at_top() { m.top + bar_h() - bar_off_m(m) + sc(6) } else { bar_top_m(m) + bar_off_m(m) - h - sc(6) }, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
     let ids = register(pv, &wins, &rects);
     PV.set((wins, rects, ids, None));
