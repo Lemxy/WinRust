@@ -108,6 +108,7 @@ pub(crate) unsafe fn bar_page() {
         fly::MItem::head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为")),
         fly::MItem::new(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏")).on(st::autohide()),
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10")).on(st::align_left()),
+        fly::MItem::new(t!("Кнопка Пуск слева", "Start button on the left", ja: "スタートボタンを左に配置", pt: "Botão Iniciar à esquerda", zh: "开始按钮靠左")).on(st::start_left()),
         fly::MItem::new(t!("Alt+Tab: только этот монитор", "Alt+Tab: this monitor only", ja: "Alt+Tab: このモニターのみ", pt: "Alt+Tab: somente este monitor", zh: "Alt+Tab：仅限此显示器")).on(st::alttab_per_monitor()),
     ];
     gear_page("\u{E8A1}", t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏"), t!("Где она, какого размера и как себя ведёт", "Where it sits, its size and behavior", ja: "配置場所、サイズ、動作", pt: "Onde fica, seu tamanho e comportamento", zh: "其位置、大小和行为"), items, move |i| {
@@ -116,10 +117,11 @@ pub(crate) unsafe fn bar_page() {
             6..=8 => st::set_bar_size((i - 6) as u8),
             10 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
             11 => st::set_align_left(!st::align_left()),
-            12 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            12 => st::set_start_left(!st::start_left()),
+            13 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
             _ => return style_menu(),
         }
-        relook(i != 12);
+        relook(i != 13);
         bar_page();
     });
 }

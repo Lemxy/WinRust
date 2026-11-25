@@ -1328,12 +1328,25 @@ fn refresh_status() {
 // ---------- layout / hit-testing ----------
 
 struct Layout {
-    x0: i32, // first slot: the search button; Start and the rest follow
+    gear_x: i32,  // Style/Bar settings gear: far left normally, or right of Start when start_left is on
+    start_x: i32, // Start (Windows) button: far left corner when start_left is on, or in the main group
+    x0: i32,      // first slot of the main group: Search, Task View, then Start (unless start_left) and apps
     bw: i32,
     gap: i32,
     apps: (i32, i32),
     sys: (i32, i32),
     clock: (i32, i32),
+}
+
+impl Layout {
+    fn btn_pos(&self, i: i32) -> i32 {
+        if i == 0 {
+            self.start_x
+        } else {
+            let lead = if i18n::style::start_left() { LEAD - 1 } else { LEAD };
+            self.x0 + (i + lead) * (self.bw + self.gap)
+        }
+    }
 }
 
 fn layout(w: i32) -> Layout {
@@ -1342,14 +1355,26 @@ fn layout(w: i32) -> Layout {
     let sys = (clock.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD; // + the search and Task View slots
-    let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
-    // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + 1).min(n);
+    let sl = i18n::style::start_left();
+    let btns_len = BTNS.with_borrow(|b| b.len()) as i32;
+    let total_n = btns_len + LEAD; // + the search and Task View slots
+    let bw = (((w - 2 * margin + gap) / total_n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
+    let group_n = total_n - i32::from(sl);
+    // centered on search + (Start if not pinned left) + pins only: opening an unpinned window adds a button on the right instead of shifting left
+    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + if sl { 0 } else { 1 }).min(group_n);
     // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
-    let right_limit = w - margin - (n * (bw + gap) - gap);
+    let right_limit = w - margin - (group_n * (bw + gap) - gap);
     let centered = (w - (fixed * (bw + gap) - gap)) / 2;
-    Layout { x0: if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, apps, sys, clock } // clear of the gear
+    let (start_left_x, gear_x) = if sl {
+        let sx = sc(GEAR_X.0);
+        (sx, sx + bw + gap)
+    } else {
+        (0, sc(GEAR_X.0))
+    };
+    let left_min = gear_x + sc(GEAR_X.1 + 6);
+    let x0 = if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(left_min); // clear of the gear (and Start if pinned left)
+    let start_x = if sl { start_left_x } else { x0 + LEAD * (bw + gap) };
+    Layout { gear_x, start_x, x0, bw, gap, apps, sys, clock }
 }
 
 unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
@@ -1357,7 +1382,15 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     GetClientRect(hwnd, &mut r);
     // a side bar runs the same layout along its height
     let (x, l) = if vert() { (y, layout(r.bottom)) } else { (x, layout(r.right)) };
-    if x < sc(GEAR_X.0 + GEAR_X.1) {
+    let sl = i18n::style::start_left();
+    if sl {
+        if x < l.start_x + l.bw {
+            return 0; // Start reaches all the way to the screen corner
+        }
+        if x >= l.gear_x && x < l.gear_x + sc(GEAR_X.1) {
+            return GEAR;
+        }
+    } else if x < l.gear_x + sc(GEAR_X.1) {
         return GEAR;
     }
     if x >= l.clock.1 {
@@ -1373,9 +1406,9 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
     }
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD;
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD - i32::from(sl);
     let (d, i) = (x - l.x0, (x - l.x0) / (l.bw + l.gap));
-    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD }
+    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD + i32::from(sl) }
 }
 
 // ---------- animation ----------
@@ -1744,7 +1777,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let cell = |y: i32, len: i32| RECT { left: lft, top: y, right: rgt, bottom: y + len };
     let dim = mix(pal().dim, pal().text, 0.5);
 
-    let gr = cell(sc(GEAR_X.0), sc(GEAR_X.1));
+    let gr = cell(l.gear_x, sc(GEAR_X.1));
     glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { dim }, DT_CENTER);
@@ -1758,7 +1791,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
 
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let y = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let y = l.btn_pos(i as i32);
             let r = cell(y, l.bw);
             let mid = y + l.bw / 2;
             let act = b.wins.contains(&fg);
@@ -1956,8 +1989,8 @@ unsafe fn paint(hwnd: HWND) {
     let hot = HOT.get();
     let active_bg = mix(pal().active, pal().accent, 0.12); // the focused app's button: a hint of the accent, not plain grey
 
-    // the gear at the left end: the Style menu
-    let gr = RECT { left: sc(GEAR_X.0), top, right: sc(GEAR_X.0 + GEAR_X.1), bottom: bot };
+    // the gear: the Style menu
+    let gr = RECT { left: l.gear_x, top, right: l.gear_x + sc(GEAR_X.1), bottom: bot };
     glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
@@ -1974,7 +2007,7 @@ unsafe fn paint(hwnd: HWND) {
     // Start, pinned apps, open windows (center)
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let x = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let x = l.btn_pos(i as i32);
             let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
             let act = b.wins.contains(&fg);
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
@@ -2701,7 +2734,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     let exe = exe_of(w);
     let i = BTNS.with_borrow(|b| b.iter().position(|b| b.wins.contains(&w)).or_else(|| b.iter().position(|b| !exe.is_empty() && b.wins.first().is_some_and(|&x| exe_of(x) == exe))));
     let x = match i {
-        Some(i) => l.x0 + (i as i32 + LEAD) * (l.bw + l.gap),
+        Some(i) => l.btn_pos(i as i32),
         None => (l.x0 + l.apps.0) / 2, // no button (yet): the middle of the bar
     };
     if vert() {
@@ -2717,7 +2750,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
 unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
     // along the bar: screen x for a bottom bar, screen y for a side bar
     (if vert() { 0 } else { bar_x_w().0 }) + match h {
-        GEAR => sc(GEAR_X.0 + GEAR_X.1 / 2),
+        GEAR => l.gear_x + sc(GEAR_X.1 / 2),
         SEARCH => l.x0 + l.bw / 2,
         TASKVIEW => l.x0 + (l.bw + l.gap) + l.bw / 2,
         CLOCK => (l.clock.0 + l.clock.1) / 2,
@@ -2727,7 +2760,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
         VOL_I => l.sys.0 + sc(90),
         BAT_I => l.sys.0 + sc(130),
         t if (TAPP..TAPP + 100).contains(&t) => l.apps.0 + (t - TAPP) * sc(24) + sc(12),
-        i => l.x0 + (i + LEAD) * (l.bw + l.gap) + l.bw / 2,
+        i => l.btn_pos(i) + l.bw / 2,
     }
 }
 

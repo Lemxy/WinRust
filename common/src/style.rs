@@ -146,6 +146,31 @@ pub fn set_align_left(on: bool) {
     }
 }
 
+fn start_left_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("start-left.txt"))
+}
+
+static START_LEFT: AtomicU8 = AtomicU8::new(0);
+static START_LEFT_AT: AtomicU64 = AtomicU64::new(0);
+
+/// Start (Windows) button sits at the bar's far left end next to the gear, even when app buttons stay centered. Re-read once a second.
+pub fn start_left() -> bool {
+    if now_ms().saturating_sub(START_LEFT_AT.load(Relaxed)) > 1000 {
+        START_LEFT.store(start_left_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|s| s.trim() == "1") as u8, Relaxed);
+        START_LEFT_AT.store(now_ms(), Relaxed);
+    }
+    START_LEFT.load(Relaxed) == 1
+}
+
+pub fn set_start_left(on: bool) {
+    START_LEFT.store(on as u8, Relaxed);
+    START_LEFT_AT.store(now_ms(), Relaxed);
+    if let Some(f) = start_left_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, if on { "1" } else { "0" });
+    }
+}
+
 /// Which screen edge the topbar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
@@ -444,6 +469,7 @@ pub fn reset_all() {
     set_bar_size(1);
     set_autohide(false);
     set_align_left(false);
+    set_start_left(false);
     set_alttab_per_monitor(false);
     Theme { name: String::new(), style: Style::Normal, colors: [u32::MAX; 7], opacity: 100 }.apply();
 }

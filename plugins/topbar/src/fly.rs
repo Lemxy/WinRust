@@ -974,7 +974,7 @@ pub fn toggle(k: Kind) {
         let (w, h) = (sc(size(k).0), sc(size(k).1));
         let sw = GetSystemMetrics(SM_CXSCREEN);
         let x = if vert() { side_x(w) } else { match k {
-            Kind::Start => (sw - w) / 2,
+            Kind::Start => if i18n::style::start_left() || i18n::style::align_left() { sc(8) } else { (sw - w) / 2 },
             Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
             _ => sw - w - sc(8),
         } };
