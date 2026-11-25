@@ -300,10 +300,16 @@ fn start_pin_paths() -> Vec<String> {
     })
 }
 
-/// The name of a Start entry: the shortcut's or exe's file name, or the display part of a Store app id.
+/// The name of a Start entry: the shortcut's or exe's file name, or the display part of a Store app id. The package
+/// family name carries the publisher hash ("Microsoft.GamingApp_8wekyb3d8bbwe"), which is noise in a settings row.
 fn pin_label(path: &str) -> String {
     let last = path.rsplit(['\\', '/']).next().unwrap_or(path);
     let mut name = last.split('!').next().unwrap_or(last).to_string();
+    if let Some((head, tail)) = name.rsplit_once('_') {
+        if tail.len() >= 8 && tail.chars().all(|c| c.is_ascii_alphanumeric()) {
+            name = head.to_string();
+        }
+    }
     for ext in [".lnk", ".exe", ".url"] {
         if name.len() > ext.len() && name[name.len() - ext.len()..].eq_ignore_ascii_case(ext) {
             name.truncate(name.len() - ext.len());
@@ -635,7 +641,9 @@ unsafe fn paint(h: HWND) {
     let cat = CAT.with(|c| c.get());
     let mut scroll = SCROLL.with(|s| s.get());
     let mut cards = layout(cr.right, cat, scroll);
-    let last = cards.last().map_or(0, |c| c.rect.bottom);
+    // `cards` are already at `scroll`: the unscrolled bottom is `bottom + scroll`. Without that term the limit shrank
+    // with every step and scrolling down undid itself (240 -> max 170, then 170 -> max 120...).
+    let last = cards.last().map_or(0, |c| c.rect.bottom) + scroll;
     let max = (last + sc(10) - content_bottom(cr.bottom)).max(0);
     if scroll > max {
         scroll = max;
@@ -1227,7 +1235,8 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
             let step = sc(ROW_H * 3);
             let up = (wp >> 16) as i16 > 0;
             let s = SCROLL.with(|v| v.get());
-            SCROLL.with(|v| v.set((if up { s - step } else { s + step }).clamp(0, max_scroll(cr.right, cr.bottom, cat))));
+            let mx = max_scroll(cr.right, cr.bottom, cat);
+            SCROLL.with(|v| v.set((if up { s - step } else { s + step }).clamp(0, mx)));
             InvalidateRect(h, ptr::null(), 0);
             0
         }

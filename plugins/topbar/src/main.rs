@@ -3215,6 +3215,10 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
                 }
             });
         }
+        // the bell: the notification centre (the history the toasts feed). Right click: Windows' notification settings,
+        // the same shortcut Windows 11 puts there.
+        BELL if left => notify::toggle_center(),
+        BELL => open(&wide("ms-settings:notifications")),
         SHOWDESK if left => winrust_common::desktop::toggle(),
         TAPP..=-900 => {
             let slot = (h - TAPP) as usize;
