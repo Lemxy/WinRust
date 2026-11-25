@@ -1151,6 +1151,10 @@ unsafe extern "system" fn proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize
         MODE.with(|m| m.set(HUB));
         CAT.with(|c| c.set((wp as u8).min(CATS as u8 - 1)));
         SCROLL.with(|s| s.set(0));
+        // the close button only hides this window (so the next open is instant): a second launch has to bring it back,
+        // otherwise the Start menu entry looked dead after closing Settings once
+        ShowWindow(h, SW_SHOW);
+        winrust_common::fg::force(h);
         InvalidateRect(h, ptr::null(), 0);
         return 0;
     }

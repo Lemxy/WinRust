@@ -1577,6 +1577,12 @@ pub unsafe extern "system" fn nav_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) 
                 InvalidateRect(h, ptr::null(), 0);
             }
         }
+        WM_RBUTTONUP => {
+            // the left pane paints itself: the Recycle Bin row gets its own small menu (open / empty, which confirms)
+            if let Some(i) = nav_hit(y) {
+                PostMessageW(GetParent(h), WM_UI, 25, i as isize);
+            }
+        }
         WM_LBUTTONDOWN => {
             if let Some(i) = nav_hit(y) {
                 PRESS.set((5000 + i as i32, now()));

@@ -1,4 +1,4 @@
-﻿// rust-explorer [path]  — file manager window (Explorer replacement).
+// rust-explorer [path]  — file manager window (Explorer replacement).
 // Virtual list (LVS_OWNERDATA, only visible rows are asked for text/icon), system icons, tabs,
 // IFileOperation (recycle bin / undo / elevation prompts), our own context menu with icons (its "More options…" row
 // opens the real shell menu for the verbs it does not carry), OLE drag and drop.
@@ -271,7 +271,9 @@ fn trash_rows() -> Vec<Row> {
                 let i = e.path();
                 let r = i.with_file_name(format!("$R{id}"));
                 let Some((size, time, orig)) = parse_trash_i(&i) else { continue };
-                out.push(Row { name: orig.to_string_lossy().into_owned(), dir: false, size, time, icon: -1, thumb: -2, hdr: false, path: None, cap: None, trash: Some(Trash { r, i }) });
+                // the row shows the file name; the original path (Restore's destination) travels in `path`
+                let shown = orig.file_name().map_or_else(|| orig.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+                out.push(Row { name: shown, dir: false, size, time, icon: -1, thumb: -2, hdr: false, path: Some(orig), cap: None, trash: Some(Trash { r, i }) });
                 if out.len() >= 5000 { break; } // a bin with a million files must not fill the window
             }
         }
@@ -299,14 +301,17 @@ fn selected_trash() -> Vec<(PathBuf, Trash)> {
         loop {
             i = put(st.list, LVM_GETNEXTITEM, i as usize, LVNI_SELECTED as isize);
             let Some(r) = usize::try_from(i).ok().and_then(|i| st.rows.get(i)) else { break };
-            if let Some(t) = &r.trash { out.push((PathBuf::from(&r.name), t.clone())); }
+            if let Some(t) = &r.trash { out.push((r.path.clone().unwrap_or_else(|| PathBuf::from(&r.name)), t.clone())); }
         }
         out
     })
 }
 
-/// Outcome of a background Recycle Bin restore / empty (WM_TRASH_DONE, lp): `emptied` picks the message.
-struct TrashDone { emptied: bool, ok: usize, bad: usize }
+/// Outcome of a background Recycle Bin restore / empty / delete (WM_TRASH_DONE, lp): `what` picks the message.
+#[derive(Clone, Copy, PartialEq)]
+enum TrashWhat { Restored, Emptied, Deleted }
+
+struct TrashDone { what: TrashWhat, ok: usize, bad: usize }
 
 /// Puts the selected items back where they came from on a worker thread; the folders are made again if needed. A name
 /// that is taken by now gets the usual " (2)" suffix instead of overwriting anything. The result arrives as WM_TRASH_DONE.
@@ -329,7 +334,7 @@ fn trash_restore(h: HWND) {
                 Err(_) => bad += 1, // no permission, or the payload is gone: the item stays in the bin
             }
         }
-        let done = Box::new(TrashDone { emptied: false, ok, bad });
+        let done = Box::new(TrashDone { what: TrashWhat::Restored, ok, bad });
         unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
     });
 }
@@ -358,17 +363,66 @@ fn trash_empty(h: HWND) {
                 }
             }
         }
-        let done = Box::new(TrashDone { emptied: true, ok: n, bad });
+        let done = Box::new(TrashDone { what: TrashWhat::Emptied, ok: n, bad });
         unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
     });
 }
 
-/// The Recycle Bin menu: on a row it offers Restore, everywhere Empty and Refresh. Our own menu, like the other ones.
+/// Permanently deletes the selected rows of the Recycle Bin (payload and metadata), after a confirmation. Same worker
+/// and WM_TRASH_DONE path as Empty, so the list reloads and the status line reports what happened.
+fn trash_delete(h: HWND) {
+    let picks = selected_trash();
+    if picks.is_empty() {
+        unsafe { ui::notice(h, t!("Выберите элементы для удаления", "Select the items to delete", ja: "削除する項目を選択してください", pt: "Selecione os itens que deseja excluir", zh: "请选择要删除的项目")) };
+        return;
+    }
+    unsafe {
+        let q = tf!("Удалить выбранные элементы безвозвратно ({})?", "Permanently delete the selected items ({})?", ja: "選択した項目を完全に削除しますか ({} 件)?", pt: "Excluir permanentemente os itens selecionados ({})?", zh: "要永久删除所选项（{} 项）吗？", picks.len());
+        let title = display_dir(&trash_dir());
+        if MessageBoxW(h, w(&q).as_ptr(), w(&title).as_ptr(), MB_YESNO | MB_ICONWARNING) != IDYES {
+            return;
+        }
+    }
+    let hwnd = h as isize;
+    std::thread::spawn(move || {
+        let (mut ok, mut bad) = (0usize, 0usize);
+        for (_, t) in picks {
+            let gone = if t.r.is_dir() { fs::remove_dir_all(&t.r).is_ok() } else { fs::remove_file(&t.r).is_ok() };
+            let meta = fs::remove_file(&t.i).is_ok();
+            if gone && meta {
+                ok += 1
+            } else {
+                bad += 1
+            }
+        }
+        let done = Box::new(TrashDone { what: TrashWhat::Deleted, ok, bad });
+        unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
+    });
+}
+
+/// Right click on the Recycle Bin in the left pane: open it, or empty it (Empty asks for confirmation itself).
+fn nav_bin_menu(h: HWND) {
+    use crate::menu::{Icon, Item};
+    let items = vec![
+        Item::new(1, t!("Открыть", "Open", ja: "開く", pt: "Abrir", zh: "打开")).icon(Icon::Glyph("\u{E8E5}")),
+        Item::new(2, t!("Очистить корзину", "Empty Recycle Bin", ja: "ごみ箱を空にする", pt: "Esvaziar Lixeira", zh: "清空回收站")).icon(Icon::Glyph("\u{E74D}")),
+    ];
+    let mut pt: POINT = unsafe { std::mem::zeroed() };
+    unsafe { GetCursorPos(&mut pt) };
+    match unsafe { crate::menu::show(pt.x, pt.y, items) } {
+        1 => load(h, trash_dir()),
+        2 => trash_empty(h),
+        _ => {}
+    }
+}
+
+/// The Recycle Bin menu: on a row it offers Restore, Delete, Empty and Refresh. Our own menu, like the other ones.
 fn trash_menu(h: HWND, on_row: bool) {
     use crate::menu::{Icon, Item};
     let mut items = vec![];
     if on_row {
         items.push(Item::new(1, t!("Восстановить", "Restore", ja: "復元", pt: "Restaurar", zh: "还原")).icon(Icon::Glyph("\u{E777}")));
+        items.push(Item::new(4, t!("Удалить безвозвратно", "Delete permanently", ja: "完全に削除", pt: "Excluir permanentemente", zh: "永久删除")).icon(Icon::Glyph("\u{E711}")));
     }
     items.push(Item::new(2, t!("Очистить корзину", "Empty Recycle Bin", ja: "ごみ箱を空にする", pt: "Esvaziar Lixeira", zh: "清空回收站")).icon(Icon::Glyph("\u{E74D}")));
     items.push(Item::new(3, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新")).icon(Icon::Glyph("\u{E72C}")).hint("F5"));
@@ -379,6 +433,7 @@ fn trash_menu(h: HWND, on_row: bool) {
         1 => trash_restore(h),
         2 => trash_empty(h),
         3 => reload(h),
+        4 => trash_delete(h),
         _ => {}
     }
 }
@@ -1016,7 +1071,8 @@ fn shown_name(name: &str, desktop: bool) -> String {
 }
 
 fn label(dir: &PathBuf) -> String {
-    if is_this_pc(dir) { return display_dir(dir); }
+    // the views are not folders: "This PC" and the Recycle Bin have no file name ("::{645FF...}")
+    if is_this_pc(dir) || is_trash(dir) { return display_dir(dir); }
     dir.file_name().map_or_else(|| dir.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned())
 }
 
@@ -2238,6 +2294,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                         }
                     }
                     20 => { if let Some(p) = ui::nav_path(lp as usize) { load(h, p); } } // a folder in the left pane
+                    25 => { if ui::nav_path(lp as usize).is_some_and(|p| is_trash(&p)) { nav_bin_menu(h); } }
                     21 => { if let Some(p) = ui::crumb_path(lp as usize) { load(h, p); } } // a part of the path in the address pill
                     // the window buttons at the right end of the title row
                     22 => { PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE as usize, 0); }
@@ -2474,15 +2531,17 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 }
                 0
             }
-            // the Recycle Bin restore / empty ended on a worker thread
+            // the Recycle Bin restore / empty / delete ended on a worker thread
             WM_TRASH_DONE => {
-                let TrashDone { emptied, ok, bad } = *Box::from_raw(lp as *mut TrashDone);
+                let TrashDone { what, ok, bad } = *Box::from_raw(lp as *mut TrashDone);
                 reload(h); // what was restored / deleted is gone from the bin; the message must not be wiped by that load
-                let msg = match (emptied, bad > 0) {
-                    (true, true) => tf!("корзина очищена: {}, ошибок: {}", "emptied: {}, failed: {}", ja: "削除: {} 件、失敗: {} 件", pt: "esvaziados: {}, falhas: {}", zh: "已清空 {} 项，失败 {} 项", ok, bad),
-                    (true, false) => tf!("корзина очищена: {}", "emptied: {}", ja: "削除: {} 件", pt: "esvaziados: {}", zh: "已清空 {} 项", ok),
-                    (false, true) => tf!("восстановлено: {}, не удалось: {}", "restored: {}, failed: {}", ja: "復元: {} 件、失敗: {} 件", pt: "restaurados: {}, falhas: {}", zh: "已还原 {} 项，失败 {} 项", ok, bad),
-                    (false, false) => tf!("восстановлено: {}", "restored: {}", ja: "復元: {} 件", pt: "restaurados: {}", zh: "已还原 {} 项", ok),
+                let msg = match (what, bad > 0) {
+                    (TrashWhat::Emptied, true) => tf!("корзина очищена: {}, ошибок: {}", "emptied: {}, failed: {}", ja: "削除: {} 件、失敗: {} 件", pt: "esvaziados: {}, falhas: {}", zh: "已清空 {} 项，失败 {} 项", ok, bad),
+                    (TrashWhat::Emptied, false) => tf!("корзина очищена: {}", "emptied: {}", ja: "削除: {} 件", pt: "esvaziados: {}", zh: "已清空 {} 项", ok),
+                    (TrashWhat::Deleted, true) => tf!("удалено безвозвратно: {}, ошибок: {}", "deleted: {}, failed: {}", ja: "完全に削除: {} 件、失敗: {} 件", pt: "excluídos: {}, falhas: {}", zh: "已永久删除 {} 项，失败 {} 项", ok, bad),
+                    (TrashWhat::Deleted, false) => tf!("удалено безвозвратно: {}", "deleted: {}", ja: "完全に削除: {} 件", pt: "excluídos: {}", zh: "已永久删除 {} 项", ok),
+                    (TrashWhat::Restored, true) => tf!("восстановлено: {}, не удалось: {}", "restored: {}, failed: {}", ja: "復元: {} 件、失敗: {} 件", pt: "restaurados: {}, falhas: {}", zh: "已还原 {} 项，失败 {} 项", ok, bad),
+                    (TrashWhat::Restored, false) => tf!("восстановлено: {}", "restored: {}", ja: "復元: {} 件", pt: "restaurados: {}", zh: "已还原 {} 项", ok),
                 };
                 ui::notice(h, msg);
                 0

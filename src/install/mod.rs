@@ -71,6 +71,10 @@ pub(crate) fn ensure_data_defaults() {
     if !marker.exists() {
         let _ = fs::write(marker, "1\n");
     }
+    // These files are the user's settings and the settings window runs unelevated (UAC): created by this elevated install
+    // they inherited `Users: (RX)` and every change failed silently. Users get modify on the folder, by SID so the rule
+    // is the same on a Spanish/German/Japanese Windows.
+    let _ = run("icacls", &[d.to_str().unwrap_or("."), "/grant", "*S-1-5-32-545:(OI)(CI)M", "/T", "/C", "/Q"]);
 }
 
 /// Start Menu shortcut: search and the bar's Start panel list Start Menu shortcuts only.

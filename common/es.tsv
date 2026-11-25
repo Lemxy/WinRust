@@ -1561,3 +1561,6 @@ Pin an app to Start to choose its icon.	Fija una aplicación en Inicio para eleg
 The icon of an app pinned to Start: tap a row and choose an .ico, .exe or .dll file.	El icono de una aplicación fijada en Inicio: toca una fila y elige un archivo .ico, .exe o .dll.
 Start button	Botón Inicio
 Button icon	Icono del botón
+Delete permanently	Eliminar permanentemente
+Permanently delete the selected items ({})?	¿Eliminar permanentemente los elementos seleccionados ({})?
+Select the items to delete	Selecciona los elementos que quieres eliminar
