@@ -91,6 +91,8 @@ rs-notify --app "Download" --title "Downloading" --body "Windows.iso" --progress
 
 ![This PC](docs/screenshots/this-pc.png)
 
+![The Recycle Bin with real icons](docs/screenshots/recycle-bin.png)
+
 Tabs in the title bar, each one starting with a glyph for where it points; **This PC** with every drive as its own cell
 (letter tag + free space); a 48 px icon grid as the default view; a scrollable left pane with Quick access / This PC /
 Removable devices / Network / Recycle Bin; Quick access that can be pinned, unpinned and reordered by drag and drop; a
@@ -109,6 +111,8 @@ on the desktop as icons of their own, each with its own switch in Ajustes → Es
 same page hides all icons or makes them small. The icon list spans the whole virtual desktop, so icons can be dragged to
 any monitor (with a margin at the far edge), and a fresh layout puts This PC in the first cell and the Recycle Bin in the
 last column.
+
+![The desktop page in WinRust Settings](docs/screenshots/settings-desktop.png)
 
 ![The selection marquee](docs/screenshots/desktop-marquee.jpg)
 
@@ -288,12 +292,15 @@ Windows Search is not in the table because `rust-search` turns the WSearch servi
 
 ## Roadmap
 
-- **Multi-monitor**: bar per monitor, flyouts/toasts anchored to their monitor, per-monitor DPI, hotplug. Full review in
-  [tools/multimonitor-review.md](tools/multimonitor-review.md).
-- **Native notifications bridge**: Discord/Steam/Serein post WinRT toasts, which need Explorer's toast host; a small
-  package-identity listener (`UserNotificationListener`) forwarding them to `\\.\pipe\winrust-notify` is the next step.
-- **Wallpaper Engine**: how WE attaches to `Progman`/`WorkerW` and the plan to support it in a custom shell:
-  [tools/wallpaper-engine.md](tools/wallpaper-engine.md).
+Everything that was on the fork's roadmap is done:
+
+- **Multi-monitor**: bar per monitor (`bar-monitors=0,1`), flyouts and toasts anchored to their monitor, per-monitor
+  DPI, hotplug; desktop icons can live on any screen. Review in [tools/multimonitor-review.md](tools/multimonitor-review.md).
+- **Notifications**: our own named pipe, `rs-notify`, the bell with its unread dot, the notification centre and toasts.
+  A listener that forwards WinRT toasts from packaged apps is an optional extra, not a blocker.
+- **Wallpaper Engine**: WE paints behind the icons through the `Progman`/`WorkerW` hierarchy it looks for, with a
+  per-monitor host and `we` / `we-file` / `we-span` keys. Notes in [tools/wallpaper-engine.md](tools/wallpaper-engine.md)
+  and [tools/we-checklist.md](tools/we-checklist.md).
 
 ## Credits and license
 

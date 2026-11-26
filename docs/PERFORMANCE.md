@@ -46,6 +46,19 @@ RAM: `WorkingSet64` after 5 s of no work. CPU: `TotalProcessorTime` delta over t
 | Desktop hotkeys | 6.0 MB | 0.00 % |
 | **Shell total** | **107.4 MB** | **0.00 %** |
 
+## Desktop and the metrics widget
+
+`rs-metrics` is not launched by the script because it is off by default; these are 60 s of idle with every module on
+(card plus the temperature pill detached), same method as the table above.
+
+| Piece | RAM (private) | CPU (1 core) |
+|---|---:|---:|
+| `rs-metrics` (all modules) | 10.2 MB | 0.05 % |
+
+The desktop icon list lives in the existing `rust-explorer --desktop` process (21.5 MB, 0.00 % above). Its folder
+watcher is one blocked `ReadDirectoryChangesW` per Desktop folder (no polling), and the drive list is read on a worker
+with a 3 s deadline, so a removed USB cannot freeze the window.
+
 ## Cold start and idle cost of each app
 
 `CreateProcess` -> `MainWindowHandle != 0`, median of 3 runs; RAM and CPU 5 s after the window appeared. Each app is closed afterwards.
