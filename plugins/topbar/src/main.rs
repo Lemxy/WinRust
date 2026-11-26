@@ -1424,14 +1424,29 @@ unsafe fn load_pins() {
     }
 }
 
+/// The exe the File Explorer pin stands for (lower-case): its icon location, "%windir%\explorer.exe".
+fn file_explorer_exe() -> String {
+    expand_env(r"%windir%\explorer.exe").to_lowercase()
+}
+
+/// The windows of WinRust's file manager belong to the File Explorer pin when there is one: that pin is what the user
+/// clicks to open "Explorer" here, and only windows of explorer.exe matched it, so its button never showed them (a
+/// minimized window looked gone and the click started a second one). Without such a pin they keep their own exe's button.
+fn as_pinned_exe(exe: &str, explorer: &str, explorer_pinned: bool) -> String {
+    if explorer_pinned && exe.ends_with(r"\rust-explorer\rust-explorer.exe") { explorer.to_string() } else { exe.to_string() }
+}
+
 fn refresh_buttons() {
     let mut wins: Vec<HWND> = Vec::new();
     unsafe { EnumWindows(Some(collect), &mut wins as *mut _ as LPARAM) };
     let mut btns = vec![Btn { pin: None, wins: vec![], icon: null_mut() }];
     PINS.with_borrow(|pins| btns.extend((0..pins.len()).map(|i| Btn { pin: Some(i), wins: vec![], icon: null_mut() })));
     let mut loose: Vec<HWND> = Vec::new();
+    let explorer = file_explorer_exe();
+    let explorer_pinned = PINS.with_borrow(|p| p.iter().any(|p| p.target == explorer));
     for w in wins {
         let exe = unsafe { exe_of(w) };
+        let exe = as_pinned_exe(&exe, &explorer, explorer_pinned);
         // pins of one exe (two browser profiles, #132) tell their windows apart by AppUserModelID; a pin or window without one
         // takes any window of its exe
         let pin = PINS.with_borrow(|p| {
@@ -2574,6 +2589,15 @@ unsafe fn keys(vks: &[u16]) {
     };
     vks.iter().for_each(|&v| send(v, false));
     vks.iter().rev().for_each(|&v| send(v, true));
+}
+
+/// Releases `vk` alone: a swallowed key-up handed back to the shell as a synthetic one (see `run::kb_hook`).
+unsafe fn key_up(vk: u16) {
+    let mut i: INPUT = zeroed();
+    i.r#type = INPUT_KEYBOARD;
+    i.Anonymous.ki.wVk = vk;
+    i.Anonymous.ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, &i, size_of::<INPUT>() as i32);
 }
 
 /// WM_CLOSE. A window of an elevated app ignores it from our normal-rights process (UIPI), so then
@@ -3919,6 +3943,15 @@ mod tests {
         assert!(at(-1, true) == Link::Cable);
         assert!(at(-1, false) == Link::Offline); // nothing at all: the crossed-out wifi icon
         assert_eq!((arcs_lit(0), arcs_lit(40), arcs_lit(100)), (1, 2, 3));
+    }
+
+    #[test]
+    fn file_manager_windows_belong_to_the_file_explorer_pin() {
+        use super::as_pinned_exe;
+        let (rx, ex) = (r"c:\program files\rust-explorer\rust-explorer.exe", r"c:\windows\explorer.exe");
+        assert_eq!(as_pinned_exe(rx, ex, true), ex); // the pin the user clicks gets the windows
+        assert_eq!(as_pinned_exe(rx, ex, false), rx); // no such pin: the file manager's own button keeps them
+        assert_eq!(as_pinned_exe(r"c:\tools\other.exe", ex, true), r"c:\tools\other.exe");
     }
 
     #[test]

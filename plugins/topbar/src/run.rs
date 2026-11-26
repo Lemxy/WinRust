@@ -520,7 +520,14 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
                 if down {
                     WIN_ALONE.store(true, Relaxed);
                 } else if WIN_ALONE.swap(false, Relaxed) {
-                    keys(&[0xE8]); // an unassigned key between press and release: Windows no longer opens its own Start
+                    // A lone Win *release* is what opens Windows' own Start. An E8 sent from here used to be queued behind
+                    // the release already being dispatched, so the shell sometimes saw no other key in time and opened its
+                    // Start on top of ours. Swallow the real release and hand the shell an E8 and then a synthetic Win-up:
+                    // it sees a key between down and up (so no Start), and the synthetic up still clears the Win key for
+                    // everything else (our own hook skips it: injected). A Win+key chord never reaches here: the key down
+                    // clears WIN_ALONE before the release.
+                    keys(&[0xE8]);
+                    crate::key_up(k.vkCode as u16);
                     PostMessageW(BAR.load(Relaxed) as HWND, WIN_START, 0, 0);
                 }
             } else if down {
