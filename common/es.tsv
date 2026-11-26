@@ -1588,3 +1588,15 @@ Two columns	Dos columnas
 Reset position	Restablecer posición
 Temp	Temp
 free	libres
+Widgets	Widgets
+Desktop metrics: modules and behavior	Métricas del escritorio: módulos y comportamiento
+Desktop widgets	Widgets del escritorio
+System metrics	Métricas del sistema
+Modules	Módulos
+Disks	Discos
+Disk I/O	Disco E/S
+Temperatures	Temperaturas
+Always on top	Siempre encima de las ventanas
+Open the widget's settings	Abrir la configuración del widget
+Restart the widget	Reiniciar el widget
+The first widget; more will live here. These options write metrics.txt, which the widget re-reads every second.	El primer widget; aquí vendrán más. Estas opciones escriben metrics.txt, que el widget relee cada segundo.

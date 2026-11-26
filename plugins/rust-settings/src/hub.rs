@@ -47,7 +47,8 @@ pub(crate) const START: u8 = 3;
 pub(crate) const LANG: u8 = 4;
 pub(crate) const APPS: u8 = 5;
 pub(crate) const ADV: u8 = 6;
-const CATS: usize = 7;
+pub(crate) const WIDGETS: u8 = 7;
+const CATS: usize = 8;
 
 thread_local! {
     static DPI: Cell<i32> = const { Cell::new(96) };
@@ -110,6 +111,11 @@ enum Op {
     ResetAsk,
     ResetAll,
     ResetCancel,
+    WidgetShow,
+    WidgetModule(u8),
+    WidgetTopmost,
+    WidgetRestart,
+    WidgetConfig,
     Close,
 }
 
@@ -156,8 +162,8 @@ fn with_dot(label: &str, hint: &str, dot: u32, on: bool, op: Op, del: Op) -> Row
 }
 
 fn cat_icon(i: u8) -> &'static str {
-    // Segoe MDL2 Assets: colour, monitor, taskbar, Start, globe, apps, gear
-    ["\u{E790}", "\u{E7F4}", "\u{E8A1}", "\u{E700}", "\u{E774}", "\u{E71D}", "\u{E713}"][(i as usize).min(CATS - 1)]
+    // Segoe MDL2 Assets: colour, monitor, taskbar, Start, globe, apps, gear, gauge
+    ["\u{E790}", "\u{E7F4}", "\u{E8A1}", "\u{E700}", "\u{E774}", "\u{E71D}", "\u{E713}", "\u{E9D9}"][(i as usize).min(CATS - 1)]
 }
 
 fn cat_title(i: u8) -> String {
@@ -168,7 +174,8 @@ fn cat_title(i: u8) -> String {
         START => t!("Меню «Пуск»", "Start menu", ja: "スタート メニュー", pt: "Menu Iniciar", zh: "开始菜单"),
         LANG => t!("Язык", "Language", ja: "言語", pt: "Idioma", zh: "语言"),
         APPS => t!("Приложения", "Apps", ja: "アプリ", pt: "Aplicativos", zh: "应用"),
-        _ => t!("Дополнительно", "Advanced", ja: "詳細設定", pt: "Avançado", zh: "高级"),
+        ADV => t!("Дополнительно", "Advanced", ja: "詳細設定", pt: "Avançado", zh: "高级"),
+        _ => t!("Виджеты", "Widgets", ja: "ウィジェット", pt: "Widgets", zh: "小组件"),
     }
     .to_string()
 }
@@ -181,7 +188,8 @@ fn cat_sub(i: u8) -> String {
         START => t!("Положение, стиль, поиск и ярлыки", "Position, style, search and shortcuts", ja: "位置、スタイル、検索、ショートカット", pt: "Posição, estilo, pesquisa e atalhos", zh: "位置、样式、搜索与快捷方式"),
         LANG => t!("Один выбор для всех программ", "One choice for every app", ja: "すべてのアプリで 1 つの設定", pt: "Uma escolha para todos os aplicativos", zh: "所有应用共用一个选择"),
         APPS => t!("Свои окна настроек", "Each app's own settings window", ja: "各アプリの設定ウィンドウ", pt: "A janela de ajustes de cada aplicativo", zh: "各应用自己的设置窗口"),
-        _ => t!("Сброс, версия и файлы", "Reset, version and files", ja: "リセット、バージョン、ファイル", pt: "Restaurar, versão e arquivos", zh: "重置、版本与文件"),
+        ADV => t!("Сброс, версия и файлы", "Reset, version and files", ja: "リセット、バージョン、ファイル", pt: "Restaurar, versão e arquivos", zh: "重置、版本与文件"),
+        _ => t!("Метрики на рабочем столе: модули и поведение", "Desktop metrics: modules and behavior", ja: "デスクトップのメトリクス: モジュールと動作", pt: "Métricas na área de trabalho: módulos e comportamento", zh: "桌面指标：模块与行为"),
     }
     .to_string()
 }
@@ -570,6 +578,35 @@ fn rows(cat: u8) -> Vec<Row> {
             v.push(info(r"%ProgramData%\WinRust\lang.txt"));
             v.push(info(r"%APPDATA%\WinRust\desktop-icons-hidden.txt"));
             v.push(action(t!("Закрыть", "Close", ja: "閉じる", pt: "Fechar", zh: "关闭"), "Esc", Op::Close));
+        }
+        WIDGETS => {
+            v.push(head(t!("Виджеты рабочего стола", "Desktop widgets", ja: "デスクトップ ウィジェット", pt: "Widgets da área de trabalho", zh: "桌面小组件")));
+            v.push(check(t!("Метрики системы", "System metrics", ja: "システム メトリクス", pt: "Métricas do sistema", zh: "系统指标"), crate::widgets::running(), Op::WidgetShow));
+            v.push(info(t!(
+                "Первый виджет; следующие появятся здесь. Эти настройки пишут metrics.txt, виджет читает его каждую секунду.",
+                "The first widget; more will live here. These options write metrics.txt, which the widget re-reads every second.",
+                ja: "最初のウィジェットです。今後ここに増えます。設定は metrics.txt に書き込まれ、ウィジェットが毎秒読み直します。",
+                pt: "O primeiro widget; mais virão aqui. Estas opções gravam metrics.txt, que o widget relê a cada segundo.",
+                zh: "第一个小组件，以后会在这里增加。这些选项写入 metrics.txt，小组件每秒重新读取。"
+            )));
+            v.push(head(t!("Модули", "Modules", ja: "モジュール", pt: "Módulos", zh: "模块")));
+            let names = [
+                t!("Процессор", "CPU", ja: "CPU", pt: "CPU", zh: "CPU"),
+                t!("Видеокарта", "GPU", ja: "GPU", pt: "GPU", zh: "GPU"),
+                t!("Память", "RAM", ja: "メモリ", pt: "Memória", zh: "内存"),
+                t!("Диски", "Disks", ja: "ディスク", pt: "Discos", zh: "磁盘"),
+                t!("Диск: чтение/запись", "Disk I/O", ja: "ディスク I/O", pt: "Disco E/S", zh: "磁盘 I/O"),
+                t!("Сеть", "Network", ja: "ネットワーク", pt: "Rede", zh: "网络"),
+                t!("Температуры", "Temperatures", ja: "温度", pt: "Temperaturas", zh: "温度"),
+                t!("Время работы", "Uptime", ja: "稼働時間", pt: "Tempo de atividade", zh: "运行时间"),
+            ];
+            for (i, name) in names.iter().enumerate() {
+                v.push(check(name, crate::widgets::flag(crate::widgets::MODS[i], true), Op::WidgetModule(i as u8)));
+            }
+            v.push(head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为")));
+            v.push(check(t!("Поверх всех окон", "Always on top", ja: "常に最前面", pt: "Sempre na frente", zh: "始终置顶"), crate::widgets::flag("topmost", false), Op::WidgetTopmost));
+            v.push(action(t!("Открыть настройки виджета", "Open the widget's settings", ja: "ウィジェットの設定を開く", pt: "Abrir as configurações do widget", zh: "打开小组件设置"), "metrics.txt", Op::WidgetConfig));
+            v.push(action(t!("Перезапустить виджет", "Restart the widget", ja: "ウィジェットを再起動", pt: "Reiniciar o widget", zh: "重新启动小组件"), "", Op::WidgetRestart));
         }
         _ => {}
     }
@@ -1067,6 +1104,17 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             // this window takes the new alpha at once; Explorer and Control Panel read it when they open
             winrust_common::winfx::translucent(h, a);
         }
+        Op::WidgetShow => crate::widgets::toggle(),
+        Op::WidgetModule(i) => {
+            let key = crate::widgets::MODS[(i as usize).min(crate::widgets::MODS.len() - 1)];
+            crate::widgets::set(key, if crate::widgets::flag(key, true) { "0" } else { "1" });
+        }
+        Op::WidgetTopmost => {
+            let on = crate::widgets::flag("topmost", false);
+            crate::widgets::set("topmost", if on { "0" } else { "1" });
+        }
+        Op::WidgetRestart => crate::widgets::restart(),
+        Op::WidgetConfig => crate::widgets::open_config(),
         Op::MenuRadius(r) => lk::menu_radius_set(r),
         Op::WinBlur => {
             lk::win_blur_set(!lk::win_blur());
@@ -1380,6 +1428,7 @@ fn page_index(name: &str) -> u8 {
         "inicio" | "start" => START,
         "idioma" | "language" | "lang" => LANG,
         "apps" | "aplicaciones" => APPS,
+        "widgets" | "widget" | "wid" => WIDGETS,
         "avanzado" | "advanced" => ADV,
         _ => LOOK,
     }

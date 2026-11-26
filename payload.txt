@@ -14,6 +14,7 @@ wiztree.exe = target/release/wiztree.exe
 photoview.exe = target/release/photoview.exe
 rs-shot.exe = target/release/rs-shot.exe
 rs-clip.exe = target/release/rs-clip.exe
+rs-metrics.exe = target/release/rs-metrics.exe
 rust-settings.exe = target/release/rust-settings.exe
 rs-calc.exe = target/release/rs-calc.exe
 rust-notepad.exe = target/release/rust-notepad.exe

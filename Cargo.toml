@@ -49,6 +49,7 @@ members = [
     "plugins/purge",
     "plugins/rust-settings",
     "plugins/rs-calc",
+    "plugins/rs-metrics",
     "plugins/rust-notepad",
     "plugins/rust-control",
     "tools/winrust-sign",

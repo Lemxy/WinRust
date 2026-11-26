@@ -261,6 +261,10 @@ fn run_shell() {
     // Win+V / Win+.: its own resident process (a second copy exits at once)
     let clip = find_exe("rs-clip.exe");
     if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
+    // the desktop metrics widget, in its own Program Files folder (not next to the shell)
+    let pf = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
+    let metrics = [pf.join(r"rs-metrics\rs-metrics.exe"), dir().join("rs-metrics.exe")].into_iter().find(|p| p.exists());
+    if let Some(m) = metrics { log(&format!("rs-metrics spawn -> {:?}", quiet(&m).spawn().map(|_| ()))); }
     let desktop = dir().join("rust-explorer.exe");
     // the rust-explorer desktop: class "Progman", title "Program Manager" like Explorer's, marked with a window property
     // (winrust_common::desktop::MARKER) so this supervisor can still tell it from a real Explorer desktop
@@ -398,6 +402,10 @@ fn overlay() {
     if hk.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hk).spawn().map(|_| ()))); }
     let clip = find_exe("rs-clip.exe");
     if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
+    // the desktop metrics widget, in its own Program Files folder
+    let pf = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
+    let metrics = [pf.join(r"rs-metrics\rs-metrics.exe"), dir().join("rs-metrics.exe")].into_iter().find(|p| p.exists());
+    if let Some(m) = metrics { log(&format!("rs-metrics spawn -> {:?}", quiet(&m).spawn().map(|_| ()))); }
     let _ = wp.join(); // the BMP conversion (only on a fresh install or a new wallpaper) finishes before the desktop paints it
     let desktop = dir().join("rust-explorer.exe");
     let up = || winrust_common::desktop::is_up();

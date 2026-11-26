@@ -24,6 +24,7 @@ mod net;
 mod power;
 mod sys;
 mod wifi;
+mod widgets;
 mod wu;
 use std::{
     cell::RefCell,

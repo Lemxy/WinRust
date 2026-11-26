@@ -548,6 +548,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-metrics"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "windows-sys",
+ "winrust-common",
+]
+
+[[package]]
 name = "rs-notify"
 version = "0.1.0"
 dependencies = [

@@ -42,7 +42,7 @@ fn targets(name: &str) -> Vec<PathBuf> {
         "rust-explorer.exe" | "rs-shell.exe" | "rs-clip.exe" => vec![rx_dir().join(name)],
         "rust-settings.exe" => vec![st_dir().join(name)],
         "rust-control.exe" => vec![ctrl_dir().join(name)],
-        "wiztree.exe" | "photoview.exe" | "rs-calc.exe" | "purge.exe" => vec![pf.join(name.trim_end_matches(".exe")).join(name)],
+        "wiztree.exe" | "photoview.exe" | "rs-calc.exe" | "purge.exe" | "rs-metrics.exe" => vec![pf.join(name.trim_end_matches(".exe")).join(name)],
         _ => vec![],
     }
 }
