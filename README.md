@@ -138,6 +138,11 @@ Half the size of the Windows one, smaller fonts, Mica-style frost and opaque row
 - **The notification centre is reachable**: the bell opens it (right click: Windows' notification settings).
 - **Notifications** with a named pipe and `rs-notify`, a bell with an unread dot and a notification centre.
 - **Control Panel** in Rust (new crate, `plugins/rust-control`).
+- **A desktop metrics widget of our own** (`plugins/rs-metrics`): CPU, GPU, RAM, disks, disk I/O, network, temperatures
+  and uptime, each one on/off and with bar / ring / text styles, attached to the desktop under the icons and configured
+  from Ajustes → Widgets (or `%ProgramData%\WinRust\metrics.txt`); about 0.1 % of a core and 9 MB.
+- **Desktop labels drawn by hand** (white text, black 1 px drop shadow) instead of the themed glow that smeared them over
+  light wallpapers; the icons also refresh when either Desktop folder changes (`ReadDirectoryChangesW`, 250 ms debounce).
 
 ## Replacing Windows Explorer
 

@@ -581,13 +581,13 @@ fn rows(cat: u8) -> Vec<Row> {
         }
         WIDGETS => {
             v.push(head(t!("Виджеты рабочего стола", "Desktop widgets", ja: "デスクトップ ウィジェット", pt: "Widgets da área de trabalho", zh: "桌面小组件")));
-            v.push(check(t!("Метрики системы", "System metrics", ja: "システム メトリクス", pt: "Métricas do sistema", zh: "系统指标"), crate::widgets::running(), Op::WidgetShow));
+            v.push(check(t!("Показывать метрики системы", "Show system metrics", ja: "システム メトリクスを表示", pt: "Mostrar métricas do sistema", zh: "显示系统指标"), crate::widgets::enabled(), Op::WidgetShow));
             v.push(info(t!(
-                "Первый виджет; следующие появятся здесь. Эти настройки пишут metrics.txt, виджет читает его каждую секунду.",
-                "The first widget; more will live here. These options write metrics.txt, which the widget re-reads every second.",
-                ja: "最初のウィジェットです。今後ここに増えます。設定は metrics.txt に書き込まれ、ウィジェットが毎秒読み直します。",
-                pt: "O primeiro widget; mais virão aqui. Estas opções gravam metrics.txt, que o widget relê a cada segundo.",
-                zh: "第一个小组件，以后会在这里增加。这些选项写入 metrics.txt，小组件每秒重新读取。"
+                "Первый в списке: у каждого виджета будет свой выключатель. Настройки ниже пишут metrics.txt, виджет читает его каждую секунду.",
+                "First in the list: each widget gets its own on/off switch. The options below write metrics.txt, which the widget re-reads every second.",
+                ja: "一覧の最初です。各ウィジェットに専用のオン/オフが付きます。下の設定は metrics.txt に書き込まれ、ウィジェットが毎秒読み直します。",
+                pt: "O primeiro da lista: cada widget terá seu próprio interruptor. As opções abaixo gravam metrics.txt, que o widget relê a cada segundo.",
+                zh: "列表中的第一个：每个小组件都会有独立开关。下面的选项写入 metrics.txt，小组件每秒重新读取。"
             )));
             v.push(head(t!("Модули", "Modules", ja: "モジュール", pt: "Módulos", zh: "模块")));
             let names = [
@@ -1104,7 +1104,7 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             // this window takes the new alpha at once; Explorer and Control Panel read it when they open
             winrust_common::winfx::translucent(h, a);
         }
-        Op::WidgetShow => crate::widgets::toggle(),
+        Op::WidgetShow => crate::widgets::set_enabled(!crate::widgets::enabled()),
         Op::WidgetModule(i) => {
             let key = crate::widgets::MODS[(i as usize).min(crate::widgets::MODS.len() - 1)];
             crate::widgets::set(key, if crate::widgets::flag(key, true) { "0" } else { "1" });

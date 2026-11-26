@@ -252,7 +252,8 @@ unsafe fn build_widget(c: &Config) -> HWND {
     }
     WIDGET.store(hwnd as isize, Relaxed);
     place(hwnd, c);
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    // enabled=0 in metrics.txt (the Widgets page's on/off) keeps the window built but hidden
+    ShowWindow(hwnd, if c.enabled { SW_SHOWNOACTIVATE } else { SW_HIDE });
     SetTimer(hwnd, 1, 1000, None);
     paint(hwnd);
     hwnd
@@ -262,6 +263,9 @@ unsafe fn build_widget(c: &Config) -> HWND {
 
 fn paint(hwnd: HWND) {
     let cfg = snapshot_cfg();
+    if !cfg.enabled {
+        return; // off: nothing to draw (the window is hidden; the sampler keeps the last values warm)
+    }
     let smp = snapshot_sample();
     let scale = scale_of(hwnd);
     let plan = render::build(&cfg, &smp, scale);
@@ -355,6 +359,7 @@ fn reload_config(hwnd: HWND, last: &mut Option<(u64, u64)>) -> bool {
     *last = now;
     let fresh = config::read();
     let (x, y) = (fresh.x, fresh.y);
+    let (was_on, on) = (snapshot_cfg().enabled, fresh.enabled);
     let want_child = !fresh.topmost;
     let is_child = unsafe { !GetParent(hwnd).is_null() };
     let drag = UI.with(|u| u.borrow().drag.is_some());
@@ -364,7 +369,12 @@ fn reload_config(hwnd: HWND, last: &mut Option<(u64, u64)>) -> bool {
         *c = fresh;
     }
     unsafe {
-        if want_child != is_child {
+        if on != was_on {
+            ShowWindow(hwnd, if on { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            if on {
+                paint(hwnd); // show the current values at once
+            }
+        } else if want_child != is_child {
             place(hwnd, &snapshot_cfg());
         } else if !drag {
             move_screen(hwnd, x, y);

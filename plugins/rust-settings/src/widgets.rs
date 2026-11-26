@@ -76,6 +76,20 @@ pub fn running() -> bool {
     !hwnd().is_null()
 }
 
+/// The Widgets page's on/off (`enabled` in metrics.txt). Hidden but alive when off: turning it back on is instant, and
+/// the state survives a sign-in because rs-shell only starts the process.
+pub fn enabled() -> bool {
+    flag("enabled", true)
+}
+
+/// Writes the switch; turning it on also starts the process when nothing is running (first launch after an update).
+pub fn set_enabled(on: bool) {
+    set("enabled", if on { "1" } else { "0" });
+    if on && !running() {
+        launch();
+    }
+}
+
 fn exe() -> PathBuf {
     PathBuf::from(env::var_os("ProgramFiles").unwrap_or_default()).join("rs-metrics").join("rs-metrics.exe")
 }

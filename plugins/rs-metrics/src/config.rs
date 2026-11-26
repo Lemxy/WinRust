@@ -82,6 +82,8 @@ pub struct Config {
     pub shadow: bool,
     /// 0 = live on the desktop (child of the WinRust desktop window), 1 = stay above every window.
     pub topmost: bool,
+    /// The Widgets page's on/off: hidden but still running when false, so turning it back on is instant.
+    pub enabled: bool,
     /// Every pair read, so a save keeps keys this version does not know.
     map: HashMap<String, String>,
 }
@@ -176,6 +178,7 @@ fn defaults() -> Config {
         snap: true,
         shadow: true,
         topmost: false,
+        enabled: true,
         map: HashMap::new(),
     }
 }
@@ -214,6 +217,7 @@ pub fn read() -> Config {
     c.snap = flag(m, "snap", c.snap);
     c.shadow = flag(m, "shadow", c.shadow);
     c.topmost = flag(m, "topmost", c.topmost);
+    c.enabled = flag(m, "enabled", c.enabled);
     c
 }
 
@@ -242,6 +246,7 @@ impl Config {
             ("snap", i32::from(self.snap).to_string()),
             ("shadow", i32::from(self.shadow).to_string()),
             ("topmost", i32::from(self.topmost).to_string()),
+        ("enabled", i32::from(self.enabled).to_string()),
         ] {
             v.push((k.to_string(), val));
         }
@@ -261,7 +266,8 @@ impl Config {
              # modules: cpu gpu ram disk io net temp uptime  (1 = on, 0 = off)\n\
              # styles: bar ring text spark pill   (style-cpu=ring)\n\
              # edit a label with label-cpu=CPU, the accent with accent=#0A84FF\n\
-             # topmost=0 lives on the desktop (behind the app windows); topmost=1 stays above them\n",
+             # topmost=0 lives on the desktop (behind the app windows); topmost=1 stays above them\n\
+             # enabled=1 shows the widget; enabled=0 hides it (it keeps running, so it comes back instantly)\n",
         );
         for k in keys {
             text.push_str(k);
