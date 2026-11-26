@@ -511,6 +511,7 @@ static NAV: AtomicBool = AtomicBool::new(false); // loading from the back / forw
 const WM_NAV: u32 = WM_APP + 3; // wp: 1 back, 2 forward, 3 properties, 4 up (sent from the message loop for Alt+key)
 const WM_JOB: u32 = WM_APP + 5; // jobs.rs worker finished: wp = Box<Option<String>> (the error, if any)
 const WM_TRASH: u32 = WM_APP + 7; // Recycle Bin scan finished: wp = Box<Vec<Row>>
+const WM_DESK_CHANGED: u32 = WM_APP + 13; // a Desktop folder changed on disk: debounce, then reload the icons
 const WM_DELETED: u32 = WM_APP + 9; // a shell file operation (delete / copy / move) ended on a worker: lp = Box<sh::FileOpDone>
 const WM_TRASH_DONE: u32 = WM_APP + 10; // Recycle Bin restore / empty ended on a worker: lp = Box<TrashDone>
 
@@ -2080,6 +2081,33 @@ mod desk {
         super::marquee::hide();
     }
 
+    /// Refreshes the icons when either Desktop folder changes (an app saving, renaming or deleting a file there): one
+    /// blocked `ReadDirectoryChangesW` per folder, no polling and no extra timers. The burst a file operation produces
+    /// is coalesced by the 250 ms timer in the window procedure.
+    pub unsafe fn watch(h: HWND) {
+        use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW};
+        for dir in super::sh::desktop_dirs() {
+            let hwnd = h as isize;
+            std::thread::spawn(move || unsafe {
+                let path = w(&dir.to_string_lossy());
+                let f = CreateFileW(path.as_ptr(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, std::ptr::null_mut());
+                if f == INVALID_HANDLE_VALUE {
+                    return;
+                }
+                let mut buf = [0u8; 4096];
+                loop {
+                    let mut got = 0u32;
+                    let ok = ReadDirectoryChangesW(f, buf.as_mut_ptr() as _, buf.len() as u32, 0, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE, &mut got, std::ptr::null_mut(), None);
+                    if ok == 0 {
+                        break;
+                    }
+                    PostMessageW(hwnd as _, super::WM_DESK_CHANGED, 0, 0);
+                }
+                CloseHandle(f);
+            });
+        }
+    }
+
     /// The click catcher only exists while the icon list is click-through (live wallpaper): presses on empty desktop
     /// start our marquee (`marquee`), which draws over any monitor and selects the icons it covers on release.
     pub unsafe extern "system" fn catcher_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -2532,7 +2560,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     }
                     apply_icon_size(list);
                     // transparent background (the desktop paints it) and shadowed labels, readable on light wallpapers too
-                    let ex = LVS_EX_TRANSPARENTBKGND | 0x0080_0000; // LVS_EX_TRANSPARENTSHADOWTEXT
+                    let ex = LVS_EX_TRANSPARENTBKGND; // the labels are painted by hand (ui::desk_draw): no themed light glow
                     put(list, LVM_SETEXTENDEDLISTVIEWSTYLE, ex as usize, ex as isize);
                     for msg in [LVM_SETBKCOLOR, LVM_SETTEXTBKCOLOR] { put(list, msg, 0, CLR_NONE); }
                     put(list, LVM_SETTEXTCOLOR, 0, 0x00FF_FFFF);
@@ -2543,6 +2571,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     CreateWindowExW(0, w("SHELLDLL_DefView").as_ptr(), ptr::null(), WS_CHILD, 0, 0, 0, 0, h, 0 as _, inst, ptr::null());
                     desk::hosts_sync(h); // one wallpaper surface per monitor, under the icon list
                     desk::catcher_sync(h); // invisible click catcher over the live wallpaper
+                    desk::watch(h); // a file saved / renamed / deleted on the Desktop reloads the icons
                     SetTimer(h, 7, 2000, None); // live wallpaper on / off (desk::check_live), WE bridge (we::tick)
                 } else {
                     let himl = ImageList_Create(THUMB, THUMB, ILC_COLOR32, 64, 64);
@@ -2699,7 +2728,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 let nm = &*(lp as *const NMHDR);
                 let list = ST.with_borrow(|st| st.list);
                 match nm.code {
-                    NM_CUSTOMDRAW if nm.hwndFrom == list && !desk() => return ui::list_draw(lp), // the rows are painted by hand
+                    NM_CUSTOMDRAW if nm.hwndFrom == list => return if desk() { ui::desk_draw(lp) } else { ui::list_draw(lp) }, // painted by hand
                     LVN_ITEMCHANGED | LVN_ODSTATECHANGED => ui::status_dirty(h), // selection count in the status line
                     // typing a letter jumps to the next row that starts with it (#81): a virtual list asks us to search
                     LVN_ODFINDITEMW if nm.hwndFrom == list => {
@@ -2981,6 +3010,16 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 let native = desk::workerw_live(); // WE's own hook first: then no pop-outs on top of it
                 we::tick(h, list, &desk::hosts(), native);
                 desk::check_live(list);
+                0
+            }
+            // the Desktop changed: coalesce the burst a file operation produces, then load the icons again
+            WM_DESK_CHANGED if desk() => {
+                SetTimer(h, 9, 250, None);
+                0
+            }
+            WM_TIMER if desk() && wp == 9 => {
+                KillTimer(h, 9);
+                reload(h);
                 0
             }
             // logoff / restart: WE windows are children of ours and must not outlive the hosts they were put in

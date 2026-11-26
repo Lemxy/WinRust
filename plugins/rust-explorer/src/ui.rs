@@ -447,6 +447,63 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
     }
 }
 
+/// The desktop icons, painted by hand. The control's own label shadow is a light *glow* on a colour-keyed (live
+/// wallpaper) list, which smeared the white labels over light wallpapers; here the text gets a black 1 px drop shadow
+/// and the selection a plain dark pill (a translucent one would blend with the colour key, not with the wallpaper).
+pub unsafe fn desk_draw(lp: LPARAM) -> LRESULT {
+    let cd = &*(lp as *const NMLVCUSTOMDRAW);
+    let (list, dc) = (cd.nmcd.hdr.hwndFrom, cd.nmcd.hdc);
+    match cd.nmcd.dwDrawStage {
+        CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as isize,
+        CDDS_ITEMPREPAINT => {
+            let i = cd.nmcd.dwItemSpec;
+            let mut text = [0u16; 512];
+            let mut it: LVITEMW = std::mem::zeroed();
+            it.mask = LVIF_TEXT | LVIF_IMAGE;
+            it.iItem = i as i32;
+            it.pszText = text.as_mut_ptr();
+            it.cchTextMax = text.len() as i32;
+            SendMessageW(list, LVM_GETITEMW, i, &mut it as *mut _ as isize);
+            let mut r = RECT { left: LVIR_BOUNDS as i32, ..std::mem::zeroed() };
+            if SendMessageW(list, LVM_GETITEMRECT, i, &mut r as *mut _ as isize) == 0 {
+                return CDRF_DODEFAULT as isize;
+            }
+            let sel = SendMessageW(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
+            if sel {
+                fill(dc, rc(r.left + sc(3), r.top + sc(2), r.right - sc(3), r.bottom - sc(2)), 0x0040_4040, sc(8));
+            }
+            let himl = SendMessageW(list, LVM_GETIMAGELIST, LVSIL_NORMAL as usize, 0) as HIMAGELIST;
+            let (mut iw, mut ih) = (0i32, 0i32);
+            if himl != 0 {
+                ImageList_GetIconSize(himl, &mut iw, &mut ih);
+                if it.iImage >= 0 {
+                    let x = (r.left + r.right - iw) / 2;
+                    let y = r.top + sc(4);
+                    ImageList_Draw(himl, it.iImage, dc, x, y, ILD_TRANSPARENT);
+                }
+            }
+            let n = text.iter().position(|c| *c == 0).unwrap_or(text.len());
+            let name = String::from_utf16_lossy(&text[..n]);
+            let mut lr = rc(r.left + sc(3), r.top + sc(4) + ih + sc(3), r.right - sc(3), r.bottom - sc(2));
+            let of = SelectObject(dc, SendMessageW(list, WM_GETFONT, 0, 0) as _);
+            SetBkMode(dc, TRANSPARENT as i32);
+            let flags = DT_CENTER | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS;
+            SetTextColor(dc, 0x0000_0000);
+            let mut sh = lr;
+            sh.left += 1;
+            sh.top += 1;
+            sh.right += 1;
+            sh.bottom += 1;
+            DrawTextW(dc, w(&name).as_ptr(), -1, &mut sh, flags);
+            SetTextColor(dc, 0x00FF_FFFF);
+            DrawTextW(dc, w(&name).as_ptr(), -1, &mut lr, flags);
+            SelectObject(dc, of);
+            CDRF_SKIPDEFAULT as isize
+        }
+        _ => CDRF_DODEFAULT as isize,
+    }
+}
+
 /// Name column takes what the other three leave, so the list never needs a horizontal scrollbar.
 pub unsafe fn fit_columns(list: HWND) {
     let mut cr: RECT = std::mem::zeroed();
