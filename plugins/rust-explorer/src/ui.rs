@@ -18,6 +18,7 @@ pub const CHROME_H: i32 = 88;
 pub const STATUS_H: i32 = 26;
 pub const WM_UI: u32 = WM_APP + 4; // chrome -> window: wp = action (see Hit), lp = tab index
 pub const WM_NET: u32 = WM_APP + 8; // network worker -> window: lp = Box<Vec<(title, UNC)>>
+pub const WM_DRIVES: u32 = WM_APP + 12; // drive worker -> window: the cache is in place, rebuild from it
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported under the enabled features
 
 // what the pointer is over / what a click does
@@ -245,8 +246,9 @@ unsafe fn drive_cell(cd: &NMLVCUSTOMDRAW) -> bool {
     let focus = GetFocus() == list;
     if sel || hot {
         let bg = match (sel, focus) {
-            (true, true) => mix(listbg(), pal().accent, if hot { 0.26 } else { 0.20 }),
-            (true, false) => mix(listbg(), pal().text, 0.10),
+            // a whitish wash, like the selection marquee (the accent blue is reserved for actions)
+            (true, true) => mix(listbg(), pal().text, if hot { 0.30 } else { 0.24 }),
+            (true, false) => mix(listbg(), pal().text, 0.14),
             _ => mix(listbg(), pal().text, 0.055),
         };
         fill(dc, rc(rb.left + sc(2), rb.top + sc(2), rb.right - sc(2), rb.bottom - sc(2)), bg, sc(10));
@@ -382,13 +384,14 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
             let focus = GetFocus() == list;
             let pill = rc(sc(6), r.top + sc(2), cr.right - sc(6), r.bottom - sc(2));
             let bg = match (sel, focus) {
-                (true, true) => mix(listbg(), pal().accent, if hot { 0.26 } else { 0.20 }),
-                (true, false) => mix(listbg(), pal().text, 0.10),
+                // a whitish wash, like the selection marquee (the accent is reserved for actions and markers)
+                (true, true) => mix(listbg(), pal().text, if hot { 0.30 } else { 0.24 }),
+                (true, false) => mix(listbg(), pal().text, 0.14),
                 _ if hot => mix(listbg(), pal().text, 0.055),
                 _ => listbg(),
             };
             if bg != listbg() { fill(dc, pill, bg, sc(10)); }
-            if sel { fill(dc, rc(pill.left, pill.top + sc(8), pill.left + sc(3), pill.bottom - sc(8)), if focus { pal().accent } else { pal().dim }, sc(3)); }
+            if sel { fill(dc, rc(pill.left, pill.top + sc(8), pill.left + sc(3), pill.bottom - sc(8)), if focus { pal().text } else { pal().dim }, sc(3)); }
             // columns from the header widths (left of the row = minus the horizontal scroll)
             let cw: Vec<i32> = (0..4).map(|k| SendMessageW(list, LVM_GETCOLUMNWIDTH, k, 0) as i32).collect();
             let x: Vec<i32> = (0..4).map(|k| r.left + cw[..k].iter().sum::<i32>()).collect();
@@ -1255,53 +1258,49 @@ pub fn nav_window() -> HWND { NAVWND.get() as HWND }
 /// Asks for a new network scan (F5); the old list stays until the worker brings the new one.
 pub fn net_rescan() { NET_KNOWN.store(false, Relaxed); }
 
-/// Rebuilds the pane from the current lists and starts the first network scan.
-pub fn nav_refresh(h: HWND) {
+/// Rebuilds the pane from the current caches (drives, network) without starting any scan: what WM_DRIVES / WM_NET does
+/// when a worker finishes.
+pub fn nav_rebuild(h: HWND) {
     if h.is_null() { return; }
     nav_init(h);
     nav_dirty();
+}
+
+/// Rebuilds the pane and starts the scans it feeds on: the network and the drives, both on worker threads (a dead volume
+/// must never be asked from the UI thread).
+pub fn nav_refresh(h: HWND) {
+    if h.is_null() { return; }
+    nav_rebuild(h);
     net_scan(h);
+    unsafe { crate::drives::scan(GetParent(h), WM_DRIVES) };
 }
 
 // ---------- building the pane ----------
 
-/// The drives for the left pane: (fixed, removable, mapped network letters), with label, icon and free space.
+/// The drives for the left pane: (fixed, removable, mapped network letters), with label, icon and free space. From
+/// `drives`' cache: the pane is built on the UI thread, where asking a volume about itself could block for minutes.
 fn drive_items() -> (Vec<NavItem>, Vec<NavItem>, Vec<NavItem>) {
-    unsafe {
-        use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
-        let (mut fixed, mut removable, mut mapped) = (vec![], vec![], vec![]);
-        let mask = GetLogicalDrives();
-        for i in 0..26u32 {
-            if mask & (1 << i) == 0 { continue; }
-            let letter = (b'A' + i as u8) as char;
-            let root = format!("{letter}:\\");
-            let ty = GetDriveTypeW(w(&root).as_ptr());
-            match ty {
-                4 => {
-                    // a mapped network drive: no label or size, a dead share would stall the window
-                    mapped.push(NavItem { title: tf!("Сетевой диск ({}:)", "Network Drive ({}:)", ja: "ネットワーク ドライブ ({}:)", pt: "Unidade de rede ({}:)", zh: "网络驱动器（{}:）", letter), path: PathBuf::from(root), glyph: "\u{E8CE}", cap: None, quick: false });
-                    continue;
-                }
-                2 | 3 => {}
-                _ => continue, // CD-ROM and RAM disks stay out, as before
-            }
-            let mut label = [0u16; 64];
-            let ok = GetVolumeInformationW(w(&root).as_ptr(), label.as_mut_ptr(), 64, ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), 0);
-            let name = if ok != 0 { wstr(label.as_ptr()) } else { String::new() };
-            let (mut free, mut total) = (0u64, 0u64);
-            let cap = (GetDiskFreeSpaceExW(w(&root).as_ptr(), &mut free, &mut total, ptr::null_mut()) != 0 && total > 0).then_some((free, total));
-            let base = if !name.is_empty() {
-                name
-            } else if ty == 2 {
-                t!("Съемный диск", "Removable Disk", ja: "リムーバブル ディスク", pt: "Disco removível", zh: "可移动磁盘").to_string()
-            } else {
-                t!("Локальный диск", "Local Disk", ja: "ローカル ディスク", pt: "Disco local", zh: "本地磁盘").to_string()
-            };
-            let it = NavItem { title: format!("{base} ({letter}:)"), path: PathBuf::from(root), glyph: "\u{EDA2}", cap, quick: false };
-            if ty == 2 { removable.push(it) } else { fixed.push(it) }
+    let (mut fixed, mut removable, mut mapped) = (vec![], vec![], vec![]);
+    for d in crate::drives::cached() {
+        if d.ty == 4 {
+            // a mapped network drive: no label or size (a dead share must not be asked anything, not even on a worker)
+            mapped.push(NavItem { title: tf!("Сетевой диск ({}:)", "Network Drive ({}:)", ja: "ネットワーク ドライブ ({}:)", pt: "Unidade de rede ({}:)", zh: "网络驱动器（{}:）", d.letter), path: PathBuf::from(&d.root), glyph: "\u{E8CE}", cap: None, quick: false });
+            continue;
         }
-        (fixed, removable, mapped)
+        if !matches!(d.ty, 2 | 3) {
+            continue; // CD-ROM and RAM disks stay out, as before
+        }
+        let base = if !d.label.is_empty() {
+            d.label.clone()
+        } else if d.ty == 2 {
+            t!("Съемный диск", "Removable Disk", ja: "リムーバブル ディスク", pt: "Disco removível", zh: "可移动磁盘").to_string()
+        } else {
+            t!("Локальный диск", "Local Disk", ja: "ローカル ディスク", pt: "Disco local", zh: "本地磁盘").to_string()
+        };
+        let it = NavItem { title: format!("{base} ({}:)", d.letter), path: PathBuf::from(&d.root), glyph: "\u{EDA2}", cap: (d.total > 0).then_some((d.free, d.total)), quick: false };
+        if d.ty == 2 { removable.push(it) } else { fixed.push(it) }
     }
+    (fixed, removable, mapped)
 }
 
 pub fn nav_init(h: HWND) {

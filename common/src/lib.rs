@@ -29,6 +29,7 @@ pub mod search;
 pub mod settings;
 pub mod starticons;
 pub mod style;
+pub mod winfx;
 
 pub use lang::{get, lang, set, set_lang, Lang};
 

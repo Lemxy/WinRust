@@ -1752,6 +1752,8 @@ fn main() {
         if hwnd.is_null() {
             return;
         }
+        // 87 % opaque by default (look.txt `window-opacity`): the whole window fades, children included
+        winrust_common::winfx::translucent(hwnd, winrust_common::look::window_opacity());
         create_search(hwnd);
         goto(hwnd, PageId::Home);
         SetTimer(hwnd, 1, 2000, None);

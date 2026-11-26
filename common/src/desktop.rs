@@ -48,6 +48,35 @@ fn is_desktop_class(c: &str) -> bool {
     matches!(c, "Progman" | "WorkerW")
 }
 
+/// Window property that marks the *rust-explorer* desktop. Its class and title are the canonical `Progman` /
+/// `"Program Manager"`, which is what Wallpaper Engine and other shell code look for; the property is how our own
+/// programs (rs-shell's supervisor) tell it from Explorer's desktop without relying on a non-standard title.
+pub const MARKER: &str = "WinRustDesktop";
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain([0]).collect()
+}
+
+unsafe extern "system" fn find_desktop(h: HWND, lp: LPARAM) -> BOOL {
+    let mark = wide(MARKER);
+    if !unsafe { GetPropW(h, mark.as_ptr()) }.is_null() {
+        unsafe { *(lp as *mut HWND) = h };
+        return 0; // stop
+    }
+    1
+}
+
+/// The rust-explorer desktop window (0 = it is not running). No title check: the title is the canonical one now.
+pub fn window() -> HWND {
+    let mut h: HWND = std::ptr::null_mut();
+    unsafe { EnumWindows(Some(find_desktop), &mut h as *mut _ as LPARAM) };
+    h
+}
+
+pub fn is_up() -> bool {
+    !window().is_null()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

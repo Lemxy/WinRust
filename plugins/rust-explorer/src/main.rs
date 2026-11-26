@@ -16,12 +16,15 @@
 // rust-explorer --desktop  - the desktop for rs-shell: borderless bottom-most color-keyed window with the Desktop folders
 //   (user + public) as big icons over the wallpaper it paints itself (without explorer nothing else does): reads the BMP
 //   that rs-shell converts into %LOCALAPPDATA%\rs-shell\wallpaper.bmp, "fill" style, scaled once at start.
+//   Exposes the window hierarchy wallpaper apps look for: Progman titled "Program Manager" (+ property desktop::MARKER),
+//   SHELLDLL_DefView, the WorkerW that 0x052C spawns, and one wallpaper host per monitor. With look.txt `we=1` the WE
+//   bridge (we.rs) opens WE's pop-out per monitor and reparents it into those hosts; off it just paints the picture.
 //   shortcuts: wallpaper is loaded once (changing it needs a restart), icon labels are always white, no background menu /
 //   drag-to-position / auto-arrange, items from the public desktop can't be renamed.
 #![windows_subsystem = "windows"]
 use std::{cell::RefCell, env, fs, os::windows::fs::MetadataExt, path::{Path, PathBuf}, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed}};
 use winrust_common::{t, tf};
-use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{GetStockObject, InvalidateRect, ScreenToClient}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
+use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{ClientToScreen, GetStockObject, InvalidateRect, ScreenToClient}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
 
 mod zipx; // our own ZIP engine (deflate, inflate, container)
 mod jobs; // our own copier, ZIP packer, ZIP/7z unpacker (background, progress in the status line)
@@ -29,6 +32,9 @@ mod shellwin; // registers the window as a shell window: "Show in folder" from o
 mod ui; // the look: palette, painted tabs / toolbar / address pill / status line, dark theme
 mod menu; // the context menu: rounded, blurred, with icons and shortcuts (the Win32 one has neither)
 mod openwith; // our own "Open with" picker: the Windows one never renders without explorer.exe
+mod we; // Wallpaper Engine behind the icons, through its official -control command line (look.txt we=1)
+mod marquee; // the selection band ("lazo"): translucent white wash, for the desktop icons and the file list
+mod drives; // the drive list, read on a worker and cached: querying a dead volume must never block a window
 
 static DESKTOP: AtomicBool = AtomicBool::new(false);
 fn desk() -> bool { DESKTOP.load(Relaxed) }
@@ -163,42 +169,37 @@ fn drive_kind(ty: u32) -> String {
     }
 }
 
-/// Shell icon index of a drive root: the real one (disk, CD, network share), not the generic folder icon.
-fn drive_icon(root: &str) -> i32 {
-    let mut fi: SHFILEINFOW = unsafe { std::mem::zeroed() };
-    unsafe { SHGetFileInfoW(w(root).as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_SMALLICON) };
-    fi.iIcon
-}
-
-/// Every drive Windows knows, as the rows of "This PC": label, icon, free and total space, no date.
-/// Volume label and space are asked only of local and removable disks: a dead network share would stall the window.
+/// Every drive Windows knows, as the rows of "This PC": label, icon, free and total space, no date. The data comes from
+/// `drives`' cache: this runs on the UI thread and asking a volume about itself can block on a dead device.
 fn drives() -> Vec<Row> {
-    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
-    let mut rows = vec![];
-    let mask = unsafe { GetLogicalDrives() };
-    for i in 0..26u32 {
-        if mask & (1 << i) == 0 { continue; }
-        let letter = (b'A' + i as u8) as char;
-        let root = format!("{letter}:\\");
-        let wide = w(&root);
-        let ty = unsafe { GetDriveTypeW(wide.as_ptr()) };
-        let mut label = [0u16; 128];
-        let local = matches!(ty, 2 | 3);
-        let named = local && unsafe { GetVolumeInformationW(wide.as_ptr(), label.as_mut_ptr(), 128, ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), 0) } != 0;
-        let (mut free, mut total) = (0u64, 0u64);
-        let cap = (local && unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, ptr::null_mut()) } != 0 && total > 0).then_some((free, total));
-        let vol = if named { wstr(label.as_ptr()) } else { String::new() };
-        let base = if vol.is_empty() { drive_kind(ty) } else { vol };
-        let name = format!("{base} ({letter}:)");
-        rows.push(Row { name, dir: true, size: 0, time: 0, icon: drive_icon(&root), thumb: -2, hdr: false, path: Some(PathBuf::from(&root)), cap, trash: None });
-    }
-    rows
+    drives::cached()
+        .into_iter()
+        .map(|d| {
+            let base = if d.label.is_empty() { drive_kind(d.ty) } else { d.label };
+            Row {
+                name: format!("{base} ({}:)", d.letter),
+                dir: true,
+                size: 0,
+                time: 0,
+                icon: d.icon,
+                thumb: -2,
+                hdr: false,
+                path: Some(PathBuf::from(&d.root)),
+                cap: (d.total > 0).then_some((d.free, d.total)),
+                trash: None,
+            }
+        })
+        .collect()
 }
 
 /// The "Type" column of a row: a drive says what kind it is, everything else goes by its name.
 fn row_type(r: &Row) -> String {
     match &r.path {
-        Some(p) if r.dir => drive_kind(unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(w(&p.to_string_lossy()).as_ptr()) }),
+        Some(p) if r.dir => {
+            let root = p.to_string_lossy();
+            let ty = drives::cached().iter().find(|d| d.root.eq_ignore_ascii_case(&root)).map_or(3, |d| d.ty);
+            drive_kind(ty)
+        }
         _ => type_text(&r.name, r.dir),
     }
 }
@@ -215,21 +216,7 @@ fn row_size(r: &Row) -> String {
 // ---------- Recycle Bin: a view of its own, filled from the $Recycle.Bin folders of every drive ----------
 
 static TRASH_LOADING: AtomicBool = AtomicBool::new(false);
-
-/// The `$Recycle.Bin` folder of every drive that has one (local and removable disks).
-fn trash_bins() -> Vec<PathBuf> {
-    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
-    let mut out = vec![];
-    let mask = unsafe { GetLogicalDrives() };
-    for i in 0..26u32 {
-        if mask & (1 << i) == 0 { continue; }
-        let root = format!("{}:\\", (b'A' + i as u8) as char);
-        if !matches!(unsafe { GetDriveTypeW(w(&root).as_ptr()) }, 2 | 3) { continue; }
-        let bin = PathBuf::from(format!("{root}$Recycle.Bin"));
-        if bin.is_dir() { out.push(bin); }
-    }
-    out
-}
+static TRASH_RESTORING: AtomicBool = AtomicBool::new(false); // one restore at a time: a dead device must not pile workers up
 
 /// What a `$I` file says: (size at deletion, deletion time, original path). Version 2 stores the path length,
 /// version 1 (Vista / 7) a fixed 520-byte buffer; both are UTF-16.
@@ -261,7 +248,7 @@ fn parse_trash_i(path: &Path) -> Option<(u64, u64, PathBuf)> {
 /// list shows its name and puts the folder it came from in the Type column, like a search hit).
 fn trash_rows() -> Vec<Row> {
     let mut out = vec![];
-    for bin in trash_bins() {
+    for bin in drives::trash_bins() {
         let Ok(sids) = fs::read_dir(&bin) else { continue }; // the bin of another user may be closed to us: skip it
         for sid in sids.flatten() {
             let Ok(entries) = fs::read_dir(sid.path()) else { continue };
@@ -311,7 +298,7 @@ fn selected_trash() -> Vec<(PathBuf, Trash)> {
 #[derive(Clone, Copy, PartialEq)]
 enum TrashWhat { Restored, Emptied, Deleted }
 
-struct TrashDone { what: TrashWhat, ok: usize, bad: usize }
+struct TrashDone { what: TrashWhat, ok: usize, bad: usize, why: Option<String> } // `why`: the last error, shown under the counts
 
 /// Puts the selected items back where they came from on a worker thread; the folders are made again if needed. A name
 /// that is taken by now gets the usual " (2)" suffix instead of overwriting anything. The result arrives as WM_TRASH_DONE.
@@ -321,22 +308,80 @@ fn trash_restore(h: HWND) {
         unsafe { ui::notice(h, t!("Выберите элементы для восстановления", "Select the items to restore", ja: "復元する項目を選択してください", pt: "Selecione os itens que deseja restaurar", zh: "请选择要还原的项目")) };
         return;
     }
+    if TRASH_RESTORING.swap(true, Relaxed) {
+        // A previous restore may be stuck on a device that vanished; piling up more workers would hide that even more.
+        unsafe { ui::notice(h, t!("Восстановление уже выполняется", "A restore is already running", ja: "復元はすでに実行中です", pt: "Já existe uma restauração em andamento", zh: "已有还原正在进行")) };
+        return;
+    }
     let hwnd = h as isize;
     std::thread::spawn(move || {
-        let (mut ok, mut bad) = (0usize, 0usize);
+        let (mut ok, mut bad, mut why) = (0usize, 0usize, None);
         for (orig, t) in picks {
+            // A drive missing from the cache is gone: taking the file back would block inside the volume driver, so fail
+            // fast and say which drive it is. (Before the first scan finishes the cache is empty: do not judge then.)
+            if drives::ready() && !drives::holds(&orig) {
+                bad += 1;
+                why = Some(tf!("{}: диск недоступен", "{}: the drive is not available", ja: "{}: ドライブが利用できません", pt: "{}: a unidade não está disponível", zh: "{}：驱动器不可用", orig.display()).to_string());
+                continue;
+            }
             let parent = orig.parent().map_or_else(|| PathBuf::from("C:\\"), |p| p.to_path_buf());
-            let _ = fs::create_dir_all(&parent);
+            if let Err(e) = fs::create_dir_all(&parent) {
+                bad += 1;
+                why = Some(format!("{}: {e}", parent.display()));
+                continue;
+            }
             let name = orig.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let dest = jobs::free_name(&parent, &name, false);
-            match fs::rename(&t.r, &dest) {
+            match rename_timeout(&t.r, &dest) {
                 Ok(_) => { let _ = fs::remove_file(&t.i); ok += 1; }
-                Err(_) => bad += 1, // no permission, or the payload is gone: the item stays in the bin
+                Err(e) => {
+                    // A bin on another volume cannot be renamed across: copy + delete does it, for files only (a folder
+                    // would need a recursive copy). ERROR_NOT_SAME_DEVICE = 17.
+                    if e.raw_os_error() == Some(17) && t.r.is_file() {
+                        match fs::copy(&t.r, &dest).and_then(|_| fs::remove_file(&t.r)) {
+                            Ok(_) => { let _ = fs::remove_file(&t.i); ok += 1; }
+                            Err(e2) => { bad += 1; why = Some(format!("{}: {e2}", orig.display())); }
+                        }
+                    } else {
+                        bad += 1;
+                        why = Some(format!("{}: {e}", orig.display()));
+                    }
+                }
             }
         }
-        let done = Box::new(TrashDone { what: TrashWhat::Restored, ok, bad });
+        TRASH_RESTORING.store(false, Relaxed);
+        let done = Box::new(TrashDone { what: TrashWhat::Restored, ok, bad, why });
         unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
     });
+}
+
+/// `fs::rename`, but a device that stopped answering cannot hold the worker forever: after 20 s the blocked I/O of this
+/// thread is cancelled (the same trick as the copy jobs) and the item counts as failed with the OS error.
+fn rename_timeout(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use windows_sys::Win32::{Foundation::CloseHandle, System::{IO::CancelSynchronousIo, Threading::{GetCurrentThreadId, OpenThread, THREAD_TERMINATE}}};
+    let id = unsafe { GetCurrentThreadId() };
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    let watch = std::thread::spawn(move || {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < end {
+            if flag.load(Relaxed) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        unsafe {
+            let t = OpenThread(THREAD_TERMINATE, 0, id);
+            if !t.is_null() {
+                CancelSynchronousIo(t);
+                CloseHandle(t);
+            }
+        }
+    });
+    let r = fs::rename(src, dst);
+    done.store(true, Relaxed);
+    let _ = watch.join();
+    r
 }
 
 /// Deletes the payload and the metadata of every item in every bin, after a confirmation. The walk runs on a worker (a
@@ -350,7 +395,7 @@ fn trash_empty(h: HWND) {
     let hwnd = h as isize;
     std::thread::spawn(move || {
         let (mut n, mut bad) = (0usize, 0usize);
-        for bin in trash_bins() {
+        for bin in drives::trash_bins() {
             let Ok(sids) = fs::read_dir(&bin) else { bad += 1; continue };
             for sid in sids.flatten() {
                 let Ok(entries) = fs::read_dir(sid.path()) else { bad += 1; continue };
@@ -363,7 +408,7 @@ fn trash_empty(h: HWND) {
                 }
             }
         }
-        let done = Box::new(TrashDone { what: TrashWhat::Emptied, ok: n, bad });
+        let done = Box::new(TrashDone { what: TrashWhat::Emptied, ok: n, bad, why: None });
         unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
     });
 }
@@ -395,7 +440,7 @@ fn trash_delete(h: HWND) {
                 bad += 1
             }
         }
-        let done = Box::new(TrashDone { what: TrashWhat::Deleted, ok, bad });
+        let done = Box::new(TrashDone { what: TrashWhat::Deleted, ok, bad, why: None });
         unsafe { PostMessageW(hwnd as HWND, WM_TRASH_DONE, 0, Box::into_raw(done) as isize) };
     });
 }
@@ -1382,10 +1427,15 @@ mod wall {
     }
 
     pub fn paint(dc: HDC, bmp: isize, cw: i32, ch: i32) {
+        paint_at(dc, bmp, 0, 0, cw, ch);
+    }
+
+    /// One rectangle of the virtual-screen bitmap, at the DC's origin (a per-monitor wallpaper host).
+    pub fn paint_at(dc: HDC, bmp: isize, x: i32, y: i32, w: i32, h: i32) {
         unsafe {
             let m = CreateCompatibleDC(dc);
             let old = SelectObject(m, bmp as _);
-            BitBlt(dc, 0, 0, cw, ch, m, 0, 0, SRCCOPY);
+            BitBlt(dc, 0, 0, w, h, m, x, y, SRCCOPY);
             SelectObject(m, old);
             DeleteDC(m);
         }
@@ -1841,8 +1891,8 @@ unsafe fn hide_system_zip(cm: &IContextMenu, menu: HMENU) {        use windows::
 mod desk {
     #![allow(unsafe_op_in_unsafe_fn)]
     use super::*;
-    use std::{cell::Cell, collections::{HashMap, HashSet}};
-    use windows_sys::Win32::Graphics::Gdi::{CreateSolidBrush, DeleteObject, FillRect, HDC, ScreenToClient};
+    use std::{cell::{Cell, RefCell}, collections::{HashMap, HashSet}};
+    use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BLENDFUNCTION, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject, DIB_RGB_COLORS, EndPaint, FillRect, GetDC, HDC, PAINTSTRUCT, ReleaseDC, ScreenToClient, SelectObject};
 
     pub const SPAWN_WORKERW: u32 = 0x052C; // what wallpaper apps send to "Progman" to get a window behind the icons
     const KEY: u32 = 0x0001_0001; // rgb(1, 0, 1): the list's background colour, made see-through while a live wallpaper runs
@@ -1851,7 +1901,213 @@ mod desk {
         static DRAG_FROM: Cell<Option<(i32, i32)>> = const { Cell::new(None) }; // our own icon drag: where it started (list coords)
         static DROP_AT: Cell<Option<(i32, i32)>> = const { Cell::new(None) }; // ...and where it was dropped (screen coords)
         static WORKERW: Cell<isize> = const { Cell::new(0) };
-        static LIVE: Cell<bool> = const { Cell::new(false) }; // a live wallpaper is running in WORKERW
+        /// The invisible click catcher over a live wallpaper (see `catcher_sync`).
+        static CATCHER: Cell<isize> = const { Cell::new(0) };
+        static LIVE: Cell<bool> = const { Cell::new(false) }; // a live wallpaper is running in WORKERW or in a host
+        static WW_LIVE: Cell<bool> = const { Cell::new(false) }; // ...and it is in WORKERW, so the hosts must step aside
+        /// One wallpaper surface per monitor (below the icons, above WorkerW). Rebuilt when the monitor list changes.
+        static HOSTS: RefCell<Vec<super::we::Host>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// The per-monitor host windows, in `common::monitors::all()` order (screen rectangles).
+    pub fn hosts() -> Vec<super::we::Host> {
+        HOSTS.with_borrow(|v| v.clone())
+    }
+
+    /// Creates, moves and destroys the wallpaper host of every monitor. The desktop window covers the virtual screen, so a
+    /// host is the monitor rectangle in its client coordinates; a monitor that changed size gets a fresh host (the WE
+    /// pop-out inside it dies and the WE bridge opens a new one, sized to the new rectangle).
+    pub unsafe fn hosts_sync(pm: HWND) {
+        let (vx, vy, ..) = super::virt();
+        let mons = winrust_common::monitors::all();
+        let old = HOSTS.with_borrow(|v| v.clone());
+        let mut used = vec![false; old.len()];
+        let mut keep: Vec<super::we::Host> = Vec::with_capacity(mons.len());
+        let inst = GetModuleHandleW(ptr::null());
+        for m in &mons {
+            let sr = (m.rc.left, m.rc.top, m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
+            match old.iter().enumerate().position(|(i, o)| !used[i] && o.screen == sr) {
+                Some(i) => {
+                    used[i] = true;
+                    keep.push(old[i]);
+                }
+                None => {
+                    let hwnd = CreateWindowExW(
+                        0,
+                        w(we::HOST_CLASS).as_ptr(),
+                        ptr::null(),
+                        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+                        sr.0 - vx, sr.1 - vy, sr.2, sr.3,
+                        pm,
+                        0 as _,
+                        inst,
+                        ptr::null(),
+                    );
+                    if !hwnd.is_null() {
+                        keep.push(super::we::Host { hwnd, screen: sr });
+                    }
+                }
+            }
+        }
+        for (i, o) in old.iter().enumerate() {
+            if !used[i] {
+                DestroyWindow(o.hwnd);
+            }
+        }
+        HOSTS.with_borrow_mut(|v| *v = keep);
+        hosts_place();
+    }
+
+    /// Puts the hosts at the bottom of Progman's children (just above WorkerW, below the icon list and DefView).
+    unsafe fn hosts_place() {
+        let (vx, vy, ..) = super::virt();
+        let list = HOSTS.with_borrow(|v| v.clone());
+        for h in &list {
+            SetWindowPos(h.hwnd, HWND_BOTTOM, h.screen.0 - vx, h.screen.1 - vy, h.screen.2, h.screen.3, SWP_NOACTIVATE);
+            InvalidateRect(h.hwnd, ptr::null(), 1);
+        }
+        let ww = WORKERW.get() as HWND;
+        if !ww.is_null() && IsWindow(ww) != 0 {
+            SetWindowPos(ww, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        // A host or WorkerW is created at the top of the z-order and paints its wallpaper before it is sent to the
+        // bottom: that paint stays over the icon list until the list repaints. Invalidate it, or 0x052C leaves the
+        // desktop without icons (they are there, the list's surface is just covered by a stale wallpaper bitmap).
+        let list = super::ST.with_borrow(|st| st.list);
+        if !list.is_null() && IsWindow(list) != 0 {
+            InvalidateRect(list, ptr::null(), 1);
+        }
+    }
+
+    /// The wallpaper slice of one host: the virtual-screen bitmap already has each monitor's picture in place, so this is
+    /// a straight BitBlt of the host's part of it (no second scaling, no change of the picture on this machine).
+    unsafe fn paint_host(h: HWND, dc: HDC) {
+        let (bmp, cw, ch) = super::WALL.get();
+        let rect = HOSTS.with_borrow(|v| v.iter().find(|x| x.hwnd == h).map(|x| x.screen));
+        let Some((sx, sy, sw, sh)) = rect else { return };
+        let (vx, vy, ..) = super::virt();
+        if bmp != 0 {
+            let (x, y) = ((sx - vx).clamp(0, cw), (sy - vy).clamp(0, ch));
+            let (w, hh) = (sw.min(cw - x).max(0), sh.min(ch - y).max(0));
+            if w > 0 && hh > 0 {
+                super::wall::paint_at(dc, bmp, x, y, w, hh);
+            }
+        } else {
+            let b = windows_sys::Win32::Graphics::Gdi::GetSysColorBrush(1);
+            FillRect(dc, &RECT { left: 0, top: 0, right: sw, bottom: sh }, b as _);
+        }
+    }
+
+    pub unsafe extern "system" fn host_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        match m {
+            WM_ERASEBKGND => {
+                paint_host(h, wp as HDC);
+                1
+            }
+            WM_PAINT => {
+                let mut ps: PAINTSTRUCT = std::mem::zeroed();
+                let dc = BeginPaint(h, &mut ps);
+                paint_host(h, dc);
+                EndPaint(h, &ps);
+                0
+            }
+            // the hosts cover the secondary monitors: the desktop's empty-space menu must still open there
+            WM_CONTEXTMENU => {
+                super::bg_menu(GetParent(h));
+                0
+            }
+            _ => DefWindowProcW(h, m, wp, lp),
+        }
+    }
+
+    /// An invisible (alpha 1/255) window between the live wallpaper and the icons. While a live wallpaper runs the icon
+    /// list is click-through (its background is the colour key), so a drag or a right click on the empty desktop landed in
+    /// the wallpaper window: this one is in the way by design and runs the marquee itself (the list is not asked: its own
+    /// marquee is drawn opaque and only inside its window, which does not reach a second monitor). Hidden when there is no
+    /// live wallpaper, where the list takes the mouse itself.
+    pub unsafe fn catcher_sync(pm: HWND) {
+        let mut c = CATCHER.get() as HWND;
+        if c.is_null() || IsWindow(c) == 0 {
+            let (_, _, vw, vh) = super::virt();
+            c = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_NOACTIVATE,
+                w("WinRustCatcher").as_ptr(),
+                ptr::null(),
+                WS_CHILD,
+                0,
+                0,
+                vw,
+                vh,
+                pm,
+                0 as _,
+                GetModuleHandleW(ptr::null()),
+                ptr::null(),
+            );
+            if c.is_null() {
+                return;
+            }
+            // alpha 1: invisible to the eye but still hit-tested (a fully transparent window would be click-through)
+            SetLayeredWindowAttributes(c, 0, 1, LWA_ALPHA);
+            CATCHER.set(c as isize);
+        }
+        if LIVE.get() {
+            let list = super::ST.with_borrow(|st| st.list);
+            // right under the icon list and over the wallpaper (our hosts or WE's own window)
+            SetWindowPos(c, list, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            ShowWindow(c, SW_SHOWNOACTIVATE);
+        } else {
+            ShowWindow(c, SW_HIDE);
+        }
+        super::marquee::hide();
+    }
+
+    /// The click catcher only exists while the icon list is click-through (live wallpaper): presses on empty desktop
+    /// start our marquee (`marquee`), which draws over any monitor and selects the icons it covers on release.
+    pub unsafe extern "system" fn catcher_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        let screen = |h: HWND, lp: LPARAM| {
+            let mut r: RECT = std::mem::zeroed();
+            GetWindowRect(h, &mut r);
+            POINT { x: r.left + (lp & 0xffff) as i16 as i32, y: r.top + ((lp >> 16) & 0xffff) as i16 as i32 }
+        };
+        match m {
+            WM_ERASEBKGND => 1,
+            WM_LBUTTONDOWN => {
+                let list = super::ST.with_borrow(|st| st.list);
+                let pt = screen(h, lp);
+                if !list.is_null() && IsWindow(list) != 0 {
+                    super::marquee::begin(list, pt.x, pt.y, false);
+                    SetCapture(h);
+                }
+                0
+            }
+            WM_MOUSEMOVE => {
+                if super::marquee::dragging() {
+                    let pt = screen(h, lp);
+                    super::marquee::track(pt.x, pt.y);
+                }
+                0
+            }
+            WM_LBUTTONUP => {
+                let pt = screen(h, lp);
+                let done = super::marquee::finish(pt.x, pt.y); // before ReleaseCapture: that sends WM_CAPTURECHANGED
+                ReleaseCapture();
+                if done {
+                    let list = super::ST.with_borrow(|st| st.list);
+                    if !list.is_null() && IsWindow(list) != 0 {
+                        InvalidateRect(list, ptr::null(), 1);
+                    }
+                }
+                0
+            }
+            WM_CAPTURECHANGED => {
+                super::marquee::cancel();
+                0
+            }            WM_RBUTTONUP => {
+                super::bg_menu(GetParent(h));
+                0
+            }
+            _ => DefWindowProcW(h, m, wp, lp),
+        }
     }
 
     /// The live-wallpaper window follows the desktop's size (monitors added, removed or resized).
@@ -2022,19 +2278,44 @@ mod desk {
     // holds a wallpaper the icon list turns see-through (colour key) so the wallpaper shows between the icons.
 
     pub unsafe fn spawn_workerw(h: HWND) {
-        if WORKERW.get() != 0 && IsWindow(WORKERW.get() as HWND) != 0 { return; }
+        if WORKERW.get() != 0 && IsWindow(WORKERW.get() as HWND) != 0 {
+            hosts_place();
+            return;
+        }
         let mut r: RECT = std::mem::zeroed();
         GetClientRect(h, &mut r);
-        let ww = CreateWindowExW(0, w("WorkerW").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE, 0, 0, r.right, r.bottom, h, 0 as _, GetModuleHandleW(ptr::null()), ptr::null());
-        SetWindowPos(ww, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); // under the icon list
+        let ww = CreateWindowExW(0, w("WorkerW").as_ptr(), ptr::null(), WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, r.right, r.bottom, h, 0 as _, GetModuleHandleW(ptr::null()), ptr::null());
         WORKERW.set(ww as isize);
+        hosts_place(); // WorkerW at the very bottom, under every wallpaper host and the icon list
     }
 
-    /// Every couple of seconds: a wallpaper window inside WorkerW = live mode on, none = back to the picture.
-    pub unsafe fn check_live(list: HWND) {
+    /// True when WE (or another wallpaper app) put its window in the WorkerW we expose: its own native hook, which
+    /// means no pop-outs are needed.
+    pub unsafe fn workerw_live() -> bool {
         let ww = WORKERW.get() as HWND;
-        let live = !ww.is_null() && IsWindow(ww) != 0 && !GetWindow(ww, GW_CHILD).is_null();
-        if live == LIVE.replace(live) { return; }
+        !ww.is_null() && IsWindow(ww) != 0 && !GetWindow(ww, GW_CHILD).is_null()
+    }
+
+    /// Every couple of seconds: a wallpaper window inside WorkerW = WE attached by itself (raised topology); a child in
+    /// one of our hosts = the WE bridge attached a pop-out there. Both mean the list must become see-through.
+    pub unsafe fn check_live(list: HWND) {
+        let ww_live = workerw_live();
+        if ww_live != WW_LIVE.replace(ww_live) {
+            // a wallpaper in WorkerW is *below* the hosts: they have to get out of the way (hidden, not destroyed, so
+            // the picture is back at once when WE closes it)
+            let show = if ww_live { SW_HIDE } else { SW_SHOWNOACTIVATE };
+            HOSTS.with_borrow(|v| for h in v {
+                ShowWindow(h.hwnd, show);
+            });
+            if !ww_live {
+                hosts_place();
+            }
+        }
+        let host_live = HOSTS.with_borrow(|v| v.iter().any(|h| !GetWindow(h.hwnd, GW_CHILD).is_null()));
+        let live = ww_live || host_live;
+        if live == LIVE.replace(live) {
+            return;
+        }
         // the list stays "transparent" (its background is what the desktop paints: the key colour while live, see erase()),
         // so it keeps drawing the label shadows; the colour key then cuts the background out
         let ex = GetWindowLongPtrW(list, GWL_EXSTYLE);
@@ -2045,6 +2326,8 @@ mod desk {
             SetWindowLongPtrW(list, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as isize));
         }
         InvalidateRect(list, ptr::null(), 1);
+        InvalidateRect(GetParent(list), ptr::null(), 1);
+        catcher_sync(GetParent(list)); // visible only while the list is click-through
     }
 
     /// The desktop's background: the key colour while a live wallpaper shows through, else the picture. false = none to paint.
@@ -2120,9 +2403,47 @@ unsafe fn delete_word(h: HWND) {
 
 /// Rename box subclass: only Ctrl+Backspace is ours.
 /// The list keeps the wheel for itself. While the pointer is over the nav pane the pane should scroll instead.
+/// Pressing on empty space runs our own marquee (`marquee`): the same translucent white band as the desktop, instead of
+/// the control's opaque blue rectangle.
 unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if m == WM_MOUSEWHEEL && ui::wheel_to_nav(wp, lp) {
         return 0;
+    }
+    let point = || POINT { x: (lp & 0xffff) as i16 as i32, y: ((lp >> 16) & 0xffff) as i16 as i32 };
+    match m {
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            let pt = point();
+            let mut ht: LVHITTESTINFO = std::mem::zeroed();
+            ht.pt = pt;
+            if SendMessageW(h, LVM_HITTEST, 0, &mut ht as *mut _ as isize) < 0 {
+                // empty space: our band, the list never sees the press (so its blue rectangle never starts)
+                let mut sc = pt;
+                ClientToScreen(h, &mut sc);
+                SetFocus(h);
+                marquee::begin(h, sc.x, sc.y, true);
+                SetCapture(h);
+                return 0;
+            }
+        }
+        WM_MOUSEMOVE if marquee::dragging() => {
+            let mut sc = point();
+            ClientToScreen(h, &mut sc);
+            marquee::track(sc.x, sc.y);
+            return 0;
+        }
+        WM_LBUTTONUP if marquee::dragging() => {
+            let mut sc = point();
+            ClientToScreen(h, &mut sc);
+            marquee::finish(sc.x, sc.y);
+            ReleaseCapture();
+            InvalidateRect(h, ptr::null(), 0);
+            return 0;
+        }
+        WM_CAPTURECHANGED if marquee::dragging() => {
+            marquee::cancel();
+            return 0;
+        }
+        _ => {}
     }
     CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(LIST_OLD.load(std::sync::atomic::Ordering::Relaxed)), h, m, wp, lp)
 }
@@ -2201,7 +2522,9 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     put(list, WM_SETFONT, windows_sys::Win32::Graphics::Gdi::CreateFontW(-ui::sc(13), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, w(ui::ui_face()).as_ptr()) as usize, 1);
                     // like explorer's desktop: wallpaper apps look for a SHELLDLL_DefView under Progman
                     CreateWindowExW(0, w("SHELLDLL_DefView").as_ptr(), ptr::null(), WS_CHILD, 0, 0, 0, 0, h, 0 as _, inst, ptr::null());
-                    SetTimer(h, 7, 2000, None); // live wallpaper on / off (desk::check_live)
+                    desk::hosts_sync(h); // one wallpaper surface per monitor, under the icon list
+                    desk::catcher_sync(h); // invisible click catcher over the live wallpaper
+                    SetTimer(h, 7, 2000, None); // live wallpaper on / off (desk::check_live), WE bridge (we::tick)
                 } else {
                     let himl = ImageList_Create(THUMB, THUMB, ILC_COLOR32, 64, 64);
                     put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, himl as isize);
@@ -2249,10 +2572,19 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     reload_wall(); // monitors came, went or changed resolution: each one gets its picture again
                     let (vx, vy, vw, vh) = virt();
                     SetWindowPos(h, HWND_BOTTOM, vx, vy, vw, vh, SWP_NOACTIVATE); // WM_SIZE lays out
+                    desk::hosts_sync(h); // hosts follow the new monitor rectangles (recreated when one changed)
                     InvalidateRect(h, ptr::null(), 1);
                 } else if wp == SPI_SETWORKAREA as usize {
                     place_desk_list(ST.with_borrow(|st| st.list));
                 }
+                0
+            }
+            // per-monitor DPI in a system-DPI-aware process is rare, but a scaling change must not leave the hosts on the
+            // old rectangles (and the picture composed for the old monitor sizes)
+            WM_DPICHANGED if desk() => {
+                reload_wall();
+                desk::hosts_sync(h);
+                InvalidateRect(h, ptr::null(), 1);
                 0
             }
             // mouse buttons 4 / 5 (and keyboard media keys) arrive as APPCOMMAND_BROWSER_BACKWARD / _FORWARD
@@ -2265,6 +2597,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 if desk() {
                     place_desk_list(list);
                     desk::size_workerw(cw, ch);
+                    desk::hosts_sync(h); // a host follows the desktop's size even before WM_DISPLAYCHANGE arrives
                 } else {
                     ui::layout_children(cw, ch);
                     InvalidateRect(h, ptr::null(), 0);
@@ -2533,9 +2866,9 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             }
             // the Recycle Bin restore / empty / delete ended on a worker thread
             WM_TRASH_DONE => {
-                let TrashDone { what, ok, bad } = *Box::from_raw(lp as *mut TrashDone);
+                let TrashDone { what, ok, bad, why } = *Box::from_raw(lp as *mut TrashDone);
                 reload(h); // what was restored / deleted is gone from the bin; the message must not be wiped by that load
-                let msg = match (what, bad > 0) {
+                let mut msg = match (what, bad > 0) {
                     (TrashWhat::Emptied, true) => tf!("корзина очищена: {}, ошибок: {}", "emptied: {}, failed: {}", ja: "削除: {} 件、失敗: {} 件", pt: "esvaziados: {}, falhas: {}", zh: "已清空 {} 项，失败 {} 项", ok, bad),
                     (TrashWhat::Emptied, false) => tf!("корзина очищена: {}", "emptied: {}", ja: "削除: {} 件", pt: "esvaziados: {}", zh: "已清空 {} 项", ok),
                     (TrashWhat::Deleted, true) => tf!("удалено безвозвратно: {}, ошибок: {}", "deleted: {}, failed: {}", ja: "完全に削除: {} 件、失敗: {} 件", pt: "excluídos: {}, falhas: {}", zh: "已永久删除 {} 项，失败 {} 项", ok, bad),
@@ -2543,6 +2876,9 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     (TrashWhat::Restored, true) => tf!("восстановлено: {}, не удалось: {}", "restored: {}, failed: {}", ja: "復元: {} 件、失敗: {} 件", pt: "restaurados: {}, falhas: {}", zh: "已还原 {} 项，失败 {} 项", ok, bad),
                     (TrashWhat::Restored, false) => tf!("восстановлено: {}", "restored: {}", ja: "復元: {} 件", pt: "restaurados: {}", zh: "已还原 {} 项", ok),
                 };
+                if let Some(w) = why {
+                    msg = format!("{msg}\n{w}"); // the first failure, so a silent "failed: 1" never happens again
+                }
                 ui::notice(h, msg);
                 0
             }
@@ -2550,6 +2886,14 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             WM_DEVICECHANGE if !desk() => {
                 ui::nav_refresh(ui::nav_window());
                 if is_this_pc(&cur_dir()) { reload(h); }
+                0
+            }
+            // the drive scan finished on its worker: rebuild the pane from the cache, and reload a view that lists drives
+            ui::WM_DRIVES => {
+                ui::nav_rebuild(ui::nav_window());
+                if is_this_pc(&cur_dir()) || is_trash(&cur_dir()) {
+                    reload(h);
+                }
                 0
             }
             // the network scan finished (on a worker thread): the pane lists what it found
@@ -2613,8 +2957,30 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             // a secondary monitor, where the list does not reach (#125)
             WM_CONTEXTMENU if desk() && (icons_hidden() || wp as HWND == h) => { bg_menu(h); 0 }
             desk::SPAWN_WORKERW if desk() => { desk::spawn_workerw(h); 0 }
-            WM_TIMER if desk() && wp == 7 => { desk::check_live(ST.with_borrow(|st| st.list)); 0 }
-            WM_DESTROY => { if !desk() { save_place(h); } shellwin::revoke(); PostQuitMessage(0); 0 }
+            WM_TIMER if desk() && wp == 7 => {
+                let list = ST.with_borrow(|st| st.list);
+                let native = desk::workerw_live(); // WE's own hook first: then no pop-outs on top of it
+                we::tick(h, list, &desk::hosts(), native);
+                desk::check_live(list);
+                0
+            }
+            // logoff / restart: WE windows are children of ours and must not outlive the hosts they were put in
+            WM_ENDSESSION if desk() => {
+                if wp != 0 {
+                    we::shutdown();
+                }
+                0
+            }
+            WM_DESTROY => {
+                if desk() {
+                    we::shutdown();
+                } else {
+                    save_place(h);
+                }
+                shellwin::revoke();
+                PostQuitMessage(0);
+                0
+            }
             _ => DefWindowProcW(h, m, wp, lp),
         }
     }
@@ -2660,23 +3026,37 @@ fn main() {
         let inst = GetModuleHandleW(ptr::null());
         let cls = w("RustExplorer");
         let desktop = env::args().nth(1).as_deref() == Some("--desktop");
+        // One desktop only. An rs-shell built before the "Program Manager" title change still looks for a window titled
+        // "rs-desktop"; it sees this one as gone and keeps starting `--desktop`. Those extra processes must not create a
+        // second Progman: the marker is already up, so they leave. (The new rs-shell finds the marker itself.)
+        if desktop && winrust_common::desktop::is_up() {
+            return;
+        }
         // desktop without a wallpaper file shows black, not window white
         // desktop: COLOR_BACKGROUND, the user's solid colour when there is no picture, never black (#108, #111)
         let bg = if desktop { windows_sys::Win32::Graphics::Gdi::GetSysColorBrush(1) as _ } else { windows_sys::Win32::Graphics::Gdi::CreateSolidBrush(ui::pal().bg) };
         RegisterClassW(&WNDCLASSW { style: CS_DBLCLKS, lpfnWndProc: Some(ui::proc), hInstance: inst, lpszClassName: w("RxChrome").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
         RegisterClassW(&WNDCLASSW { style: CS_DBLCLKS, lpfnWndProc: Some(ui::nav_proc), hInstance: inst, lpszClassName: w("RxNav").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst, lpszClassName: cls.as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), hIcon: LoadIconW(inst, 1 as _), hbrBackground: bg, ..std::mem::zeroed() });
+        // the marquee is needed by the desktop *and* by the file list: register it in both modes
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(marquee::proc), hInstance: inst, lpszClassName: w("WinRustBand").as_ptr(), ..std::mem::zeroed() });
         if desktop {
             DESKTOP.store(true, Relaxed);
             // the whole screen: it paints the wallpaper too; the icon list sits above the bar (desk_top / desk_bottom)
-            // class "Progman" like explorer's desktop, so Wallpaper Engine & co. find it; title "rs-desktop" tells it apart
-            // from explorer's ("Program Manager") for rs-shell
+            // class "Progman" and title "Program Manager" like explorer's desktop: that is what Wallpaper Engine looks
+            // for with FindWindowW(L"Progman", L"Program Manager"). Our own programs find it by the property below, so
+            // the canonical title does not make it indistinguishable from Explorer's.
             let pm = w("Progman");
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst, lpszClassName: pm.as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), hIcon: LoadIconW(inst, 1 as _), hbrBackground: bg, ..std::mem::zeroed() });
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(desk::workerw_proc), hInstance: inst, lpszClassName: w("WorkerW").as_ptr(), ..std::mem::zeroed() });
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(DefWindowProcW), hInstance: inst, lpszClassName: w("SHELLDLL_DefView").as_ptr(), ..std::mem::zeroed() });
+            RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(desk::host_proc), hInstance: inst, lpszClassName: w(we::HOST_CLASS).as_ptr(), ..std::mem::zeroed() });
+            RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(desk::catcher_proc), hInstance: inst, lpszClassName: w("WinRustCatcher").as_ptr(), ..std::mem::zeroed() });
             let (vx, vy, vw, vh) = virt(); // every monitor: the wallpaper reaches the secondary ones too (#67)
-            let d = CreateWindowExW(WS_EX_TOOLWINDOW, pm.as_ptr(), w("rs-desktop").as_ptr(), WS_POPUP, vx, vy, vw, vh, 0 as _, 0 as _, inst, ptr::null());
+            let d = CreateWindowExW(WS_EX_TOOLWINDOW, pm.as_ptr(), w("Program Manager").as_ptr(), WS_POPUP | WS_CLIPCHILDREN, vx, vy, vw, vh, 0 as _, 0 as _, inst, ptr::null());
+            if !d.is_null() && SetPropW(d, w(winrust_common::desktop::MARKER).as_ptr(), 1 as *mut _) == 0 {
+                we::log("could not mark the desktop window: rs-shell will not see it");
+            }
             SetWindowPos(d, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         } else {
             // where it was last closed, maximized again if it was (#71); a first start opens on the monitor of the cursor
@@ -2694,6 +3074,8 @@ fn main() {
                 }
                 None => { ShowWindow(win, SW_SHOWNORMAL); }
             }
+            // 87 % opaque by default (look.txt `window-opacity`): the whole window fades, children included
+            winrust_common::winfx::translucent(win, winrust_common::look::window_opacity());
         }
         let mut msg = std::mem::zeroed();
         while GetMessageW(&mut msg, 0 as _, 0, 0) > 0 {
@@ -2806,6 +3188,20 @@ mod tests {
         assert_eq!(h.back(), Some("b".into()));
         h.visit("x".into()); h.visit("x".into()); // same folder twice is one step
         assert_eq!(h.v.len(), 3);
+    }
+
+    /// The Recycle Bin restore renames through a watchdog: it must still be a plain rename when nothing is wrong.
+    #[test]
+    fn rename_timeout_moves_and_reports_errors() {
+        let d = std::env::temp_dir().join(format!("winrust-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b) = (d.join("a.txt"), d.join("b.txt"));
+        std::fs::write(&a, b"x").unwrap();
+        rename_timeout(&a, &b).unwrap();
+        assert!(b.exists() && !a.exists());
+        assert!(rename_timeout(&a, &b).is_err(), "the source is gone");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

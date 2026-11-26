@@ -217,6 +217,12 @@ fn bmp_copy() -> Option<PathBuf> {
 /// system wallpaper is never touched: Explorer shows the original itself.
 fn set_wallpaper() {
     let Some(path) = wallpaper_bmp() else { return };
+    // WE live: SPI_SETDESKWALLPAPER can destroy the WorkerW a wallpaper engine attached to (raised desktop). The BMP the
+    // rust-explorer desktop paints is still refreshed above; the system call is only for the no-explorer background.
+    if winrust_common::look::we() {
+        log("wallpaper: we=1, SPI_SETDESKWALLPAPER left alone (WE owns the background)");
+        return;
+    }
     unsafe { SystemParametersInfoW(0x14, 0, wide(&path.to_string_lossy()).as_ptr() as _, 0) }; // SPI_SETDESKWALLPAPER
 }
 
@@ -256,8 +262,9 @@ fn run_shell() {
     let clip = find_exe("rs-clip.exe");
     if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
     let desktop = dir().join("rust-explorer.exe");
-    // the rust-explorer desktop: class "Progman" (so Wallpaper Engine finds it), title "rs-desktop" (explorer's is "Program Manager")
-    let desktop_up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
+    // the rust-explorer desktop: class "Progman", title "Program Manager" like Explorer's, marked with a window property
+    // (winrust_common::desktop::MARKER) so this supervisor can still tell it from a real Explorer desktop
+    let desktop_up = || winrust_common::desktop::is_up();
     log(&format!("desktop exe {} exists={} up={}", desktop.display(), desktop.exists(), desktop_up()));
     if desktop.exists() && !desktop_up() { log(&format!("desktop spawn -> {:?}", quiet(&desktop).arg("--desktop").spawn().map(|_| ()))); }
     // the supervisor runs on its own thread; this one owns the hotkeys (RegisterHotKey needs the thread's message loop)
@@ -285,7 +292,7 @@ fn hotkey_loop() {
 fn supervise() {
     let (mut starts, mut since, mut misses, mut dmiss) = (0, Instant::now(), 0, 0);
     let desktop = dir().join("rust-explorer.exe");
-    let desk_up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
+    let desk_up = || winrust_common::desktop::is_up();
     loop {
         unsafe { EnumWindows(Some(park), 0) };
         if bar_up() { misses = 0; } else { misses += 1; }
@@ -393,7 +400,7 @@ fn overlay() {
     if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
     let _ = wp.join(); // the BMP conversion (only on a fresh install or a new wallpaper) finishes before the desktop paints it
     let desktop = dir().join("rust-explorer.exe");
-    let up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
+    let up = || winrust_common::desktop::is_up();
     if desktop.exists() && !up() { log(&format!("desktop spawn -> {:?}", quiet(&desktop).arg("--desktop").spawn().map(|_| ()))); }
     if replace {
         // Explorer is being replaced: this thread watches, the main one owns Win+D / Win+E

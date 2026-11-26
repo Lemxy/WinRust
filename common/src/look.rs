@@ -52,7 +52,13 @@ fn num(key: &str, default: i32, min: i32, max: i32) -> i32 {
 }
 
 fn flag(key: &str, default: bool) -> bool {
-    get(key).and_then(|v| v.parse::<i32>().ok()).map_or(default, |v| v != 0)
+    flag_of(get(key).as_deref(), default)
+}
+
+/// The text of a boolean key: anything but `0` is on, a missing key takes `default`. Separate from `get` so the
+/// back-compat rule (an old look.txt without the key keeps today's behaviour) is unit-tested.
+fn flag_of(value: Option<&str>, default: bool) -> bool {
+    value.and_then(|v| v.parse::<i32>().ok()).map_or(default, |v| v != 0)
 }
 
 /// Writes one value, keeping the others.
@@ -189,9 +195,39 @@ pub fn menu_radius_set(r: i32) {
     set("menu-radius", r.clamp(4, 40));
 }
 
+/// Wallpaper Engine behind the desktop icons (`we=1`). Off by default: without the key an old look.txt, a fresh install
+/// and a machine without WE all keep the picture wallpaper exactly as before.
+pub fn we() -> bool {
+    flag("we", false)
+}
+
+pub fn we_set(on: bool) {
+    set("we", i32::from(on));
+}
+
+/// The wallpaper WE opens in its pop-out: a `project.json`, a `scene.pkg`, an `.mp4` or an `index.html`/folder. Empty =
+/// ask WE for the wallpaper it is already showing (`-control getWallpaper`).
+pub fn we_file() -> String {
+    get("we-file").unwrap_or_default()
+}
+
+pub fn we_file_set(path: &str) {
+    set("we-file", path.trim());
+}
+
+/// One WE pop-out across the whole virtual screen instead of one per monitor (the CLI takes one window per monitor, but
+/// a scene may look wrong cut per screen). Off = one per monitor.
+pub fn we_span() -> bool {
+    flag("we-span", false)
+}
+
+pub fn we_span_set(on: bool) {
+    set("we-span", i32::from(on));
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{flag_of, parse};
 
     #[test]
     fn parses_key_values() {
@@ -199,6 +235,18 @@ mod tests {
         assert_eq!(m.get("bar-blur").map(String::as_str), Some("1"));
         assert_eq!(m.get("menu-alpha").map(String::as_str), Some("70"));
         assert!(m.get("nope").is_none());
+    }
+
+    #[test]
+    fn a_missing_boolean_key_keeps_the_old_behaviour() {
+        // look.txt written before a key existed (we, we-span, ...): the caller's default wins
+        let old = parse("bar-blur=1\nbar-monitor=0\n");
+        assert!(!flag_of(old.get("we").map(String::as_str), false));
+        assert!(flag_of(old.get("bar-blur").map(String::as_str), false));
+        assert_eq!(flag_of(Some("0"), true), false);
+        assert_eq!(flag_of(Some("1"), false), true);
+        assert_eq!(flag_of(Some("2"), false), true); // this file's booleans are "0 / anything else"
+        assert_eq!(flag_of(Some("junk"), false), false); // a broken value falls back to the default (off for we)
     }
 }
 
@@ -251,6 +299,16 @@ pub fn win_blur_set(on: bool) {
     set("win-blur", i32::from(on));
 }
 
+/// How opaque the top-level windows of the apps are (Explorer, Settings, Control Panel): 255 = solid, 222 = 87 %.
+/// Applied when a window is created; `window-opacity=255` turns it off.
+pub fn window_opacity() -> u8 {
+    num("window-opacity", 222, 0, 255) as u8
+}
+
+pub fn window_opacity_set(v: u8) {
+    set("window-opacity", v.clamp(0, 255));
+}
+
 /// The notification pop-ups of the bar.
 pub fn notify() -> bool {
     flag("notify", true)
@@ -286,8 +344,10 @@ pub fn reset_all() {
         ("start-scale", 1),
         ("start-ranked", 1),
         ("win-blur", 0),
+        ("window-opacity", 222),
         ("notify", 1),
         ("notify-timeout", 5),
+        ("we", 0),
     ] {
         set(key, value);
     }

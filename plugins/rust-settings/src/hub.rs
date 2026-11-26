@@ -68,6 +68,7 @@ enum Op {
     ResetColors,
     ApplyTheme(u8),
     DeleteTheme(u8),
+    WinOpacity(u8),
     SaveTheme,
     MenuBlur,
     MenuAlpha(u8),
@@ -79,6 +80,7 @@ enum Op {
     WallpaperReload,
     Recycle,
     DeskFolder,
+    We,
     BarSide(u8),
     BarSize(u8),
     BarMonitor(u8),
@@ -366,6 +368,22 @@ fn rows(cat: u8) -> Vec<Row> {
                 v.push(choice(&format!("{r} px"), lk::menu_radius() == r, Op::MenuRadius(r)));
             }
             v.push(check(t!("Мороз в окнах WinRust", "Frost in WinRust windows", ja: "WinRust のウィンドウをぼかす", pt: "Desfoque nas janelas do WinRust", zh: "WinRust 窗口模糊"), lk::win_blur(), Op::WinBlur));
+            v.push(head(t!("Непрозрачность окон WinRust", "WinRust window opacity", ja: "WinRust のウィンドウの不透明度", pt: "Opacidade das janelas do WinRust", zh: "WinRust 窗口不透明度")));
+            for (a, pct) in [(255u8, 100u32), (242, 95), (222, 87), (204, 80)] {
+                let name = if pct == 100 {
+                    t!("100 %, без прозрачности", "100 %, solid", ja: "100 %、不透明", pt: "100 %, sólida", zh: "100 %，不透明").to_string()
+                } else {
+                    format!("{pct} %")
+                };
+                v.push(choice(&name, lk::window_opacity() == a, Op::WinOpacity(a)));
+            }
+            v.push(info(t!(
+                "Применится к новым окнам Проводника и Панели управления. Ключ: window-opacity.",
+                "Applies to new Explorer and Control Panel windows. Key: window-opacity.",
+                ja: "新しいエクスプローラーとコントロール パネルのウィンドウに適用。キー: window-opacity。",
+                pt: "Vale para novas janelas do Explorador e do Painel de Controle. Chave: window-opacity.",
+                zh: "适用于新打开的资源管理器和控制面板窗口。键：window-opacity。"
+            )));
         }
         DESK => {
             v.push(head(t!("Значки", "Icons", ja: "アイコン", pt: "Ícones", zh: "图标")));
@@ -376,6 +394,15 @@ fn rows(cat: u8) -> Vec<Row> {
             v.push(action(t!("Выбрать изображение…", "Pick a picture…", ja: "画像を選ぶ…", pt: "Escolher uma imagem…", zh: "选择图片…"), "›", Op::Wallpaper));
             v.push(action(t!("Обновить обои", "Reload the background", ja: "背景を再読み込み", pt: "Recarregar o plano de fundo", zh: "重新加载背景"), "", Op::WallpaperReload));
             v.push(info(t!("rs-shell преобразует картинку при входе: для новой нужно выйти из системы", "rs-shell converts the picture at sign-in: a new one needs a sign-out", ja: "rs-shell はサインイン時に画像を変換します。新しい画像はサインアウトが必要です", pt: "O rs-shell converte a imagem ao entrar: uma nova precisa sair da conta", zh: "rs-shell 在登录时转换图片：新图片需要注销")));
+            v.push(head(t!("Живые обои", "Live wallpaper", ja: "ライブ壁紙", pt: "Papel de parede animado", zh: "动态壁纸")));
+            v.push(check(t!("Wallpaper Engine", "Wallpaper Engine", ja: "Wallpaper Engine", pt: "Wallpaper Engine", zh: "Wallpaper Engine"), lk::we(), Op::We));
+            v.push(info(t!(
+                "Wallpaper Engine должен быть запущен; его окно рисуется под значками. Путь к обоям — ключ we-file в look.txt. По умолчанию выключено.",
+                "Wallpaper Engine must be running; its window is drawn under the icons. The wallpaper path is the we-file key in look.txt. Off by default.",
+                ja: "Wallpaper Engine が起動している必要があります。ウィンドウはアイコンの下に描画されます。壁紙のパスは look.txt の we-file です。既定では無効です。",
+                pt: "O Wallpaper Engine precisa estar em execução; a janela é desenhada sob os ícones. O caminho do papel de parede é a chave we-file no look.txt. Desativado por padrão.",
+                zh: "需要 Wallpaper Engine 正在运行；其窗口绘制在图标下方。壁纸路径是 look.txt 中的 we-file。默认关闭。"
+            )));
             v.push(head(t!("Ярлыки", "Shortcuts", ja: "ショートカット", pt: "Atalhos", zh: "快捷方式")));
             v.push(action(t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira", zh: "回收站"), "›", Op::Recycle));
             v.push(action(t!("Папка рабочего стола", "Desktop folder", ja: "デスクトップ フォルダー", pt: "Pasta da área de trabalho", zh: "桌面文件夹"), "›", Op::DeskFolder));
@@ -1035,6 +1062,11 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         }
         Op::MenuBlur => lk::menu_blur_set(!lk::menu_blur()),
         Op::MenuAlpha(a) => lk::menu_alpha_set(a),
+        Op::WinOpacity(a) => {
+            lk::window_opacity_set(a);
+            // this window takes the new alpha at once; Explorer and Control Panel read it when they open
+            winrust_common::winfx::translucent(h, a);
+        }
         Op::MenuRadius(r) => lk::menu_radius_set(r),
         Op::WinBlur => {
             lk::win_blur_set(!lk::win_blur());
@@ -1046,6 +1078,7 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
         Op::WallpaperReload => wallpaper_reload(),
         Op::Recycle => open_target("shell:RecycleBinFolder"),
         Op::DeskFolder => open_target(&format!(r"{}\Desktop", std::env::var("USERPROFILE").unwrap_or_default())),
+        Op::We => lk::we_set(!lk::we()), // the desktop re-reads look.txt on its 2 s timer
         Op::BarSide(i) => {
             st::set_side([st::Side::Bottom, st::Side::Left, st::Side::Right][(i as usize).min(2)]);
             changed();
@@ -1528,6 +1561,8 @@ unsafe fn create(page: u8) -> HWND {
     BITS.with(|b| *b.borrow_mut() = px);
     ensure_fonts();
     SetWindowRgn(hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, sc(24), sc(24)), 1);
+    // 87 % opaque by default (look.txt `window-opacity`): the whole window fades, children included
+    winrust_common::winfx::translucent(hwnd, lk::window_opacity());
     hwnd
 }
 

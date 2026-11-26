@@ -18,17 +18,52 @@ pub struct Progress {
     pub total_files: AtomicU64,
     pub bytes: AtomicU64,
     pub total_bytes: AtomicU64,
-    cancel: AtomicBool, // Esc: packing and unpacking stop at the next step
+    cancel: AtomicBool, // Esc / the stall watchdog: stop at the next chunk
     started: Instant,
+    /// Copy workers, by thread id. A drive that disappears can block *inside* ReadFile/WriteFile, where no flag is
+    /// ever read; the only way out is CancelSynchronousIo on the blocked thread (see `abort_io`).
+    io_threads: Mutex<Vec<u32>>,
+    /// Only a copy is watched for stalls and aborted at the syscall level (zip/unzip always make progress or fail).
+    io_watch: AtomicBool,
+    stalled: AtomicBool, // no byte moved for STALL: the destination is gone, say so instead of "cancelled"
 }
+
+/// Seconds without moving a byte before a copy is considered stuck on a dead device.
+const STALL: u64 = 45;
 
 impl Progress {
     fn new(what: String) -> Arc<Progress> {
-        Arc::new(Progress { what, files: 0.into(), total_files: 0.into(), bytes: 0.into(), total_bytes: 0.into(), cancel: false.into(), started: Instant::now() })
+        Arc::new(Progress {
+            what,
+            files: 0.into(),
+            total_files: 0.into(),
+            bytes: 0.into(),
+            total_bytes: 0.into(),
+            cancel: false.into(),
+            started: Instant::now(),
+            io_threads: Mutex::new(vec![]),
+            io_watch: false.into(),
+            stalled: false.into(),
+        })
     }
 
     fn cancelled(&self) -> bool {
         self.cancel.load(Relaxed)
+    }
+}
+
+/// Breaks a copy worker out of a blocked ReadFile/WriteFile (a removed USB or a dead share can hold it for minutes).
+fn abort_io(p: &Progress) {
+    use windows_sys::Win32::{Foundation::CloseHandle, System::IO::CancelSynchronousIo, System::Threading::{OpenThread, THREAD_TERMINATE}};
+    let ids = p.io_threads.lock().unwrap().clone();
+    for id in ids {
+        unsafe {
+            let t = OpenThread(THREAD_TERMINATE, 0, id);
+            if !t.is_null() {
+                CancelSynchronousIo(t);
+                CloseHandle(t);
+            }
+        }
     }
 }
 
@@ -55,10 +90,14 @@ pub fn busy() -> bool {
     RUNNING.load(Relaxed)
 }
 
-/// Asks the running pack / unpack to stop (a copy ignores it). The half-made archive or folder is removed.
+/// Asks the running job to stop; a copy also gets its blocked read/write interrupted. The half-made file or archive is
+/// removed.
 pub fn cancel() {
     if let Some(p) = JOB.lock().unwrap().as_ref() {
         p.cancel.store(true, Relaxed);
+        if p.io_watch.load(Relaxed) {
+            abort_io(p); // a dead device does not check the flag: break the syscall
+        }
     }
 }
 
@@ -72,9 +111,22 @@ fn spawn(h: isize, what: String, f: impl FnOnce(&Progress) -> Result<(), String>
     let ticker = std::thread::spawn({
         let p = p.clone();
         move || {
-            // repaint the status line a few times a second while the job runs
+            // Repaint the status line a few times a second, and watch the copy: a destination that vanishes can block a
+            // write forever, so after STALL seconds without a single byte the job aborts itself with a clear reason.
+            let (mut last, mut at) = (0u64, Instant::now());
             while RUNNING.load(Relaxed) {
                 unsafe { super::ui::status_dirty(h as _) };
+                if p.io_watch.load(Relaxed) {
+                    let b = p.bytes.load(Relaxed);
+                    if b != last {
+                        last = b;
+                        at = Instant::now();
+                    } else if !p.cancelled() && at.elapsed().as_secs() >= STALL {
+                        p.stalled.store(true, Relaxed);
+                        p.cancel.store(true, Relaxed);
+                        abort_io(&p);
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
             drop(p);
@@ -164,28 +216,83 @@ fn seek_penalty(p: &Path) -> bool {
 
 const BIG: u64 = 256 << 20;
 
-/// CopyFileExW; big files without the cache (faster for them, and they do not push everything else out of memory).
-fn copy_file(src: &Path, dst: &Path, size: u64, p: &Progress) -> std::io::Result<()> {
-    use windows_sys::Win32::Storage::FileSystem::{COPY_FILE_FAIL_IF_EXISTS, COPY_FILE_NO_BUFFERING, CopyFileExW};
-    unsafe extern "system" fn cb(_total: i64, done: i64, _st: i64, _sd: i64, _id: u32, _r: u32, _s: *mut core::ffi::c_void, _d: *mut core::ffi::c_void, data: *const core::ffi::c_void) -> u32 {
-        let (prog, last) = unsafe { &mut *(data as *mut (&Progress, u64)) };
-        prog.bytes.fetch_add(done as u64 - *last, Relaxed);
-        *last = done as u64;
-        0 // PROGRESS_CONTINUE
-    }
+/// One file, copied by hand in 1 MB chunks instead of `CopyFileExW`: the loop can check the cancel flag between chunks and
+/// a blocked read/write on a removed device can be interrupted with `CancelSynchronousIo` (see `abort_io`). A partial
+/// destination is removed. Timestamps and attributes are kept, like the shell does.
+fn copy_file(src: &Path, dst: &Path, _size: u64, p: &Progress) -> std::io::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, FILETIME, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{
+            CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FlushFileBuffers, GetFileAttributesW, GetFileTime, OPEN_EXISTING, ReadFile, SetFileAttributesW, SetFileTime, WriteFile,
+        },
+    };
     let w = |p: &Path| -> Vec<u16> { std::os::windows::ffi::OsStrExt::encode_wide(p.as_os_str()).chain([0]).collect() };
-    let mut state: (&Progress, u64) = (p, 0);
-    let flags = COPY_FILE_FAIL_IF_EXISTS | if size >= BIG { COPY_FILE_NO_BUFFERING } else { 0 };
-    let ok = unsafe { CopyFileExW(w(src).as_ptr(), w(dst).as_ptr(), Some(cb), &mut state as *mut _ as _, std::ptr::null_mut(), flags) } != 0;
-    p.bytes.fetch_add(size.saturating_sub(state.1), Relaxed); // empty files and anything the callback did not report
-    if ok { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    unsafe {
+        let hs = CreateFileW(w(src).as_ptr(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, std::ptr::null_mut());
+        if hs == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let hd = CreateFileW(w(dst).as_ptr(), GENERIC_WRITE, 0, std::ptr::null(), CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, std::ptr::null_mut());
+        if hd == INVALID_HANDLE_VALUE {
+            let e = std::io::Error::last_os_error();
+            CloseHandle(hs);
+            return Err(e);
+        }
+        let r = (|| -> std::io::Result<()> {
+            let mut buf = vec![0u8; 1 << 20];
+            loop {
+                if p.cancelled() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
+                }
+                let mut got = 0u32;
+                if ReadFile(hs, buf.as_mut_ptr() as _, buf.len() as u32, &mut got, std::ptr::null_mut()) == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if got == 0 {
+                    break;
+                }
+                let mut off = 0usize;
+                while off < got as usize {
+                    let mut put = 0u32;
+                    if WriteFile(hd, buf.as_ptr().add(off) as _, (got as usize - off) as u32, &mut put, std::ptr::null_mut()) == 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    off += put as usize;
+                    p.bytes.fetch_add(put as u64, Relaxed);
+                }
+            }
+            if FlushFileBuffers(hd) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let (mut c, mut a, mut m) = (std::mem::zeroed::<FILETIME>(), std::mem::zeroed::<FILETIME>(), std::mem::zeroed::<FILETIME>());
+            if GetFileTime(hs, &mut c, &mut a, &mut m) != 0 {
+                SetFileTime(hd, &c, &a, &m);
+            }
+            Ok(())
+        })();
+        CloseHandle(hd);
+        // keep the source's read-only / hidden flags; done after the copy so a read-only target never blocks its own writes
+        let attrs = GetFileAttributesW(w(src).as_ptr());
+        CloseHandle(hs);
+        if r.is_err() {
+            let _ = fs::remove_file(dst);
+        } else if attrs != 0xFFFF_FFFF {
+            SetFileAttributesW(w(dst).as_ptr(), attrs);
+        }
+        r
+    }
 }
 
 /// Copies `from` into `to` (names that exist there get " (2)"); `then_delete` = a move across drives: the sources go away
 /// only when every file arrived.
 pub fn copy(h: isize, from: Vec<PathBuf>, to: PathBuf, then_delete: bool) -> bool {
     let what = if then_delete { t!("Перемещение", "Moving", ja: "移動中", pt: "Movendo", zh: "正在移动") } else { t!("Копирование", "Copying", ja: "コピー中", pt: "Copiando", zh: "正在复制") }.to_string();
-    spawn(h, what, move |p| copy_now(&from, &to, then_delete, p))
+    spawn(h, what, move |p| {
+        p.io_watch.store(true, Relaxed); // watchdog + cancellable syscalls: the destination can vanish mid-copy
+        let r = copy_now(&from, &to, then_delete, p);
+        p.io_watch.store(false, Relaxed);
+        r
+    })
 }
 
 fn copy_now(from: &[PathBuf], to: &Path, then_delete: bool, p: &Progress) -> Result<(), String> {
@@ -210,6 +317,9 @@ fn copy_now(from: &[PathBuf], to: &Path, then_delete: bool, p: &Progress) -> Res
     std::thread::scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {
+                // Registered so a cancel can interrupt this thread if it is blocked inside a read/write on a dead device.
+                let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+                p.io_threads.lock().unwrap().push(id);
                 while let Some(e) = files.get(next.fetch_add(1, Relaxed) as usize) {
                     let dst = to.join(&e.1);
                     match copy_file(&e.0, &dst, e.2.unwrap(), p) {
@@ -217,10 +327,19 @@ fn copy_now(from: &[PathBuf], to: &Path, then_delete: bool, p: &Progress) -> Res
                         Err(err) => errors.lock().unwrap().push(format!("{}: {err}", e.0.display())),
                     }
                 }
+                p.io_threads.lock().unwrap().retain(|x| *x != id);
             });
         }
     });
     let errors = errors.into_inner().unwrap();
+    if p.cancelled() {
+        // Esc, or the watchdog gave up on a destination that stopped answering: not a per-file error to enumerate.
+        return Err(if p.stalled.load(Relaxed) {
+            t!("Приёмник перестал отвечать: копирование отменено", "The destination stopped responding; the copy was cancelled", ja: "コピー先が応答しなくなったため、コピーを中止しました", pt: "O destino parou de responder; a cópia foi cancelada", zh: "目标已无响应，复制已取消").to_string()
+        } else {
+            t!("Отменено", "Cancelled", ja: "キャンセルされました", pt: "Cancelado", zh: "已取消").to_string()
+        });
+    }
     if !errors.is_empty() {
         let more = if errors.len() > 5 { format!("\n... and {} more", errors.len() - 5) } else { String::new() };
         let kept = if then_delete { "\nNothing was deleted from the source." } else { "" };
@@ -391,6 +510,20 @@ mod tests {
         copy_now(&[d.join("src")], &d.join("dst"), true, &Progress::new(String::new())).unwrap();
         assert!(d.join("dst/src (2)/a/two.bin").is_file() && !d.join("src").exists());
         assert!(!can_fast_copy(&[d.join("dst")], &d.join("dst/src")), "into itself");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Esc (or the stall watchdog) must stop a copy between chunks and leave no half file behind.
+    #[test]
+    fn copy_cancels_and_removes_the_partial_destination() {
+        let d = tmp("cancel");
+        fs::create_dir_all(d.join("src")).unwrap();
+        fs::write(d.join("src/a.bin"), vec![3u8; 4_000_000]).unwrap();
+        let p = Progress::new(String::new());
+        p.cancel.store(true, Relaxed);
+        let r = copy_now(&[d.join("src")], &d.join("dst"), false, &p);
+        assert!(r.is_err());
+        assert!(!d.join("dst/src/a.bin").exists(), "the partial destination is removed");
         let _ = fs::remove_dir_all(&d);
     }
 
