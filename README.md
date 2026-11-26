@@ -139,8 +139,11 @@ Half the size of the Windows one, smaller fonts, Mica-style frost and opaque row
 - **Notifications** with a named pipe and `rs-notify`, a bell with an unread dot and a notification centre.
 - **Control Panel** in Rust (new crate, `plugins/rust-control`).
 - **A desktop metrics widget of our own** (`plugins/rs-metrics`): CPU, GPU, RAM, disks, disk I/O, network, temperatures
-  and uptime, each one on/off and with bar / ring / text styles, attached to the desktop under the icons and configured
-  from Ajustes → Widgets (or `%ProgramData%\WinRust\metrics.txt`); about 0.1 % of a core and 9 MB.
+  and uptime, each one in its own frosted pill with bar / ring / text styles, on/off per module, reorderable by drag and
+  detachable into its own always-there window. Temperatures per component: GPU through AMD ADL or NVIDIA NVML, disks
+  through SMART, CPU and board through LibreHardwareMonitor when it runs (the ACPI zone is a separate opt-in row), never a
+  number without a name. Lives on the desktop under the icons, configured from Ajustes → Widgets (or
+  `%ProgramData%\WinRust\metrics.txt`); about 0.05 % of a core and 10 MB.
 - **Desktop labels drawn by hand** (white text, black 1 px drop shadow) instead of the themed glow that smeared them over
   light wallpapers; the icons also refresh when either Desktop folder changes (`ReadDirectoryChangesW`, 250 ms debounce).
 
@@ -205,38 +208,38 @@ exact conditions are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Re-run the s
 powershell -ExecutionPolicy Bypass -File scripts\metrics.ps1
 ```
 
-**The whole shell, idle** — bar, desktop, supervisor, clipboard helper and hotkeys — costs **101.9 MB** and **3 % of one
-core** (0.25 % of this 12-thread CPU). The bar is the expensive part: it holds the blurred backdrop of every monitor.
-Setting `bar-blur=0` (or `menu-blur=0`) in `%ProgramData%\WinRust\look.txt` trades the frost for ~0 %.
+**The whole shell, idle** — bar, desktop, supervisor, clipboard helper and hotkeys — costs **107.4 MB** and **0.0 % of
+one core**: the bar's blur is one capture per monitor at half resolution, so idle no longer pays for it. `bar-blur=0`
+(or `menu-blur=0`) in `%ProgramData%\WinRust\look.txt` still trades the frost for nothing.
 
 | Process | RAM (idle) | CPU (idle, 1 core) |
 |---|---:|---:|
-| Bar (`topbar`) | 49.8 MB | 3.00 % |
-| Desktop (`rust-explorer --desktop`) | 30.2 MB | 0.00 % |
-| Supervisor (`rs-shell`) | 8.0 MB | 0.00 % |
-| Clipboard helper (`rs-clip`) | 7.4 MB | 0.00 % |
-| Desktop hotkeys (`reshell`) | 6.5 MB | 0.00 % |
-| **Total** | **101.9 MB** | **3.00 %** |
+| Bar (`topbar`) | 49.9 MB | 0.00 % |
+| Desktop (`rust-explorer --desktop`) | 21.5 MB | 0.00 % |
+| Supervisor (`rs-shell`) | 9.0 MB | 0.00 % |
+| Clipboard helper (`rs-clip`) | 20.9 MB | 0.00 % |
+| Desktop hotkeys (`reshell`) | 6.0 MB | 0.00 % |
+| **Total** | **107.4 MB** | **0.00 %** |
 
 **Opening an app** — median of 3, `CreateProcess` to the first visible frame — and what it holds while idle:
 
 | App | Window visible | RAM (idle) |
 |---|---:|---:|
-| `rs-calc` | 17 ms | 19.7 MB |
-| `rust-control` (Control Panel) | 29 ms | 19.7 MB |
-| `rtaskmgr-win32` (Task Manager) | 29 ms | 34.7 MB |
-| `photoview` | 30 ms | 18.3 MB |
-| `rust-notepad` | 30 ms | 22.9 MB |
-| File manager (new window) | 77 ms | 29.1 MB |
-| `rust-settings` | 136 ms | 30.9 MB |
+| `rs-calc` | 30 ms | 19.2 MB |
+| `rust-control` (Control Panel) | 38 ms | 19.2 MB |
+| `rtaskmgr-win32` (Task Manager) | 31 ms | 34.0 MB |
+| `photoview` | 30 ms | 18.6 MB |
+| `rust-notepad` | 39 ms | 19.8 MB |
+| File manager (new window) | 77 ms | 29.0 MB |
+| `rust-settings` | 248 ms | 30.4 MB |
 
 **UI and I/O**:
 
 | Operation | Latency |
 |---|---:|
-| Open the Start menu | 35 ms |
-| Open the bar menu (right click) | 26 ms |
-| Open the notification centre | 31 ms |
+| Open the Start menu | 32.6 ms |
+| Open the bar menu (right click) | 33.2 ms |
+| Open the notification centre | 28.4 ms |
 | Raise a notification (`rs-notify`, median of 10) | 9.0 ms |
 | Search the whole `C:` (`rs.exe winrust`, 101 hits) | 16 ms |
 | Supervisor brings the bar back after a kill | 5.3 s |

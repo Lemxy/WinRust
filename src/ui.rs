@@ -118,7 +118,7 @@ pub(crate) const N_EXTRA: usize = {
     }
     n
 };
-pub(crate) const ROW_H: f32 = 34.0;
+pub(crate) const ROW_H: f32 = 32.0; // one row less room per plugin: rs-metrics joined the ready group and the window must fit a 768p screen
 const LIST_TOP: f32 = 180.0; // the custom page's first row
 const EXTRA_SEC_Y: f32 = LIST_TOP + N_READY as f32 * ROW_H + 12.0;
 const EXTRA_TOP: f32 = EXTRA_SEC_Y + 26.0;

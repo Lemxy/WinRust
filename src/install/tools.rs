@@ -36,6 +36,20 @@ pub(crate) fn rs_dir() -> PathBuf {
     program_files().join("rs-shot")
 }
 
+pub(crate) fn mx_dir() -> PathBuf {
+    program_files().join("rs-metrics")
+}
+
+/// rs-metrics: one exe, no shortcut (rs-shell starts it at sign-in; the Widgets page in WinRust Settings points here).
+pub(crate) fn mx_install() -> Result<(), String> {
+    tool_install("rs-metrics.exe", &mx_dir(), None)
+}
+
+pub(crate) fn mx_uninstall() -> Result<(), String> {
+    tool_remove("rs-metrics.exe", &mx_dir(), None);
+    Ok(())
+}
+
 /// rs-shot: one exe, no registry changes. topbar looks for exactly this path for the capture shortcuts.
 pub(crate) fn rs_install() -> Result<(), String> {
     tool_install("rs-shot.exe", &rs_dir(), None)
