@@ -55,10 +55,13 @@ of the bar that was clicked.
 
 ### Start
 
-![Start menu](docs/screenshots/start.png)
+| Windows 11 style | Windows 10 style | Windows 7 style |
+|---|---|---|
+| ![Windows 11 style](docs/screenshots/start-11.png) | ![Windows 10 style](docs/screenshots/start-10.png) | ![Windows 7 style](docs/screenshots/start-7.png) |
 
-Windows 7, Windows 10 and Windows 11 styles (this is the Windows 10 one), pinned apps, independent hover per column, wheel
-scrolling, right-click on a tile (open, run as administrator, **uninstall**, pin), adjustable position and size.
+The same Start menu in its three styles (`start-style` in `look.txt`), all drawn by us: pinned apps, independent hover
+per column, wheel scrolling, right-click on an entry (open, run as administrator, **choose icon**, **uninstall**, pin),
+adjustable position and size.
 
 ### Context menu
 
@@ -120,6 +123,19 @@ Half the size of the Windows one, smaller fonts, Mica-style frost and opaque row
   existing EN/RU/JA/PT/ZH UI; `tools/i18n-check.ps1` audits coverage, placeholders and duplicates.
 - **Windows' own icons** for Explorer/Settings and sharp shell icons everywhere: `common::icon` takes the jumbo 256 px
   asset and scales it down with an alpha-aware area average.
+- **A bar per monitor, chosen per screen**: Ajustes → Barra de tareas → *Monitores* has one checkbox per display and
+  creates or closes that screen's bar immediately (`bar-monitors=0,1`); the shell never runs without one.
+- **Programs open on the monitor under the cursor**, windowed (kept size, centred) or fullscreen, including a late
+  fullscreen switch; the Start menu, the pinned tiles, the Run box, Settings, the task manager and `rust-explorer`
+  double clicks all go through `common/place.rs`, and our own windows are created there.
+- **A chosen icon per Start entry and for the Start button** (`common/starticons.rs`,
+  `%ProgramData%\WinRust\icons.txt`; `start-icon` in `look.txt`): any `.ico`/`.exe`/`.dll`, with a ✕ to go back.
+- **A Recycle Bin menu of its own**: right-click the bin in the sidebar (Open / Empty) or a row (Restore / Delete
+  permanently / Empty), with a confirmation for both destructive actions, and the row shows the file name.
+- **`.url` shortcuts run their URL**: Steam's desktop icons are Internet Shortcuts registered to
+  `rundll32 ieframe.dll,OpenURL`, which takes a URL and not the file; the shortcut's `URL=` is read and started, so the
+  game opens instead of "the destination '' is not valid".
+- **The notification centre is reachable**: the bell opens it (right click: Windows' notification settings).
 - **Notifications** with a named pipe and `rs-notify`, a bell with an unread dot and a notification centre.
 - **Control Panel** in Rust (new crate, `plugins/rust-control`).
 
