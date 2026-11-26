@@ -1101,7 +1101,14 @@ pub fn quick_load() -> Vec<PathBuf> {
 }
 
 /// The rows the pane shows: the list without the folders that are gone.
-pub fn quick_items() -> Vec<PathBuf> { quick_load().into_iter().filter(|p| p.is_dir()).collect() }
+pub fn quick_items() -> Vec<PathBuf> {
+    quick_load()
+        .into_iter()
+        // `is_dir` on a pin that lives on a removed drive blocks inside the volume driver; the cache knows which roots
+        // answered, so a pin on a missing drive is simply left out until the drive is back.
+        .filter(|p| (!crate::drives::ready() || crate::drives::holds(p)) && p.is_dir())
+        .collect()
+}
 
 pub fn quick_has(p: &Path) -> bool { quick_load().iter().any(|x| same(x, p)) }
 
