@@ -704,13 +704,39 @@ unsafe fn start_program(file: &Path) -> Result<(), String> {
     r
 }
 
-/// The shell's own "open". Two places need it: a program whose manifest asks for elevation (CreateProcessW fails with
-/// 740 and only the shell can raise the consent prompt), and a type the shell opens through an extension rather than a
-/// command (`.lnk`, `.cpl`, `.iso`). A type with no association at all never comes here: that one still gets our picker.
+/// `.url`: an Internet Shortcut. Steam writes one per desktop game icon, with `URL=steam://rungameid/…`.
+fn is_url_shortcut(file: &Path) -> bool {
+    file.extension().is_some_and(|e| e.eq_ignore_ascii_case("url"))
+}
+
+/// The `URL=` of an Internet Shortcut (an INI with a `[InternetShortcut]` section), or None when it has none.
+fn url_target(file: &Path) -> Option<String> {
+    let bytes = std::fs::read(file).ok()?;
+    let text = if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    text.lines().map(str::trim).find_map(|line| {
+        let (k, v) = line.split_once('=')?;
+        (k.trim().eq_ignore_ascii_case("URL") && !v.trim().is_empty()).then(|| v.trim().to_string())
+    })
+}
+
+/// The shell's own "open". Three places need it: a program whose manifest asks for elevation (CreateProcessW fails
+/// with 740 and only the shell can raise the consent prompt), a type the shell opens through an extension rather than a
+/// command (`.lnk`, `.cpl`, `.iso`), and the URL of an Internet Shortcut (the shell runs the protocol handler). A type
+/// with no association at all never comes here: that one still gets our picker.
 ///
 /// `SEE_MASK_NOCLOSEPROCESS` gives the started process, so following a shortcut also lands on the monitor under the
 /// cursor: the window belongs to the program the shell started, not to the shortcut.
 unsafe fn shell_open(file: &Path) -> bool {
+    shell_open_str(&file.to_string_lossy())
+}
+
+/// [`shell_open`] with a URL or any other shell target (`steam://…`, a path).
+unsafe fn shell_open_str(target: &str) -> bool {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
         System::Threading::GetProcessId,
@@ -719,7 +745,7 @@ unsafe fn shell_open(file: &Path) -> bool {
             WindowsAndMessaging::SW_SHOWNORMAL,
         },
     };
-    let (verb, target) = (wc("open"), wc(&file.to_string_lossy()));
+    let (verb, target) = (wc("open"), wc(target));
     let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
     sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -761,6 +787,16 @@ pub unsafe fn open_file(owner: HWND, file: &Path) {
             MessageBoxW(owner, wc(&e).as_ptr(), wc("WinRust Explorer").as_ptr(), MB_ICONWARNING);
         }
         return;
+    }
+    // `.url`: Steam's game icons on the desktop are Internet Shortcuts. Its class runs
+    // `rundll32 ieframe.dll,OpenURL <file>`, and ieframe takes a URL, not a path: it answers "the destination '' is not
+    // valid". The URL= inside is what Explorer runs (the `steam:` protocol handler).
+    if !file.is_dir() && is_url_shortcut(file) {
+        if let Some(u) = url_target(file) {
+            if shell_open_str(&u) {
+                return;
+            }
+        }
     }
     if !file.is_dir() && is_shortcut(file) && shell_open(file) {
         return;
@@ -1437,6 +1473,20 @@ mod tests {
         assert_eq!(args_after(r"%SystemRoot%\system32\NOTEPAD.EXE %1", &f), r#""C:\x\a b.txt""#);
         assert_eq!(args_after(r#""C:\App\app.exe" /n "%1""#, &f), r#"/n "C:\x\a b.txt""#);
         assert_eq!(args_after(r#""C:\App\app.exe""#, &f), r#""C:\x\a b.txt""#);
+    }
+
+    #[test]
+    fn a_url_shortcut_gives_its_url() {
+        let dir = std::env::temp_dir().join(format!("winrust-url-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("Sonic Mania.url");
+        std::fs::write(&f, "[InternetShortcut]\r\nURL=steam://rungameid/584400\r\nIconFile=C:\\x.exe\r\n").unwrap();
+        assert_eq!(super::url_target(&f).as_deref(), Some("steam://rungameid/584400"));
+        // no URL= line at all: None, so the caller keeps the normal association path
+        let g = dir.join("empty.url");
+        std::fs::write(&g, "[InternetShortcut]\r\nIconFile=C:\\x.exe\r\n").unwrap();
+        assert_eq!(super::url_target(&g), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
