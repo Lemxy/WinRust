@@ -13,6 +13,7 @@ pub enum Kind {
     Wifi,
     Cal,
     Start,
+    Weather,
     Menu, // right-click menu of the bar
 }
 
@@ -40,6 +41,9 @@ pub(crate) enum Act {
     Place(u8),  // a known folder / settings page of the Windows 7 column
     AllApps,    // the "All programs" bar
     Pin(usize), // a pinned tile: same target as App(i) but its own hover, so the list and the grid never light together
+    WeatherRefresh,
+    WeatherSettings,
+    WeatherNews(u8), // weather flyout headline: category * 4 + item
 }
 
 /// The touch keyboard (TabTip), else the classic on-screen keyboard. Windows opens it by itself only for the Explorer shell.
@@ -749,6 +753,7 @@ fn size(k: Kind) -> (i32, i32) {
     match k {
         Kind::Quick => (360, 252 + 44 * sliders()),
         Kind::Cal => (330, 340),
+        Kind::Weather => crate::weather::fly_size(),
         Kind::Wifi => (360, wifi_rows().2),
         Kind::Start => {
             let (w, h) = if style_ready(winrust_common::look::start_style()) {
@@ -852,6 +857,7 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
             v
         }
         Kind::Cal => vec![(r(w - 84, 10, w - 52, 42), Act::CalPrev), (r(w - 48, 10, w - 16, 42), Act::CalNext), (r(16, 10, w - 100, 42), Act::CalToday)],
+        Kind::Weather => crate::weather::rects(sc(w), sc(h)),
         Kind::Wifi => {
             let rows = wifi_rows().0;
             let mut v: Vec<_> = rows.iter().enumerate().map(|(i, &(t, b))| (r(12, t, w - 12, b), Act::Net(i))).collect();
@@ -1164,6 +1170,7 @@ pub fn toggle(k: Kind) {
                 crate::tlog("apps: refresh queued by panel open");
                 std::thread::spawn(load_apps); // apps installed since the last open show up (the panel repaints every second)
             }
+            Kind::Weather => crate::weather::opened(),
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
@@ -1415,6 +1422,15 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             GetLocalTime(&mut t);
             CAL.set((t.wYear as i32, t.wMonth as i32));
         }
+        Act::WeatherRefresh => crate::weather::request_now(),
+        Act::WeatherNews(code) => {
+            crate::weather::open_news(code);
+            close();
+        }
+        Act::WeatherSettings => {
+            crate::weather::open_config();
+            close();
+        }
         Act::Net(i) => {
             let n = NETS.with_borrow(|n| n.get(i).map(|n| (n.connected, n.profile.clone(), n.auth, n.secure, n.ssid.clone(), n.g)));
             let Some((connected, profile, auth, secure, ssid, iface)) = n else { return };
@@ -1556,7 +1572,7 @@ unsafe fn track(dc: HDC, rc: RECT, frac: f32) {
 }
 
 /// A raised rounded surface: a hairline edge (a soft shadow on the light style) around `base`.
-unsafe fn surface(dc: HDC, rc: RECT, base: u32, rad: i32) {
+pub(crate) unsafe fn surface(dc: HDC, rc: RECT, base: u32, rad: i32) {
     let light = style().light();
     if light {
         fill(dc, RECT { top: rc.top + sc(1), bottom: rc.bottom + sc(2), ..rc }, mix(pal().bg, pal().dim, 0.16), rad);
@@ -1712,6 +1728,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             SelectObject(dc, f_glyph);
             text(dc, "\u{E713}", gear, pal().text, DT_CENTER);
         }
+        Kind::Weather => crate::weather::paint(dc, cr, [f_txt, f_small, f_glyph, f_title, f_big, f_semi, f_label], card, over),
         Kind::Cal => {
             let (y, m) = CAL.get();
             SelectObject(dc, f_title);

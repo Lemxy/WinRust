@@ -16,6 +16,10 @@ pub const VERSION: u32 = 1;
 /// means "no bar", which is what a sender that does not know the field sends.
 pub const FLAG_PROGRESS: u32 = 1;
 
+/// `flags` bit: the record carries the detail tail (`bytes` .. `total_files`) and the bar offers the expand arrow with
+/// the transfer graph and the pin button.
+pub const FLAG_DETAILS: u32 = 2;
+
 pub const APP_LEN: usize = 64;
 pub const TITLE_LEN: usize = 128;
 pub const BODY_LEN: usize = 512;
@@ -41,6 +45,22 @@ pub struct NotifyWire {
     pub action_label: [u16; ACTION_LEN],
     pub action_cmd: [u16; CMD_LEN],
     pub id: [u16; ID_LEN],
+    // The detail tail (FLAG_DETAILS). It is appended after `id` on purpose: a record from an older sender ends there and
+    // the receiver's zero padding leaves these fields empty, so both directions keep working during an upgrade.
+    /// Bytes moved so far and total.
+    pub bytes: u64,
+    pub total_bytes: u64,
+    /// Progress speed (the counter behind `progress`) in bytes per second.
+    pub speed: u64,
+    /// Device read and write rates in bytes per second, for the graph.
+    pub read_bps: u64,
+    pub write_bps: u64,
+    /// Seconds left at `speed`; 0 = unknown.
+    pub eta_secs: u32,
+    pub files: u32,
+    pub total_files: u32,
+    /// Keeps the struct free of implicit tail padding (which would send uninitialised bytes).
+    pub reserved: u32,
 }
 
 /// The exact number of bytes a version 1 record occupies.
@@ -60,6 +80,15 @@ impl Default for NotifyWire {
             action_label: [0; ACTION_LEN],
             action_cmd: [0; CMD_LEN],
             id: [0; ID_LEN],
+            bytes: 0,
+            total_bytes: 0,
+            speed: 0,
+            read_bps: 0,
+            write_bps: 0,
+            eta_secs: 0,
+            files: 0,
+            total_files: 0,
+            reserved: 0,
         }
     }
 }
@@ -204,5 +233,28 @@ mod tests {
         assert_eq!(w.progress(), None);
         w.flags = FLAG_PROGRESS;
         assert_eq!(w.progress(), Some(0.0));
+    }
+
+    #[test]
+    fn detail_tail_round_trips_at_the_documented_offsets() {
+        // The pipe protocol has no framing of its own: a sender outside Rust (tests, scripts) writes these offsets.
+        let mut w = NotifyWire::new();
+        let base = &w as *const NotifyWire as usize;
+        let off = |p: *const u64| p as usize - base;
+        assert_eq!(off(&w.bytes), 3616);
+        assert_eq!(off(&w.total_bytes), 3624);
+        assert_eq!(off(&w.speed), 3632);
+        assert_eq!(off(&w.read_bps), 3640);
+        assert_eq!(off(&w.write_bps), 3648);
+        assert_eq!(off(&w.eta_secs as *const u32 as *const u64), 3656);
+        assert_eq!(off(&w.total_files as *const u32 as *const u64), 3664);
+        assert_eq!(WIRE_SIZE, 3672);
+        w.bytes = 123;
+        w.total_bytes = 456;
+        w.read_bps = 7;
+        w.write_bps = 9;
+        w.flags = FLAG_DETAILS;
+        let back = from_bytes(w.as_bytes());
+        assert_eq!((back.bytes, back.total_bytes, back.read_bps, back.write_bps, back.flags), (123, 456, 7, 9, FLAG_DETAILS));
     }
 }

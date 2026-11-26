@@ -69,6 +69,7 @@
 {} MT/s	{} MT/s
 {} need administrator rights and were left in place	{} necesitan derechos de administrador y se dejaron como estaban
 {} of {}	{} de {}
+{} of {} ({}%)	{} de {} ({}%)
 {} of {} ({}%)  \u{00B7}  {}/s	{} de {} ({}%)  \u{00B7}  {}/s
 {} of {} files	{} de {} archivos
 {} pcs	{} uds.
@@ -737,6 +738,7 @@ quarantine emptied: {} freed	cuarentena vaciada: {} liberados
 Queued	En cola
 Quick access	Acceso rápido
 Read speed	Velocidad de lectura
+Reading	Lectura
 reading the MFT failed at byte {0}, error {1}	error al leer la MFT en el byte {0}, error {1}
 Reading the MFT of {drive}: ...	Leyendo la MFT de {drive}: ...
 Recall: no snapshots of your screen	Recall: no hay capturas de tu pantalla
@@ -1043,6 +1045,7 @@ WinRust has been removed	WinRust se ha eliminado
 WinRust setup has finished	La instalación de WinRust ha terminado
 'Work' profile	Perfil «Trabajo»
 Write speed	Velocidad de escritura
+Writing	Escritura
 Yandex Browser	Yandex Browser
 Yes	Sí
 Yes, reset	Sí, restablecer
@@ -1605,3 +1608,60 @@ Show system metrics	Mostrar métricas del sistema
 First in the list: each widget gets its own on/off switch. The options below write metrics.txt, which the widget re-reads every second.	El primero de la lista: cada widget tendrá su propio interruptor. Las opciones de abajo escriben metrics.txt, que el widget relee cada segundo.
 Temp	Temp
 free	libres
+Location	Ubicación
+Created	Creado
+Modified	Modificado
+Accessed	Accedido
+Attributes	Atributos
+Label	Etiqueta
+File system	Sistema de archivos
+Total	Total
+Free	Libre
+Used	Usado
+Original location	Ubicación original
+Date deleted	Fecha de borrado
+In the Recycle Bin	En la papelera
+Read-only	Solo lectura
+Hidden	Oculto
+Archive	Archivo
+Calculating…	Calculando…
+{} bytes	{} bytes
+Could not change the attributes: {}	No se pudieron cambiar los atributos: {}
+Clear sky	Cielo despejado
+Mostly clear	Mayormente despejado
+Partly cloudy	Parcialmente nublado
+Overcast	Nublado
+Fog	Niebla
+Drizzle	Llovizna
+Rain	Lluvia
+Snow	Nieve
+Showers	Chubascos
+Snow showers	Chubascos de nieve
+Thunderstorm	Tormenta
+Thunderstorm with hail	Tormenta con granizo
+Tomorrow	Mañana
+No location	Sin ubicación
+My location	Mi ubicación
+Allow location access or set weather-city in weather.txt	Permite el acceso a la ubicación o define weather-city en weather.txt
+Finding the location…	Buscando ubicación…
+Loading…	Cargando…
+Could not load the weather	No se pudo cargar el tiempo
+No weather data	Sin datos del tiempo
+No forecast	Sin previsión
+Local	Zona
+Country	País
+Market	Mercado
+No city for local news	Sin ciudad para las noticias locales
+Could not load the news	No se pudieron cargar las noticias
+No headlines	Sin titulares
+Updating…	Actualizando…
+High {}° · Low {}°	Máx {}° · Mín {}°
+Updated {}	Actualizado {}
+Open settings	Abrir configuración
+Hide	Ocultar
+Weather	Clima
+Weather and news	Clima y noticias
+Show the weather and the headlines next to Start	Mostrar el clima y los titulares junto a Inicio
+Units	Unidades
+Open weather.txt	Abrir weather.txt
+Only the coordinates go to Open-Meteo; the headlines come from Google News RSS. Nothing else is sent.	Solo se envían las coordenadas a Open-Meteo; los titulares vienen del RSS de Google News. No se envía nada más.

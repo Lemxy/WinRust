@@ -1,6 +1,6 @@
 ﻿# WinRust metrics
 
-Measured on 2026-11-26 10:02 on the machine below. Method at the end; `scripts\metrics.ps1` reproduces every row.
+Measured on 2026-11-26 12:05 on the machine below, with the weather/news item enabled. Method at the end; `scripts\metrics.ps1` reproduces every row.
 
 | | |
 |---|---|
@@ -15,9 +15,9 @@ Measured on 2026-11-26 10:02 on the machine below. Method at the end; `scripts\m
 
 | Program | File | Size |
 |---|---|---:|
-| topbar | `topbar.exe` | 1.07 MB |
+| topbar | `topbar.exe` | 1.23 MB |
 | rs-shell | `rs-shell.exe` | 0.44 MB |
-| desktop | `rust-explorer.exe` | 1.34 MB |
+| desktop | `rust-explorer.exe` | 1.38 MB |
 | rs-clip | `rs-clip.exe` | 0.50 MB |
 | reshell | `reshell.exe` | 0.38 MB |
 | rs-calc | `rs-calc.exe` | 0.48 MB |
@@ -31,7 +31,7 @@ Measured on 2026-11-26 10:02 on the machine below. Method at the end; `scripts\m
 | rs-notify | `rs-notify.exe` | 0.24 MB |
 | rs.exe | `rs.exe` | 0.50 MB |
 | rs-launcher | `rs-launcher.exe` | 0.82 MB |
-| **Total** | | **10.7 MB** |
+| **Total** | | **10.9 MB** |
 
 ## Idle cost of the shell
 
@@ -39,12 +39,12 @@ RAM: `WorkingSet64` after 5 s of no work. CPU: `TotalProcessorTime` delta over t
 
 | Process | RAM | CPU (1 core) |
 |---|---:|---:|
-| Bar | 49.9 MB | 0.00 % |
+| Bar (with weather and news) | 45.9 MB | 0.13 % |
 | Desktop | 21.5 MB | 0.00 % |
 | Supervisor | 9.0 MB | 0.00 % |
 | Clipboard (Win+V) | 20.9 MB | 0.00 % |
 | Desktop hotkeys | 6.0 MB | 0.00 % |
-| **Shell total** | **107.4 MB** | **0.00 %** |
+| **Shell total** | **103.3 MB** | **0.13 %** |
 
 ## Desktop and the metrics widget
 
@@ -58,6 +58,18 @@ RAM: `WorkingSet64` after 5 s of no work. CPU: `TotalProcessorTime` delta over t
 The desktop icon list lives in the existing `rust-explorer --desktop` process (21.5 MB, 0.00 % above). Its folder
 watcher is one blocked `ReadDirectoryChangesW` per Desktop folder (no polling), and the drive list is read on a worker
 with a 3 s deadline, so a removed USB cannot freeze the window.
+
+## Weather and the copy toast
+
+The bar row above was taken with the weather item on: 60 s with the flyout closed, private memory 12.1 MB, 8 threads and
+590 handles. The weather worker is asleep between refreshes; it wakes once every 15 minutes (or when the flyout is opened
+with data older than 5 minutes), does one HTTP request per feed and stores the result in memory. The 0.13 % includes the
+bar's own frost repaint; the weather worker itself added no measurable CPU in this window.
+
+The copy detail has no process of its own. `rust-explorer` sends one 3.7 KB `NotifyWire` every 500 ms while a job runs
+(about 7 KB/s, only while the bar is listening) and the bar keeps 60 samples × 8 bytes for each of the two graph lines
+(under 1 KB per open card). The record is written from the job's ticker thread, never from a copy worker, and a missing
+bar just drops it, so the transfer can never wait for the notification UI.
 
 ## Cold start and idle cost of each app
 

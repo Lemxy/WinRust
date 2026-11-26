@@ -97,6 +97,9 @@ enum Op {
     TaskView,
     Notify,
     NotifyTimeout,
+    Weather,
+    WeatherUnit(bool),
+    WeatherFile,
     StartPos(bool),
     StartStyle(u8),
     StartScale(u8),
@@ -467,6 +470,19 @@ fn rows(cat: u8) -> Vec<Row> {
             v.push(head(t!("Уведомления", "Notifications", ja: "通知", pt: "Notificações", zh: "通知")));
             v.push(check(t!("Показывать уведомления", "Show notifications", ja: "通知を表示", pt: "Mostrar notificações", zh: "显示通知"), lk::notify(), Op::Notify));
             v.push(action(t!("Время на экране", "On screen for", ja: "表示時間", pt: "Tempo na tela", zh: "显示时长"), &format!("{} s ›", lk::notify_timeout()), Op::NotifyTimeout));
+            v.push(head(t!("Климат и новости", "Weather and news", ja: "天気とニュース", pt: "Clima e notícias", zh: "天气与新闻")));
+            v.push(check(t!("Показывать климат и заголовки рядом с «Пуском»", "Show the weather and the headlines next to Start", ja: "スタートの隣に天気と見出しを表示", pt: "Mostrar o clima e as manchetes junto ao Iniciar", zh: "在开始旁边显示天气和头条"), weather_on(), Op::Weather));
+            v.push(head(t!("Единицы", "Units", ja: "単位", pt: "Unidades", zh: "单位")));
+            v.push(choice("°C", !weather_f(), Op::WeatherUnit(false)));
+            v.push(choice("°F", weather_f(), Op::WeatherUnit(true)));
+            v.push(action(t!("Открыть weather.txt", "Open weather.txt", ja: "weather.txt を開く", pt: "Abrir weather.txt", zh: "打开 weather.txt"), "›", Op::WeatherFile));
+            v.push(info(t!(
+                "В Open-Meteo уходят только координаты, заголовки приходят из RSS Google News. Больше ничего не отправляется.",
+                "Only the coordinates go to Open-Meteo; the headlines come from Google News RSS. Nothing else is sent.",
+                ja: "Open-Meteo には座標のみ、見出しは Google News RSS から取得します。それ以外は送信しません。",
+                pt: "Somente as coordenadas vão para o Open-Meteo; as manchetes vêm do RSS do Google News. Nada mais é enviado.",
+                zh: "仅坐标发送到 Open-Meteo；头条来自 Google News RSS，不发送其他内容。"
+            )));
         }
         START => {
             v.push(head(t!("Положение", "Position", ja: "位置", pt: "Posição", zh: "位置")));
@@ -1203,6 +1219,15 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             };
             lk::notify_timeout_set(next);
         }
+        Op::Weather => {
+            weather_set("weather", if weather_on() { "0" } else { "1" });
+            changed();
+        }
+        Op::WeatherUnit(f) => {
+            weather_set("weather-unit", if f { "f" } else { "c" });
+            changed();
+        }
+        Op::WeatherFile => weather_open_config(),
         Op::StartPos(left) => lk::start_left_set(left),
         Op::StartStyle(i) => lk::start_style_set(i as i32),
         Op::StartScale(i) => lk::start_scale_set(i as i32),
@@ -1549,6 +1574,62 @@ fn clear_history() {
         let _ = std::fs::remove_file(p);
     }
     changed();
+}
+
+/// `%ProgramData%\WinRust\weather.txt`: the bar reacts within a second; the settings window only edits these keys.
+fn weather_file() -> PathBuf {
+    PathBuf::from(std::env::var_os("ProgramData").unwrap_or_default()).join(r"WinRust\weather.txt")
+}
+
+fn weather_read(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(weather_file()).ok()?;
+    text.lines().filter_map(|l| l.split_once('=')).find(|(k, _)| k.trim().eq_ignore_ascii_case(key)).map(|(_, v)| v.trim().to_string())
+}
+
+fn weather_on() -> bool {
+    weather_read("weather").and_then(|v| v.parse::<i32>().ok()).map_or(true, |v| v != 0)
+}
+
+fn weather_f() -> bool {
+    weather_read("weather-unit").is_some_and(|v| {
+        let v = v.trim().to_ascii_lowercase();
+        v == "f" || v == "fahrenheit" || v == "°f"
+    })
+}
+
+fn weather_set(key: &str, value: &str) {
+    let f = weather_file();
+    let old = std::fs::read_to_string(&f).unwrap_or_default();
+    let prefix = format!("{key}=");
+    let mut out = String::new();
+    let mut found = false;
+    for line in old.lines() {
+        if line.trim_start().to_ascii_lowercase().starts_with(&prefix) {
+            out.push_str(&format!("{key}={value}\n"));
+            found = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !found {
+        out.push_str(&format!("{key}={value}\n"));
+    }
+    if let Some(d) = f.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(f, out);
+}
+
+fn weather_open_config() {
+    let f = weather_file();
+    if !f.exists() {
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(&f, "weather=1\nweather-unit=c\nweather-city=\nweather-lat=\nweather-lon=\nweather-refresh=15\nweather-news=local,country,market\nweather-browser=default\n");
+    }
+    unsafe { open_target(&f.to_string_lossy()) };
 }
 
 /// Opens a URI, a `shell:` address or a folder with the desktop user's token.

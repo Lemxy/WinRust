@@ -31,6 +31,7 @@ use winrust_common::{
     look,
     notify::NotifyWire,
     style::{icon_face, ui_face},
+    Lang,
 };
 
 use super::*;
@@ -40,10 +41,14 @@ pub(crate) const POST_MSG: u32 = WM_APP + 20;
 
 const TOAST_W: i32 = 380;
 const TOAST_H: i32 = 96;
+/// Height with the transfer detail open (speed, ETA, read/write graph and file count).
+const TOAST_DETAIL_H: i32 = 216;
 const TOAST_GAP: i32 = 8;
 const MAX_TOASTS: usize = 3;
 const TOAST_ANIM_MS: f32 = 180.0;
 const TOAST_SLIDE: i32 = 24;
+/// Samples kept for the graph (one every 500 ms while the job runs).
+const HIST_MAX: usize = 60;
 
 const PANEL_W: i32 = 360;
 const PANEL_H: i32 = 420;
@@ -67,6 +72,16 @@ pub struct Notification {
     pub timeout_ms: u32,
     /// 0..1 draws the progress bar and keeps the toast open; negative = no bar.
     pub progress: f32,
+    /// The optional transfer block: the expand arrow, the graph and the pin button.
+    pub details: bool,
+    pub bytes: u64,
+    pub total_bytes: u64,
+    pub speed: u64,
+    pub read_bps: u64,
+    pub write_bps: u64,
+    pub eta_secs: u32,
+    pub files: u32,
+    pub total_files: u32,
     pub action_label: String,
     pub action_cmd: String,
 }
@@ -178,6 +193,15 @@ fn server() {
                         icon: w.icon(),
                         timeout_ms: w.timeout_ms,
                         progress: w.progress().map_or(-1.0, |p| p),
+                        details: w.flags & winrust_common::notify::FLAG_DETAILS != 0,
+                        bytes: w.bytes,
+                        total_bytes: w.total_bytes,
+                        speed: w.speed,
+                        read_bps: w.read_bps,
+                        write_bps: w.write_bps,
+                        eta_secs: w.eta_secs,
+                        files: w.files,
+                        total_files: w.total_files,
                         action_label: w.action_label(),
                         action_cmd: w.action_cmd(),
                     });
@@ -209,9 +233,16 @@ unsafe fn show(mut n: Notification) {
     }
 
     if let Some(h) = visible(&n.id) {
+        let mut collapse = false;
         if let Some(t) = tst(h) {
+            if n.details {
+                let (r, w) = sample_pair(&n);
+                push_hist(&mut t.read_hist, r);
+                push_hist(&mut t.write_hist, w);
+            }
+            collapse = !n.details && t.expanded;
             t.n = n.clone();
-            if has_progress(&n) {
+            if has_progress(&n) || t.pinned {
                 KillTimer(h, 2);
             } else if t.phase == 1 && !t.hover {
                 let ms = timeout(&n);
@@ -219,6 +250,9 @@ unsafe fn show(mut n: Notification) {
                 t.remaining = ms as u64;
                 SetTimer(h, 2, ms, None);
             }
+        }
+        if collapse {
+            set_expanded(h, false);
         }
         InvalidateRect(h, null(), 0);
         record(&n, false);
@@ -233,22 +267,17 @@ unsafe fn show(mut n: Notification) {
             None => break,
         }
     }
-    // Move the ones already there up before the capture: the new toast gets a clean desktop behind it.
-    let list = STACK.with(|s| s.borrow().clone());
-    for (i, &h) in list.iter().enumerate() {
-        place_toast(h, i + 1);
-    }
-
     let (w, h) = (sc(TOAST_W), sc(TOAST_H));
-    let (x, y) = slot(0, w, h);
     let class = wide("topbar_toast");
+    // Created hidden at the origin; the stack layout below gives it its slot, and only then is the desktop behind it
+    // captured (the older toasts have already moved up, so none of them is in the capture).
     let hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         class.as_ptr(),
         class.as_ptr(),
         WS_POPUP,
-        x + sc(TOAST_SLIDE),
-        y,
+        0,
+        0,
         w,
         h,
         null_mut(),
@@ -263,14 +292,21 @@ unsafe fn show(mut n: Notification) {
     let face = wide(ui_face());
     let gface = wide(icon_face());
     let font = |f: &[u16], px: i32, wt: i32| unsafe { CreateFontW(-sc(px), 0, 0, 0, wt, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr()) };
+    let (r0, w0) = sample_pair(&n);
     let st = Box::new(Toast {
         n: n.clone(),
-        base_x: x,
-        base_y: y,
+        base_x: 0,
+        base_y: 0,
         t0: now_ms(),
         phase: 0,
         hover: false,
         xhot: false,
+        chot: false,
+        phot: false,
+        expanded: false,
+        pinned: false,
+        read_hist: VecDeque::from([r0]),
+        write_hist: VecDeque::from([w0]),
         due: 0,
         remaining: timeout(&n) as u64,
         px: Vec::new(),
@@ -279,6 +315,9 @@ unsafe fn show(mut n: Notification) {
     });
     let ptr = Box::into_raw(st);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
+    STACK.with(|s| s.borrow_mut().insert(0, hwnd));
+    layout_stack();
+    let (x, y) = tst(hwnd).map_or((0, 0), |t| (t.base_x, t.base_y));
     // The window is still hidden, so this is what the screen shows behind the toast.
     let px = if look::menu_blur() {
         let radius = sc(look::menu_radius()).max(h / 22).max(sc(8));
@@ -291,7 +330,7 @@ unsafe fn show(mut n: Notification) {
     }
     SetWindowRgn(hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(12), rr(12)), 1);
     SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
-    STACK.with(|s| s.borrow_mut().insert(0, hwnd));
+    SetWindowPos(hwnd, HWND_TOPMOST, x + sc(TOAST_SLIDE), y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     InvalidateRect(hwnd, null(), 0);
     record(&n, true);
@@ -315,6 +354,23 @@ fn panel_visible() -> bool {
 
 fn has_progress(n: &Notification) -> bool {
     n.progress.is_finite() && n.progress >= 0.0
+}
+
+/// The pair of samples the graph stores for this record. A job that does not instrument its two sides (ZIP) still has a
+/// progress speed: that is drawn as the write curve instead of an empty graph.
+fn sample_pair(n: &Notification) -> (u64, u64) {
+    if n.read_bps == 0 && n.write_bps == 0 && n.speed > 0 {
+        (0, n.speed)
+    } else {
+        (n.read_bps, n.write_bps)
+    }
+}
+
+fn push_hist(q: &mut VecDeque<u64>, v: u64) {
+    q.push_back(v);
+    while q.len() > HIST_MAX {
+        q.pop_front();
+    }
 }
 
 fn timeout(n: &Notification) -> u32 {
@@ -386,6 +442,16 @@ struct Toast {
     phase: u8,
     hover: bool,
     xhot: bool,
+    /// Hover state of the expand arrow and of the pin button.
+    chot: bool,
+    phot: bool,
+    /// The transfer block is open (only when `n.details`).
+    expanded: bool,
+    /// Pinned by the user: no auto-close, it stays until the ✕ is clicked.
+    pinned: bool,
+    /// Bytes/s samples for the graph, newest last.
+    read_hist: VecDeque<u64>,
+    write_hist: VecDeque<u64>,
     /// When the auto-close timer fires (GetTickCount64).
     due: u64,
     /// What is left of the timeout while the pointer rests on the toast.
@@ -403,15 +469,17 @@ unsafe fn tst<'a>(hwnd: HWND) -> Option<&'a mut Toast> {
     tptr(hwnd).as_mut()
 }
 
-/// Screen position of stack slot `i` (0 = the bottom one), inside the primary monitor's work area.
-unsafe fn slot(i: usize, w: i32, h: i32) -> (i32, i32) {
+/// Right edge, bottom and top of the stack inside the current monitor's work area.
+unsafe fn stack_anchor() -> (i32, i32, i32) {
     let wa = work_area();
     // the bar is only on the primary: on a secondary monitor the toast may use the whole work area
     let primary = wa.right == GetSystemMetrics(SM_CXSCREEN) && wa.bottom <= GetSystemMetrics(SM_CYSCREEN);
     let bottom = if vert() || at_top() || !primary { wa.bottom } else { wa.bottom.min(bar_top()) };
-    let x = wa.right - w - sc(8);
-    let y = (bottom - h - sc(8) - i as i32 * (h + sc(TOAST_GAP))).max(wa.top + sc(8));
-    (x, y)
+    (wa.right - sc(8), bottom, wa.top + sc(8))
+}
+
+fn toast_height(t: &Toast) -> i32 {
+    sc(if t.expanded { TOAST_DETAIL_H } else { TOAST_H })
 }
 
 unsafe fn work_area() -> RECT {
@@ -431,23 +499,84 @@ unsafe fn work_area() -> RECT {
     r
 }
 
-unsafe fn place_toast(hwnd: HWND, i: usize) {
-    let (w, h) = (sc(TOAST_W), sc(TOAST_H));
-    let (x, y) = slot(i, w, h);
-    if let Some(t) = tst(hwnd) {
-        t.base_x = x;
-        t.base_y = y;
-        if t.phase != 2 {
-            SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+/// Lays the stack out from the bottom: slot 0 (the newest toast) rests on the work area and every older one sits above
+/// it. Toasts can now have two heights (collapsed and with the transfer detail), so this adds their real heights up
+/// instead of multiplying a single one.
+unsafe fn layout_stack() {
+    let (right, mut y, top) = stack_anchor();
+    let x = right - sc(TOAST_W);
+    let list = STACK.with(|s| s.borrow().clone());
+    for h in list {
+        let th = tst(h).map_or(sc(TOAST_H), |t| toast_height(t));
+        y = (y - th).max(top);
+        if let Some(t) = tst(h) {
+            t.base_x = x;
+            t.base_y = y;
         }
+        SetWindowPos(h, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        y -= sc(TOAST_GAP);
     }
 }
 
-unsafe fn reposition() {
-    let list = STACK.with(|s| s.borrow().clone());
-    for (i, &h) in list.iter().enumerate() {
-        place_toast(h, i);
+/// Opens or closes the transfer block: resizes the window, re-captures the frost behind the taller rect and moves the
+/// older toasts up (or back down). Safe to call on an update that ends the job.
+unsafe fn set_expanded(hwnd: HWND, on: bool) {
+    let h = {
+        let Some(t) = tst(hwnd) else { return };
+        if t.expanded == on {
+            return;
+        }
+        t.expanded = on;
+        toast_height(t)
+    };
+    let w = sc(TOAST_W);
+    let was_visible = IsWindowVisible(hwnd) != 0;
+    if was_visible {
+        ShowWindow(hwnd, SW_HIDE);
     }
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, w, h, SWP_NOMOVE | SWP_NOACTIVATE);
+    SetWindowRgn(hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(12), rr(12)), 1);
+    if let Some(t) = tst(hwnd) {
+        t.px.clear();
+    }
+    layout_stack();
+    let (x, y) = tst(hwnd).map_or((0, 0), |t| (t.base_x, t.base_y));
+    let px = if look::menu_blur() {
+        let radius = sc(look::menu_radius()).max(h / 22).max(sc(8));
+        crate::blur::capture_rect(RECT { left: x, top: y, right: x + w, bottom: y + h }, radius)
+    } else {
+        Vec::new()
+    };
+    if let Some(t) = tst(hwnd) {
+        t.px = px;
+    }
+    if was_visible {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    InvalidateRect(hwnd, null(), 0);
+}
+
+/// Pins or unpins the toast. A pinned toast never auto-closes; unpinning one whose job already finished starts the
+/// normal timeout again.
+unsafe fn toggle_pin(hwnd: HWND) {
+    let mut restart = false;
+    if let Some(t) = tst(hwnd) {
+        t.pinned = !t.pinned;
+        if t.pinned {
+            KillTimer(hwnd, 2);
+        } else if t.phase == 1 && !has_progress(&t.n) && !t.hover {
+            restart = true;
+        }
+    }
+    if restart {
+        if let Some(t) = tst(hwnd) {
+            let ms = timeout(&t.n);
+            t.due = now_ms() + ms as u64;
+            t.remaining = ms as u64;
+            SetTimer(hwnd, 2, ms, None);
+        }
+    }
+    InvalidateRect(hwnd, null(), 0);
 }
 
 unsafe fn start_out(hwnd: HWND) {
@@ -462,7 +591,7 @@ unsafe fn start_out(hwnd: HWND) {
     KillTimer(hwnd, 2);
     SetTimer(hwnd, 1, 16, None);
     STACK.with(|s| s.borrow_mut().retain(|&h| h != hwnd));
-    reposition();
+    layout_stack();
 }
 
 /// One 16 ms animation frame: the toast slides in from the right while fading in, and out the same way.
@@ -481,7 +610,7 @@ unsafe fn step(hwnd: HWND) {
             if q >= 1.0 {
                 t.phase = 1;
                 KillTimer(hwnd, 1);
-                if !has_progress(&t.n) && !t.hover {
+                if !has_progress(&t.n) && !t.hover && !t.pinned {
                     let ms = timeout(&t.n);
                     t.due = now + ms as u64;
                     t.remaining = ms as u64;
@@ -505,6 +634,46 @@ unsafe fn step(hwnd: HWND) {
 
 fn close_rect(w: i32) -> RECT {
     RECT { left: w - sc(30), top: sc(6), right: w - sc(6), bottom: sc(30) }
+}
+
+/// The expand arrow, left of the ✕.
+fn chevron_rect(w: i32) -> RECT {
+    RECT { left: w - sc(58), top: sc(6), right: w - sc(34), bottom: sc(30) }
+}
+
+/// The pin button, left of the arrow (present while the transfer detail exists or the toast is already pinned).
+fn pin_rect(w: i32) -> RECT {
+    RECT { left: w - sc(86), top: sc(6), right: w - sc(62), bottom: sc(30) }
+}
+
+/// Bytes with one decimal and a unit, using the shell's decimal separator.
+fn bytes_text(b: u64) -> String {
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let (mut v, mut u) = (b as f64, 0usize);
+    while v >= 1024.0 && u + 1 < units.len() {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        return format!("{b} B");
+    }
+    let s = format!("{v:.1}");
+    let s = if winrust_common::lang::get() == Lang::Es { s.replace('.', ",") } else { s };
+    format!("{s} {}", units[u])
+}
+
+fn rate_text(bps: u64) -> String {
+    format!("{}/s", bytes_text(bps))
+}
+
+fn eta_text(secs: u32) -> String {
+    if secs == 0 {
+        "—".to_string()
+    } else if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+    } else {
+        format!("{:02}:{:02}", secs / 60, secs % 60)
+    }
 }
 
 fn in_rect(r: RECT, x: i32, y: i32) -> bool {
@@ -550,8 +719,9 @@ unsafe fn paint_toast(hwnd: HWND) {
     SetBkMode(dc, TRANSPARENT as i32);
     let [f_app, f_body, f_title, f_glyph] = t.fonts;
 
-    // the icon (or the app glyph on an accent-tinted tile)
-    let (is, ix, iy) = (sc(32), sc(14), (cr.bottom - sc(32)) / 2);
+    // the icon (or the app glyph on an accent-tinted tile); with the detail open it stays in the header row
+    let iy = if t.expanded { sc(14) } else { (cr.bottom - sc(32)) / 2 };
+    let (is, ix) = (sc(32), sc(14));
     let ir = RECT { left: ix, top: iy, right: ix + is, bottom: iy + is };
     if !t.icon.is_null() {
         winrust_common::icon::draw(dc, t.icon, ix, iy, is);
@@ -562,7 +732,8 @@ unsafe fn paint_toast(hwnd: HWND) {
     }
 
     let left = sc(56);
-    let right = cr.right - sc(40);
+    // the buttons own the top-right corner: keep the text out of their way
+    let right = cr.right - sc(if t.n.details || t.pinned { 90 } else { 40 });
     let app: &str = if t.n.app.is_empty() { t!("Уведомление", "Notification", ja: "通知", pt: "Notificação", zh: "通知") } else { t.n.app.as_str() };
     SelectObject(dc, f_app);
     text(dc, app, RECT { left, top: sc(10), right, bottom: sc(24) }, p.dim, DT_LEFT);
@@ -580,7 +751,7 @@ unsafe fn paint_toast(hwnd: HWND) {
     }
 
     if has_progress(&t.n) {
-        let by = cr.bottom - sc(13);
+        let by = if t.expanded { sc(81) } else { cr.bottom - sc(13) };
         let br = RECT { left, top: by, right: cr.right - sc(14), bottom: by + sc(3) };
         fill(dc, br, mix(p.bg, p.text, 0.16), sc(2));
         let fw = ((br.right - br.left) as f32 * t.n.progress.clamp(0.0, 1.0)) as i32;
@@ -588,19 +759,114 @@ unsafe fn paint_toast(hwnd: HWND) {
             fill(dc, RECT { right: br.left + fw, ..br }, p.accent, sc(2));
         }
     }
+    if t.expanded {
+        fill(dc, RECT { left: sc(14), top: sc(85), right: cr.right - sc(14), bottom: sc(86) }, p.line, 0);
+        paint_details(dc, cr, t, p, f_app, f_body, f_title);
+    }
 
-    let xr = close_rect(cr.right);
-    if t.xhot {
-        fill(dc, xr, mix(p.bg, p.accent, 0.22), sc(6));
+    let mut buttons: Vec<(RECT, &str, bool, bool)> = vec![(close_rect(cr.right), "\u{E711}", t.xhot, false)];
+    if t.n.details || t.pinned {
+        buttons.push((pin_rect(cr.right), if t.pinned { "\u{E840}" } else { "\u{E718}" }, t.phot, t.pinned));
+    }
+    if t.n.details {
+        buttons.push((chevron_rect(cr.right), if t.expanded { "\u{E70E}" } else { "\u{E70D}" }, t.chot, t.expanded));
     }
     SelectObject(dc, f_glyph);
-    text(dc, "\u{E711}", xr, if t.xhot { p.accent } else { mix(p.dim, p.text, 0.3) }, DT_CENTER);
+    for (r, glyph, hot, on) in buttons {
+        if hot || on {
+            fill(dc, r, mix(p.bg, p.accent, 0.22), sc(6));
+        }
+        let col = if on || hot { p.accent } else { mix(p.dim, p.text, 0.3) };
+        text(dc, glyph, r, col, DT_CENTER);
+    }
 
     BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, old);
     DeleteObject(bmp);
     DeleteDC(dc);
     EndPaint(hwnd, &ps);
+}
+
+/// The expanded part: speed and ETA, the two current rates, the read/write graph and the file count. Only called while
+/// the window is tall enough for it.
+unsafe fn paint_details(dc: HDC, cr: RECT, t: &Toast, p: &winrust_common::style::Pal, f_app: HFONT, f_body: HFONT, f_title: HFONT) {
+    let (left, right) = (sc(14), cr.right - sc(14));
+    let (r_now, w_now) = sample_pair(&t.n);
+
+    // speed (left) and time left (right)
+    SelectObject(dc, f_app);
+    text(dc, t!("Скорость", "Speed", ja: "速度", pt: "Velocidade", zh: "速度"), RECT { left, top: sc(88), right: left + sc(58), bottom: sc(104) }, p.dim, DT_LEFT);
+    SelectObject(dc, f_title);
+    text(dc, &rate_text(t.n.speed), RECT { left: left + sc(58), top: sc(88), right: left + sc(190), bottom: sc(104) }, p.text, DT_LEFT);
+    SelectObject(dc, f_app);
+    text(dc, t!("Осталось", "Time left", ja: "残り時間", pt: "Tempo restante", zh: "剩余时间"), RECT { left: right - sc(142), top: sc(88), right: right - sc(58), bottom: sc(104) }, p.dim, DT_RIGHT);
+    SelectObject(dc, f_body);
+    text(dc, &eta_text(t.n.eta_secs), RECT { left: right - sc(56), top: sc(88), right, bottom: sc(104) }, p.text, DT_RIGHT);
+
+    // read and write, each with its graph colour
+    let mid = left + (right - left) / 2;
+    let dot = |x: i32, top: i32| RECT { left: x, top, right: x + sc(6), bottom: top + sc(6) };
+    fill(dc, dot(left, sc(111)), p.accent, sc(3));
+    fill(dc, dot(mid + sc(4), sc(111)), GOOD, sc(3));
+    SelectObject(dc, f_app);
+    text(dc, t!("Чтение", "Reading", ja: "読み取り", pt: "Leitura", zh: "读取"), RECT { left: left + sc(11), top: sc(105), right: left + sc(66), bottom: sc(121) }, p.dim, DT_LEFT);
+    text(dc, t!("Запись", "Writing", ja: "書き込み", pt: "Escrita", zh: "写入"), RECT { left: mid + sc(15), top: sc(105), right: mid + sc(70), bottom: sc(121) }, p.dim, DT_LEFT);
+    SelectObject(dc, f_body);
+    text(dc, &rate_text(r_now), RECT { left: left + sc(66), top: sc(105), right: mid - sc(6), bottom: sc(121) }, p.text, DT_LEFT);
+    text(dc, &rate_text(w_now), RECT { left: mid + sc(70), top: sc(105), right, bottom: sc(121) }, p.text, DT_LEFT);
+
+    // the graph: read in the accent, write in green, 30 s of samples
+    let gr = RECT { left, top: sc(124), right, bottom: sc(194) };
+    fill(dc, gr, mix(p.bg, p.text, 0.05), sc(6));
+    let inner = RECT { left: gr.left + sc(8), top: gr.top + sc(8), right: gr.right - sc(8), bottom: gr.bottom - sc(8) };
+    for k in 1..3 {
+        let y = inner.top + (inner.bottom - inner.top) * k / 3;
+        fill(dc, RECT { left: inner.left, top: y, right: inner.right, bottom: y + 1 }, p.line, 0);
+    }
+    let max = t.read_hist.iter().chain(t.write_hist.iter()).copied().max().unwrap_or(0).max(1);
+    draw_series(dc, &t.read_hist, max, inner, p.accent);
+    draw_series(dc, &t.write_hist, max, inner, GOOD);
+
+    // file count and percentage
+    SelectObject(dc, f_app);
+    text(dc, t!("Файлы", "Files", ja: "ファイル", pt: "Arquivos", zh: "文件"), RECT { left, top: sc(197), right: left + sc(42), bottom: sc(213) }, p.dim, DT_LEFT);
+    let files = if t.n.total_files > 0 { format!("{} / {}", t.n.files, t.n.total_files) } else { "—".to_string() };
+    text(dc, &files, RECT { left: left + sc(44), top: sc(197), right: mid, bottom: sc(213) }, p.text, DT_LEFT);
+    let pct = if t.n.total_bytes > 0 { (t.n.bytes.saturating_mul(100) / t.n.total_bytes).min(100) } else { (t.n.progress.max(0.0) * 100.0).round() as u64 };
+    SelectObject(dc, f_title);
+    text(dc, &format!("{pct}%"), RECT { left: right - sc(60), top: sc(197), right, bottom: sc(213) }, p.accent, DT_RIGHT);
+}
+
+/// One line of the graph. A single sample is a dot at the right edge (it is the newest one).
+unsafe fn draw_series(dc: HDC, data: &VecDeque<u64>, max: u64, r: RECT, color: u32) {
+    if data.is_empty() {
+        return;
+    }
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    if data.len() == 1 {
+        let x = r.right - sc(1);
+        let y = r.bottom - ((data[0] as f64 / max as f64) * h as f64) as i32;
+        fill(dc, RECT { left: x - sc(2), top: y - sc(2), right: x + sc(2), bottom: y + sc(2) }, color, sc(2));
+        return;
+    }
+    let n = data.len();
+    let pts: Vec<POINT> = data
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let x = r.left + (i as f64 * w as f64 / (n - 1) as f64) as i32;
+            let y = r.bottom - ((v as f64 / max as f64) * h as f64) as i32;
+            POINT { x, y }
+        })
+        .collect();
+    let pen = CreatePen(PS_SOLID, sc(2).max(1), color);
+    let old = SelectObject(dc, pen);
+    Polyline(dc, pts.as_ptr(), pts.len() as i32);
+    SelectObject(dc, old);
+    DeleteObject(pen);
 }
 
 /// Fits the body into two lines, adding an ellipsis when there is more text than that.
@@ -670,7 +936,7 @@ unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
         WM_TIMER if wp == 2 => {
             KillTimer(hwnd, 2);
             if let Some(t) = tst(hwnd) {
-                if t.phase == 1 {
+                if t.phase == 1 && !t.pinned {
                     if t.hover {
                         let left = t.due.saturating_sub(now_ms()).max(200) as u32;
                         SetTimer(hwnd, 2, left, None);
@@ -684,10 +950,14 @@ unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
         WM_MOUSEMOVE => {
             let mut cr: RECT = zeroed();
             GetClientRect(hwnd, &mut cr);
-            let hot = in_rect(close_rect(cr.right), x, y);
             if let Some(t) = tst(hwnd) {
-                if t.xhot != hot {
-                    t.xhot = hot;
+                let xhot = in_rect(close_rect(cr.right), x, y);
+                let chot = t.n.details && in_rect(chevron_rect(cr.right), x, y);
+                let phot = (t.n.details || t.pinned) && in_rect(pin_rect(cr.right), x, y);
+                if t.xhot != xhot || t.chot != chot || t.phot != phot {
+                    t.xhot = xhot;
+                    t.chot = chot;
+                    t.phot = phot;
                     InvalidateRect(hwnd, null(), 0);
                 }
                 if !t.hover {
@@ -706,8 +976,10 @@ unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             if let Some(t) = tst(hwnd) {
                 t.hover = false;
                 t.xhot = false;
+                t.chot = false;
+                t.phot = false;
                 InvalidateRect(hwnd, null(), 0);
-                if t.phase == 1 && !has_progress(&t.n) {
+                if t.phase == 1 && !has_progress(&t.n) && !t.pinned {
                     let ms = t.remaining.max(200) as u32;
                     t.due = now_ms() + ms as u64;
                     SetTimer(hwnd, 2, ms, None);
@@ -718,13 +990,37 @@ unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
         WM_LBUTTONDOWN => {
             let mut cr: RECT = zeroed();
             GetClientRect(hwnd, &mut cr);
-            let hot = in_rect(close_rect(cr.right), x, y);
-            if !hot {
-                if let Some(t) = tst(hwnd) {
-                    if !t.n.action_cmd.is_empty() {
-                        run_cmd(&t.n.action_cmd);
-                    }
+            if in_rect(close_rect(cr.right), x, y) {
+                start_out(hwnd);
+                return 0;
+            }
+            let Some(t) = tst(hwnd) else { return 0 };
+            if t.n.details && in_rect(chevron_rect(cr.right), x, y) {
+                let open = !t.expanded;
+                drop(t);
+                set_expanded(hwnd, open);
+                return 0;
+            }
+            if (t.n.details || t.pinned) && in_rect(pin_rect(cr.right), x, y) {
+                drop(t);
+                toggle_pin(hwnd);
+                return 0;
+            }
+            if t.pinned {
+                return 0; // a pinned card stays until its ✕ is clicked
+            }
+            if t.n.details {
+                let open = !t.expanded;
+                let action = t.n.action_cmd.clone();
+                drop(t);
+                if !action.is_empty() {
+                    run_cmd(&action);
                 }
+                set_expanded(hwnd, open);
+                return 0;
+            }
+            if !t.n.action_cmd.is_empty() {
+                run_cmd(&t.n.action_cmd);
             }
             start_out(hwnd);
             0
@@ -741,7 +1037,7 @@ unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 }
             }
             STACK.with(|s| s.borrow_mut().retain(|&h| h != hwnd));
-            reposition();
+            layout_stack();
             DefWindowProcW(hwnd, msg, wp, lp)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),

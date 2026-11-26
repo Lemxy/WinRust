@@ -53,6 +53,30 @@ paints its own blur, buttons, pins and clock; the tray icons and the keyboard ho
 and only the primary reserves work area (Windows' `SPI_SETWORKAREA` is a single global rect). Popups open on the monitor
 of the bar that was clicked.
 
+### Weather and local news
+
+![The weather item next to Start](docs/screenshots/weather-bar.png)
+
+![Weather and news next to Start](docs/screenshots/weather.png)
+
+The item immediately right of Start (`☀ 22°`) is a full flyout: the place, the current condition, today's max/min, a
+three-day forecast and headlines for **your area**, **your country** and **markets**. A headline opens in the default
+browser. Location comes from Windows' `Windows.Devices.Geolocation` (permission asked once); if the user denies it, the
+service is off or it fails, an IP lookup is the fallback, and `weather-city` / `weather-lat` / `weather-lon` override
+both. Weather is Open-Meteo (no key); news is Google News RSS in the shell's language, one feed per section, so a broken
+section does not hide the others.
+
+Everything lives in `%ProgramData%\WinRust\weather.txt` (`weather`, `weather-unit=c|f`, `weather-city`, `weather-lat`,
+`weather-lon`, `weather-refresh`, `weather-news=local,country,market`, `weather-browser`), reread without restarting the
+bar; `weather=0` hides the item. It refreshes every 15 minutes, on opening the flyout when the data is older than five
+minutes, and never blocks the UI: a single worker does the network. Only the coordinates go to Open-Meteo and the
+headlines are requested from RSS; nothing else is sent.
+
+![Weather settings](docs/screenshots/settings-weather.png)
+
+Ajustes → Barra de tareas → **Clima y noticias** has the on/off, °C/°F and a button that opens `weather.txt`. With no
+location or network the item shows `—` and the flyout says so.
+
 ### Start
 
 | Windows 11 style | Windows 10 style | Windows 7 style |
@@ -85,6 +109,16 @@ rs-notify --app "Backup" --title "Copy finished" --body "Documents backed up" --
 rs-notify --app "Download" --title "Downloading" --body "Windows.iso" --progress 0.42 --id download
 ```
 
+### Copy progress, pin and graph
+
+![A copy toast with the transfer detail open](docs/screenshots/copy-progress.png)
+
+Every copy, move, ZIP or extraction started from the file manager raises a toast of its own. The bar updates it every
+500 ms with the bytes, the bar itself and an **arrow** that opens the transfer detail: speed, time left, the current
+read and write rates, a 30 s sparkline of both and the file count. The **pin** keeps the card on screen until the job
+ends (and after it ends, until the ✕ is clicked); without it, the final "Done" or the error closes itself after a few
+seconds. The copy never waits for the bar: if the pipe is missing, the notification is simply not drawn.
+
 ### File manager
 
 ![File manager](docs/screenshots/explorer.png)
@@ -100,6 +134,18 @@ Recycle Bin view with Restore and Empty; and a delete path that reports the real
 toolbar's eye shows hidden files (the same switch as Ctrl+H; the trash button it replaced is still on Del and the context
 menu). Copies run in 1 MB chunks and stop with Esc or when the destination stops answering, and Restore works from the
 bin, refusing a drive that is gone with a visible reason; recycled items take their icon and thumbnail from the payload, so a shortcut keeps its app's icon.
+
+**Properties** is our own sheet (`props.rs`). The shell verb does not exist without Explorer (`ShellExecuteEx` answers
+"No application is associated with this file", and `SHObjectProperties` returns TRUE but draws nothing), so it shows
+the same information itself: type, location, size (folders compute it on a worker, "Calculando…" until done), the three
+timestamps, attributes and read-only/hidden switches. A disk gets its label, file system and total/free/used with a
+bar; an item in the Recycle Bin uses the `$R` payload and does not try to open the path it came from.
+
+![Properties of a file](docs/screenshots/properties.png)
+
+![Properties of a disk](docs/screenshots/properties-drive.png)
+
+![Properties of a recycled item](docs/screenshots/properties-trash.png)
 
 ### Desktop
 
@@ -176,6 +222,16 @@ Half the size of the Windows one, smaller fonts, Mica-style frost and opaque row
   game opens instead of "the destination '' is not valid".
 - **The notification centre is reachable**: the bell opens it (right click: Windows' notification settings).
 - **Notifications** with a named pipe and `rs-notify`, a bell with an unread dot and a notification centre.
+- **Weather and local news next to Start** (`plugins/topbar/src/weather.rs`): Windows location with an IP fallback,
+  manual override, Open-Meteo and three Google News RSS sections (area / country / markets), a flyout with the three-day
+  forecast, °C/°F, on/off in Ajustes → Barra de tareas and `%ProgramData%\WinRust\weather.txt`. One worker, 15-minute
+  refresh; only coordinates and RSS requests leave the machine.
+- **Copy progress with an expandable graph** (`plugins/rust-explorer/src/jobs.rs`, `plugins/topbar/src/notify.rs`):
+  every job's toast carries bytes, speed, ETA and read/write rates; the arrow opens a 30 s sparkline and the pin keeps
+  the card until the job ends. The bar is never in the copy's path (a missing pipe means no toast, not a slowed copy).
+- **Our own Properties sheet** (`plugins/rust-explorer/src/props.rs`) because the shell verb needs Explorer: type,
+  location, size (folders on a worker), timestamps, attributes, read-only/hidden, disks with total/free/used and
+  Recycle Bin items from their payload.
 - **Control Panel** in Rust (new crate, `plugins/rust-control`).
 - **A desktop metrics widget of our own** (`plugins/rs-metrics`): CPU, GPU, RAM, disks, disk I/O, network, temperatures
   and uptime, each one in its own frosted pill with bar / ring / text styles, on/off per module, reorderable by drag and

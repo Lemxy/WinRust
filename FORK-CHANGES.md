@@ -20,6 +20,14 @@ This fork builds on [Lemxy/WinRust](https://github.com/Lemxy/WinRust) and adds, 
   cache, and `fit_maximized` grows *and* trims already-maximized windows (they stay maximized).
 - **Bar layout**: Windows button at the left end (Start), search / Task View can be hidden, the tray hugs the clock and
   there is no hairline border.
+- **Weather and local news** (`plugins/topbar/src/weather.rs`): a `☀ 22°` item immediately right of Start, a flyout with
+  the place, current condition, max/min, three-day forecast and three RSS sections (area / country / markets), each
+  headline opening in the default browser. Location uses `Windows.Devices.Geolocation` and falls back to an IP lookup;
+  `weather-city`, `weather-lat` and `weather-lon` override it. Open-Meteo (no key) for the weather and Google News RSS
+  for the news; one worker, 15-minute refresh, cached in memory, no UI blocking. `%ProgramData%\WinRust\weather.txt`
+  holds `weather`, `weather-unit`, `weather-city/lat/lon`, `weather-refresh`, `weather-news` and `weather-browser`;
+  Ajustes → Barra de tareas → *Clima y noticias* edits the on/off and the unit. Only the coordinates and the RSS
+  requests leave the machine.
 - **Start menu, three styles** (`start7.rs`, `start10.rs`, `start11.rs` behind `startctx.rs`): Windows 7 (two columns,
   pinned on top, places on the right), Windows 10 (alphabetical list + pinned tiles, independent hover) and Windows 11
   (pinned grid + recommended). Position (centred / left) and size (90 / 100 / 115 %) are adjustable, the wheel scrolls
@@ -53,6 +61,13 @@ This fork builds on [Lemxy/WinRust](https://github.com/Lemxy/WinRust) and adds, 
   Network / Removable devices** groups in the nav, and Quick Access entries that can be pinned, unpinned and reordered.
 - **Deleting** now reports the failure (`%TEMP%\winrust-delete.log` with the HRESULT and the paths) and offers a
   permanent delete when the Recycle Bin refuses (e.g. some volumes/drivers).
+- **Properties** (`plugins/rust-explorer/src/props.rs`): our own sheet, because without Explorer the `properties` verb
+  answers "No application is associated" and `SHObjectProperties` returns TRUE but draws nothing. Type, location, size
+  (folders scan on a worker), created/modified/accessed, attributes, read-only/hidden, disks with label/file system/
+  total/free/used and Recycle Bin rows from their `$R` payload; Esc, ✕ and Aceptar close it, it is draggable and has no
+  taskbar button.
+- **Copy jobs notify the bar** (`jobs.rs`): start, one update every 500 ms (bytes, files) and a final "Done"/error; the
+  notification tail carries the detail numbers for the expandable toast.
 
 ## Shell replacement
 
@@ -98,6 +113,10 @@ official ones.
 
 - **Pop-up toasts** (`plugins/topbar/src/notify.rs`): rounded, frosted with the menu capture (`menu-blur`/`menu-alpha`),
   bottom right above the bar, at most three, slide + fade, hover pauses the auto-close, progress bar variant.
+- **Expandable transfer detail**: a progress toast with `FLAG_DETAILS` gets a pin and a chevron. The chevron opens the
+  speed, time left, current read/write rates, a 30 s sparkline of the two and the file count; the pin suppresses the
+  auto-close until the ✕. The detail tail is appended to `NotifyWire` after `id`, so an older sender still reads as
+  zeros and an older bar still gets the first fields.
 - **Any program can raise one** by writing a `winrust_common::notify::NotifyWire` to `\\.\pipe\winrust-notify`; the
   `rs-notify` helper wraps that (`--app --title --body --icon --timeout --progress --id --action --cmd`).
 - **Bell + notification centre**: an unread dot on the bell next to the clock, a 360x420 panel with the 50-entry history,

@@ -30,6 +30,8 @@ pub struct Drive {
     pub root: String,
     pub ty: u32,
     pub label: String,
+    /// The volume's file system ("NTFS", "exFAT", ...), empty for a drive whose volume could not be asked.
+    pub fs: String,
     pub free: u64,
     pub total: u64,
     pub icon: i32,
@@ -83,12 +85,15 @@ fn probe(letter: char) -> Option<Drive> {
         if ty <= 1 {
             return None; // DRIVE_NO_ROOT_DIR: the letter is assigned to nothing (a stale USB)
         }
-        let (mut label, mut free, mut total) = (String::new(), 0u64, 0u64);
+        let (mut label, mut fs, mut free, mut total) = (String::new(), String::new(), 0u64, 0u64);
         if matches!(ty, 2 | 3) {
             let mut buf = [0u16; 128];
-            if GetVolumeInformationW(wide.as_ptr(), buf.as_mut_ptr(), 128, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0) != 0 {
+            let mut fsbuf = [0u16; 64];
+            if GetVolumeInformationW(wide.as_ptr(), buf.as_mut_ptr(), 128, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), fsbuf.as_mut_ptr(), 64) != 0 {
                 let n = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
                 label = String::from_utf16_lossy(&buf[..n]);
+                let n = fsbuf.iter().position(|c| *c == 0).unwrap_or(fsbuf.len());
+                fs = String::from_utf16_lossy(&fsbuf[..n]);
             }
             if GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) == 0 {
                 total = 0;
@@ -102,7 +107,7 @@ fn probe(letter: char) -> Option<Drive> {
                 icon = fi.iIcon;
             }
         }
-        Some(Drive { letter, root, ty, label, free, total, icon })
+        Some(Drive { letter, root, ty, label, fs, free, total, icon })
     }
 }
 

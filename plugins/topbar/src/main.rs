@@ -32,6 +32,7 @@ mod settings;
 mod thumbs;
 mod blur;
 mod notify;
+mod weather;
 mod startctx;
 mod start7;
 mod start10;
@@ -247,6 +248,7 @@ const WIFI_I: i32 = -7;
 const VOL_I: i32 = -8;
 const BAT_I: i32 = -9;
 const BELL: i32 = -15; // notification centre, left of the system group
+const WEATHER: i32 = -16; // weather + news, immediately right of Start
 const TAPP: i32 = -1000;
 const SHOWDESK: i32 = -13; // the thin strip right of the clock: show desktop (#87)
 const GEAR_X: (i32, i32) = (6, 36); // its left edge and width, before scaling (sc() is applied where used)
@@ -1536,6 +1538,7 @@ fn refresh_windows() {
 fn refresh_status() {
     let n = TICK.get();
     TICK.set(n + 1);
+    weather::poll();
     unsafe {
         let mut p: SYSTEM_POWER_STATUS = zeroed();
         let ok = GetSystemPowerStatus(&mut p) != 0 && p.BatteryFlag & 128 == 0 && p.BatteryLifePercent <= 100;
@@ -1577,6 +1580,7 @@ struct Layout {
     x0: i32, // first slot: the search button; Start and the rest follow
     bw: i32,
     gap: i32,
+    wx: (i32, i32), // weather item along the bar; x == y with zero length when hidden
     apps: (i32, i32),
     bell: (i32, i32),
     sys: (i32, i32),
@@ -1600,7 +1604,19 @@ fn layout(w: i32) -> Layout {
     // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
     let right_limit = w - margin - (n * (bw + gap) - gap);
     let centered = (w - (fixed * (bw + gap) - gap)) / 2;
-    Layout { x0: if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, apps, bell, sys, clock } // clear of the gear
+    let gear_clear = sc(GEAR_X.0 + GEAR_X.1 + 6);
+    // Weather sits right of Start. It only takes part of the row when there is room for it and at least one app slot;
+    // when the width is tight it vanishes before the tray icons lose anything (they keep their fixed right edge).
+    let wx_len = if vert() { sc(30) } else { sc(62) };
+    let wx_start = sc(GEAR_X.0 + GEAR_X.1) + gap;
+    let wx_end = wx_start + wx_len;
+    let with_weather = weather::enabled() && right_limit >= wx_end + sc(bw);
+    let (wx, x0) = if with_weather {
+        ((wx_start, wx_end), (if i18n::style::align_left() { 0 } else { centered }).min(right_limit).max(wx_end + gap))
+    } else {
+        ((0, 0), (if i18n::style::align_left() { 0 } else { centered }).min(right_limit).max(gear_clear))
+    };
+    Layout { x0, bw, gap, wx, apps, bell, sys, clock }
 }
 
 unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
@@ -1610,6 +1626,9 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     let (x, l) = if vert() { (y, layout(r.bottom)) } else { (x, layout(r.right)) };
     if x < sc(GEAR_X.0 + GEAR_X.1) {
         return 0; // the Windows button at the left end
+    }
+    if l.wx.1 > l.wx.0 && x >= l.wx.0 && x < l.wx.1 {
+        return WEATHER;
     }
     if x >= l.clock.1 {
         return SHOWDESK;
@@ -2158,7 +2177,7 @@ unsafe fn view_sig() -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     BTNS.with_borrow(|b| b.iter().for_each(|b| (b.pin, b.icon as usize, b.wins.iter().map(|&w| (w as usize, IsIconic(w))).collect::<Vec<_>>()).hash(&mut h)));
-    (GetForegroundWindow() as usize, BAT.get(), VOL.get(), WIFI.get(), INET.get(), EXPLORER_UP.load(Relaxed), clock_texts(), lang_name()).hash(&mut h);
+    (GetForegroundWindow() as usize, BAT.get(), VOL.get(), WIFI.get(), INET.get(), EXPLORER_UP.load(Relaxed), clock_texts(), lang_name(), weather::sig()).hash(&mut h);
     TAPPS.with_borrow(|t| t.iter().for_each(|x| (x.hwnd as usize, x.uid, x.icon as usize, x.hidden, &x.tip).hash(&mut h)));
     h.finish()
 }
@@ -2190,6 +2209,11 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4], leader: bool) {
     let (sth, stp) = (hv(0, hot == 0), press_t(0));
     glow(dc, 0, hot == 0, gr, pal().bg, pal().hover, sc(8));
     start_logo(dc, gr, sth, stp);
+
+    if l.wx.1 > l.wx.0 {
+        let wr = cell(l.wx.0, l.wx.1 - l.wx.0);
+        weather::paint_bar(dc, wr, hot == WEATHER, f_txt);
+    }
 
     if winrust_common::look::bar_search() {
         let sb = cell(l.x0, l.bw);
@@ -2422,6 +2446,12 @@ unsafe fn paint(hwnd: HWND) {
     glow(dc, 0, hot == 0, gr, pal().bg, pal().hover, sc(8));
     start_logo(dc, gr, sth, stp);
 
+    // weather + local news, immediately right of Start
+    if l.wx.1 > l.wx.0 {
+        let wr = RECT { left: l.wx.0, top, right: l.wx.1, bottom: bot };
+        weather::paint_bar(dc, wr, hot == WEATHER, f_txt);
+    }
+
     // search and Task View: each can be hidden from the bar settings
     if winrust_common::look::bar_search() {
         let sb = RECT { left: l.x0, top, right: l.x0 + l.bw, bottom: bot };
@@ -2645,6 +2675,15 @@ fn launch_failed() {
         icon: String::new(),
         timeout_ms: 0,
         progress: -1.0,
+        details: false,
+        bytes: 0,
+        total_bytes: 0,
+        speed: 0,
+        read_bps: 0,
+        write_bps: 0,
+        eta_secs: 0,
+        files: 0,
+        total_files: 0,
         action_label: String::new(),
         action_cmd: String::new(),
     });
@@ -3298,6 +3337,8 @@ unsafe fn click(hwnd: HWND, h: i32, left: bool, mid: bool) {
         }
         0 if left => fly::toggle_click(fly::Kind::Start),
         0 => start_menu(hwnd),
+        WEATHER if left => fly::toggle_click(fly::Kind::Weather),
+        WEATHER => weather::bar_menu(hwnd),
         1.. => {
             let (wins, lnk) = BTNS.with_borrow(|b| b.get(h as usize).map(|b| (b.wins.clone(), b.pin.and_then(|p| PINS.with_borrow(|p2| p2.get(p).map(|x| x.lnk.clone()))))).unwrap_or_default());
             match (wins.first(), left) {
@@ -3365,6 +3406,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
     (if vert() { 0 } else { bar_x_w_m(bar_rect()).0 }) + match h {
         SEARCH => l.x0 + l.bw / 2,
         TASKVIEW => l.x0 + (l.bw + l.gap) + l.bw / 2,
+        WEATHER => (l.wx.0 + l.wx.1) / 2,
         CLOCK => (l.clock.0 + l.clock.1) / 2,
         BELL => (l.bell.0 + l.bell.1) / 2,
         SHOWDESK => l.clock.1 + sc(3),
@@ -3783,8 +3825,13 @@ fn main() {
             inp.GdiplusVersion = 1;
             GdiplusStartup(&mut tok, &inp, null_mut());
             fly::init(GetModuleHandleW(null()));
+            weather::init();
             fly::PREVIEW.store(true, Relaxed);
-            fly::toggle(if p == "wifi" { fly::Kind::Wifi } else { fly::Kind::Quick });
+            fly::toggle(match p.as_str() {
+                "wifi" => fly::Kind::Wifi,
+                "weather" => fly::Kind::Weather,
+                _ => fly::Kind::Quick,
+            });
             let mut msg: MSG = zeroed();
             while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
                 TranslateMessage(&msg);
@@ -3819,6 +3866,7 @@ fn main() {
         SHOWN.set(std::fs::read_to_string(appdata_file("topbar-tray.txt")).ok().map(|s| s.lines().map(str::to_string).collect()));
         load_pins();
         fly::init(GetModuleHandleW(null_mut()));
+        weather::init();
         thread::spawn(fly::load_apps);
         thread::spawn(winrust_common::mem::auto_loop); // standby purge when memory runs short, switched on from the task manager's Speed page
         let hi = GetModuleHandleW(null_mut());

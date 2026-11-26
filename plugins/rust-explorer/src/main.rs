@@ -32,6 +32,7 @@ mod shellwin; // registers the window as a shell window: "Show in folder" from o
 mod ui; // the look: palette, painted tabs / toolbar / address pill / status line, dark theme
 mod menu; // the context menu: rounded, blurred, with icons and shortcuts (the Win32 one has neither)
 mod openwith; // our own "Open with" picker: the Windows one never renders without explorer.exe
+mod props; // our own Properties window: the shell's verb and SHObjectProperties do nothing without explorer.exe
 mod we; // Wallpaper Engine behind the icons, through its official -control command line (look.txt we=1)
 mod marquee; // the selection band ("lazo"): translucent white wash, for the desktop icons and the file list
 mod drives; // the drive list, read on a worker and cached: querying a dead volume must never block a window
@@ -478,6 +479,7 @@ fn trash_menu(h: HWND, on_row: bool) {
     if on_row {
         items.push(Item::new(1, t!("Восстановить", "Restore", ja: "復元", pt: "Restaurar", zh: "还原")).icon(Icon::Glyph("\u{E777}")));
         items.push(Item::new(4, t!("Удалить безвозвратно", "Delete permanently", ja: "完全に削除", pt: "Excluir permanentemente", zh: "永久删除")).icon(Icon::Glyph("\u{E711}")));
+        items.push(Item::new(5, t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性")).icon(Icon::Glyph("\u{E713}")).hint("Alt+Enter"));
     }
     items.push(Item::new(2, t!("Очистить корзину", "Empty Recycle Bin", ja: "ごみ箱を空にする", pt: "Esvaziar Lixeira", zh: "清空回收站")).icon(Icon::Glyph("\u{E74D}")));
     items.push(Item::new(3, t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新")).icon(Icon::Glyph("\u{E72C}")).hint("F5"));
@@ -489,6 +491,7 @@ fn trash_menu(h: HWND, on_row: bool) {
         2 => trash_empty(h),
         3 => reload(h),
         4 => trash_delete(h),
+        5 => if let Some((original, _)) = selected_trash().first() { properties(h, original); },
         _ => {}
     }
 }
@@ -638,13 +641,11 @@ fn is_pic(p: &std::path::Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["jpg", "jpeg", "jfif", "png", "bmp", "gif", "tif", "tiff", "webp", "heic", "avif"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
-fn properties(path: &PathBuf) {
-    let (f, v) = (w(&path.to_string_lossy()), w("properties"));
-    let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    sei.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
-    sei.fMask = 0x0C; // SEE_MASK_INVOKEIDLIST
-    sei.lpVerb = v.as_ptr(); sei.lpFile = f.as_ptr(); sei.nShow = SW_SHOW;
-    unsafe { ShellExecuteExW(&mut sei) };
+fn properties(h: HWND, path: &PathBuf) {
+    // Not the shell verb: without explorer.exe `ShellExecuteEx("properties")` answers "No application is associated
+    // with this file", and `SHObjectProperties` returns TRUE but draws nothing (the property sheet is Explorer's own
+    // window). props.rs is our window: same data, same palette, no shell required.
+    unsafe { props::open(h, path) };
 }
 
 /// New folder / new empty file with a free name ("New folder", "New folder (2)", ...).
@@ -888,7 +889,7 @@ fn item_menu(h: HWND, dir: &Path, paths: &[PathBuf]) {
         MENU_CUT => clip_selected(h, true),
         MENU_PASTE => { paste(h, &dest); reload(h); }
         MENU_DELETE => { sh::delete(h, paths); } // WM_DELETED reloads when the worker is done
-        MENU_PROPS => properties(&paths[0]),
+        MENU_PROPS => properties(h, &paths[0]),
         // the native menu, for everything we do not cover ourselves; reload like the old path did, the shell may have
         // deleted or renamed something
         MENU_MORE => { unsafe { SetForegroundWindow(h) }; let _ = sh::show(h, paths, &[]); reload(h); }
@@ -1101,7 +1102,7 @@ unsafe fn bg_menu(h: HWND) {
         1 => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
         2 => new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false),
         3 => paste(h, &dir),
-        5 => properties(&dir),
+        5 => properties(h, &dir),
         14 => toggle_quick(&dir),
         _ => {}
     }
@@ -3105,7 +3106,12 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 match wp {
                     1 => nav(h, true),
                     2 => nav(h, false),
-                    3 => { if !is_trash(&cur_dir()) { let (_, dir, sel) = selected(); properties(&sel.first().cloned().unwrap_or(dir)); } }
+                    3 => {
+                        // a selected row (a drive, a file, a recycled item) or the folder the window shows; the two
+                        // namespace views have no properties of their own when nothing is selected
+                        let (_, dir, sel) = selected();
+                        if let Some(p) = sel.first().cloned().or_else(|| (!virtual_dir(&dir)).then_some(dir)) { properties(h, &p); }
+                    }
                     _ => if let Some(p) = cur_dir().parent() { load(h, p.to_path_buf()) },
                 }
                 0

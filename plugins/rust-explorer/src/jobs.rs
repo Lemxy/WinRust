@@ -18,6 +18,10 @@ pub struct Progress {
     pub total_files: AtomicU64,
     pub bytes: AtomicU64,
     pub total_bytes: AtomicU64,
+    /// Bytes read from the sources and written to the destinations. `bytes` is the progress counter (what the job has
+    /// produced); these two are the device sides and only feed the read/write graph of the toast.
+    pub read_bytes: AtomicU64,
+    pub write_bytes: AtomicU64,
     cancel: AtomicBool, // Esc / the stall watchdog: stop at the next chunk
     started: Instant,
     /// Copy workers, by thread id. A drive that disappears can block *inside* ReadFile/WriteFile, where no flag is
@@ -39,6 +43,8 @@ impl Progress {
             total_files: 0.into(),
             bytes: 0.into(),
             total_bytes: 0.into(),
+            read_bytes: 0.into(),
+            write_bytes: 0.into(),
             cancel: false.into(),
             started: Instant::now(),
             io_threads: Mutex::new(vec![]),
@@ -69,6 +75,74 @@ fn abort_io(p: &Progress) {
 
 static JOB: Mutex<Option<Arc<Progress>>> = Mutex::new(None);
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// The numbers behind the expanded copy toast: what the job has moved and how fast, plus the device read/write rates.
+#[derive(Default)]
+struct Detail {
+    bytes: u64,
+    total_bytes: u64,
+    speed: u64,
+    read_bps: u64,
+    write_bps: u64,
+    eta_secs: u32,
+    files: u32,
+    total_files: u32,
+}
+
+/// One toast in the bar for the running job. The bar updates a toast with the same id, and a toast with progress stays
+/// on screen until the job sends the final update (or the user closes it). Without the bar listening this is a no-op.
+fn notify_job(p: &Progress, progress: Option<f32>, body: &str, timeout_ms: u32, detail: Option<&Detail>) {
+    use winrust_common::notify::{FLAG_DETAILS, FLAG_PROGRESS, NotifyWire, PIPE, WIRE_SIZE};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GENERIC_WRITE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{CreateFileW, OPEN_EXISTING, WriteFile},
+    };
+    let mut w = NotifyWire::new();
+    w.set_app("WinRust");
+    w.set_title(&p.what);
+    w.set_body(body);
+    w.set_id(&format!("winrust-job-{}", std::process::id()));
+    w.timeout_ms = timeout_ms;
+    if let Some(x) = progress {
+        w.progress = x.clamp(0.0, 1.0);
+        w.flags |= FLAG_PROGRESS;
+    }
+    if let Some(d) = detail {
+        w.bytes = d.bytes;
+        w.total_bytes = d.total_bytes;
+        w.speed = d.speed;
+        w.read_bps = d.read_bps;
+        w.write_bps = d.write_bps;
+        w.eta_secs = d.eta_secs;
+        w.files = d.files;
+        w.total_files = d.total_files;
+        w.flags |= FLAG_DETAILS;
+    }
+    let exe = std::env::current_exe().map_or_else(|_| String::new(), |p| p.to_string_lossy().into_owned());
+    w.set_icon(&exe);
+    let name: Vec<u16> = PIPE.encode_utf16().chain([0]).collect();
+    unsafe {
+        let h = CreateFileW(name.as_ptr(), GENERIC_WRITE, 0, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut());
+        if h == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut written = 0u32;
+        WriteFile(h, w.as_bytes().as_ptr(), WIRE_SIZE as u32, &mut written, std::ptr::null_mut());
+        CloseHandle(h);
+    }
+}
+
+/// The short line under the job's title in its toast.
+fn notify_body(p: &Progress) -> String {
+    let (b, tb, f, tf) = (p.bytes.load(Relaxed), p.total_bytes.load(Relaxed), p.files.load(Relaxed), p.total_files.load(Relaxed));
+    if tb > 0 {
+        tf!("{} из {} ({}%)", "{} of {} ({}%)", ja: "{}/{} ({}%)", pt: "{} de {} ({}%)", zh: "{} / {}（{}%）", super::size_text(b), super::size_text(tb), b * 100 / tb.max(1))
+    } else if tf > 0 {
+        tf!("{} из {} файлов", "{} of {} files", ja: "{}/{} ファイル", pt: "{} de {} arquivos", zh: "{} / {} 个文件", f, tf)
+    } else {
+        String::new()
+    }
+}
 
 /// The status line text while a job runs.
 pub fn status_text() -> Option<String> {
@@ -108,12 +182,15 @@ fn spawn(h: isize, what: String, f: impl FnOnce(&Progress) -> Result<(), String>
     }
     let p = Progress::new(what);
     *JOB.lock().unwrap() = Some(p.clone());
+    notify_job(&p, Some(0.0), "", 0, Some(&Detail::default())); // the toast appears at once; the ticker fills the line
     let ticker = std::thread::spawn({
         let p = p.clone();
         move || {
             // Repaint the status line a few times a second, and watch the copy: a destination that vanishes can block a
             // write forever, so after STALL seconds without a single byte the job aborts itself with a clear reason.
             let (mut last, mut at) = (0u64, Instant::now());
+            let mut sent_at = Instant::now();
+            let (mut last_done, mut last_read, mut last_write) = (0u64, 0u64, 0u64);
             while RUNNING.load(Relaxed) {
                 unsafe { super::ui::status_dirty(h as _) };
                 if p.io_watch.load(Relaxed) {
@@ -127,6 +204,34 @@ fn spawn(h: isize, what: String, f: impl FnOnce(&Progress) -> Result<(), String>
                         abort_io(&p);
                     }
                 }
+                // the copy's toast: half a second is smooth enough and keeps the pipe quiet
+                if sent_at.elapsed().as_millis() >= 500 {
+                    let now = Instant::now();
+                    let dt = now.duration_since(sent_at).as_secs_f64().max(0.001);
+                    let (b, tb) = (p.bytes.load(Relaxed), p.total_bytes.load(Relaxed));
+                    let (rb, wb) = (p.read_bytes.load(Relaxed), p.write_bytes.load(Relaxed));
+                    let speed = ((b.saturating_sub(last_done)) as f64 / dt) as u64;
+                    let read_bps = ((rb.saturating_sub(last_read)) as f64 / dt) as u64;
+                    let write_bps = ((wb.saturating_sub(last_write)) as f64 / dt) as u64;
+                    let eta = if speed > 0 && tb > b { (((tb - b) as f64 / speed as f64).min(u32::MAX as f64)) as u32 } else { 0 };
+                    let prog = if tb > 0 { b as f32 / tb as f32 } else { 0.0 };
+                    let body = notify_body(&p);
+                    let detail = Detail {
+                        bytes: b,
+                        total_bytes: tb,
+                        speed,
+                        read_bps,
+                        write_bps,
+                        eta_secs: eta,
+                        files: p.files.load(Relaxed).min(u32::MAX as u64) as u32,
+                        total_files: p.total_files.load(Relaxed).min(u32::MAX as u64) as u32,
+                    };
+                    notify_job(&p, Some(prog), &body, 0, Some(&detail));
+                    last_done = b;
+                    last_read = rb;
+                    last_write = wb;
+                    sent_at = now;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
             drop(p);
@@ -137,6 +242,13 @@ fn spawn(h: isize, what: String, f: impl FnOnce(&Progress) -> Result<(), String>
         *JOB.lock().unwrap() = None;
         RUNNING.store(false, Relaxed);
         let _ = ticker.join();
+        // the same toast, now without the bar: "Done" or the reason, and it closes itself after a few seconds unless the
+        // user pinned it
+        let (body, timeout) = match &r {
+            Ok(()) => (t!("Готово", "Done", ja: "完了", pt: "Concluído", zh: "完成").to_string(), 5000),
+            Err(e) => (e.clone(), 7000),
+        };
+        notify_job(&p, None, &body, timeout, None);
         let msg = Box::new(r.err());
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(h as _, super::WM_JOB, Box::into_raw(msg) as usize, 0) };
     });
@@ -251,6 +363,7 @@ fn copy_file(src: &Path, dst: &Path, _size: u64, p: &Progress) -> std::io::Resul
                 if got == 0 {
                     break;
                 }
+                p.read_bytes.fetch_add(got as u64, Relaxed);
                 let mut off = 0usize;
                 while off < got as usize {
                     let mut put = 0u32;
@@ -259,6 +372,7 @@ fn copy_file(src: &Path, dst: &Path, _size: u64, p: &Progress) -> std::io::Resul
                     }
                     off += put as usize;
                     p.bytes.fetch_add(put as u64, Relaxed);
+                    p.write_bytes.fetch_add(put as u64, Relaxed);
                 }
             }
             if FlushFileBuffers(hd) == 0 {
@@ -466,7 +580,7 @@ fn extract_with(archive: &Path, out: &Path, p: &Progress) -> Result<(), String> 
     if is7z {
         return sevenz_rust2::decompress_file(archive, out).map_err(|e| e.to_string());
     }
-    crate::zipx::extract(archive, out, |t| _ = p.total_bytes.fetch_add(t, Relaxed), |n| { p.bytes.fetch_add(n, Relaxed); !p.cancelled() })
+    crate::zipx::extract(archive, out, |t| _ = p.total_bytes.fetch_add(t, Relaxed), |n| { p.bytes.fetch_add(n, Relaxed); p.write_bytes.fetch_add(n, Relaxed); !p.cancelled() })
 }
 
 #[cfg(test)]
