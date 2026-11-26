@@ -61,13 +61,14 @@ pub fn ready() -> bool {
     READY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// True if the drive that holds `path` (`C:\...`) is in the cached list. A missing drive cannot be restored into.
+/// True if the drive that holds `path` (`C:\...`) is in the cached list. A missing drive cannot be listed, copied or
+/// restored; paths without a drive letter (UNC, shell namespaces) are not judged here and return true.
 pub fn holds(path: &std::path::Path) -> bool {
     let Some(root) = path.components().next().and_then(|c| match c {
         std::path::Component::Prefix(p) => Some(p.as_os_str().to_string_lossy().into_owned()),
         _ => None,
     }) else {
-        return false;
+        return true;
     };
     let root = root.trim_end_matches('\\').to_string();
     cached().iter().any(|d| d.root.trim_end_matches('\\').eq_ignore_ascii_case(&root))

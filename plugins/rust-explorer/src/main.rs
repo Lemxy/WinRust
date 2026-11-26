@@ -240,6 +240,9 @@ fn parse_trash_i(path: &Path) -> Option<(u64, u64, PathBuf)> {
         }
     }
     let s = String::from_utf16_lossy(&w);
+    // version 2 stores the path length *including its terminating NUL*: a PathBuf with that NUL makes every Win32 call
+    // fail ("strings passed to WinAPI cannot contain NULs"), which is exactly why Restore never worked.
+    let s = s.split('\0').next().unwrap_or("").to_string();
     if s.is_empty() { return None; }
     Some((size, time, PathBuf::from(s)))
 }
@@ -340,11 +343,11 @@ fn trash_restore(h: HWND) {
                     if e.raw_os_error() == Some(17) && t.r.is_file() {
                         match fs::copy(&t.r, &dest).and_then(|_| fs::remove_file(&t.r)) {
                             Ok(_) => { let _ = fs::remove_file(&t.i); ok += 1; }
-                            Err(e2) => { bad += 1; why = Some(format!("{}: {e2}", orig.display())); }
+                            Err(e2) => { bad += 1; why = Some(format!("{e2} — {}", orig.display())); }
                         }
                     } else {
                         bad += 1;
-                        why = Some(format!("{}: {e}", orig.display()));
+                        why = Some(format!("{e} — {}", orig.display()));
                     }
                 }
             }
@@ -650,6 +653,17 @@ fn new_entry(dir: &PathBuf, base: &str, folder: bool) {
 fn paste(h: HWND, dir: &PathBuf) {
     if zipx::split_zip(dir).is_some() { return; } // an archive is read-only here
     let Some((paths, cut)) = sh::clip_get() else { return };
+    // A drive that is gone must not be probed: can_fast_copy / writable below touch the source and the destination, and
+    // on a removed device those calls block inside the volume driver with no job to cancel yet (the window froze on Ctrl+V).
+    if drives::ready() {
+        let missing = std::iter::once(dir.as_path())
+            .chain(paths.iter().map(|p| p.as_path()))
+            .find(|p| !drives::holds(p));
+        if let Some(p) = missing {
+            unsafe { ui::notice(h, tf!("{}: диск недоступен", "{}: the drive is not available", ja: "{}: ドライブが利用できません", pt: "{}: a unidade não está disponível", zh: "{}：驱动器不可用", p.display())) };
+            return;
+        }
+    }
     let fast = jobs::can_fast_copy(&paths, dir) && !(cut && paths.iter().all(|p| jobs::same_volume(p, dir))) && jobs::writable(dir);
     if fast && !jobs::busy() {
         jobs::copy(h as isize, paths, dir.clone(), cut);
@@ -1158,6 +1172,11 @@ fn rows_of(dir: &PathBuf) -> Option<Vec<Row>> {
 /// Loads `dir` into the virtual list and the active tab. Unreadable dir (access denied, gone) leaves the view unchanged.
 /// Never call with ST borrowed: the list sends GETDISPINFO back into the window proc.
 fn load(h: HWND, dir: PathBuf) {
+    // A removed drive keeps its letter for a while and reading it blocks inside the volume driver: do not touch it.
+    if drives::ready() && !drives::holds(&dir) {
+        unsafe { ui::notice(h, tf!("{}: диск недоступен", "{}: the drive is not available", ja: "{}: ドライブが利用できません", pt: "{}: a unidade não está disponível", zh: "{}：驱动器不可用", dir.display())) };
+        return;
+    }
     let Some(rows) = rows_of(&dir) else { return };
     let shown = display_dir(&dir); // "This PC" / "Recycle Bin" for the views, the path otherwise
     let (pc, trash) = (is_this_pc(&dir), is_trash(&dir));
@@ -2877,7 +2896,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     (TrashWhat::Restored, false) => tf!("восстановлено: {}", "restored: {}", ja: "復元: {} 件", pt: "restaurados: {}", zh: "已还原 {} 项", ok),
                 };
                 if let Some(w) = why {
-                    msg = format!("{msg}\n{w}"); // the first failure, so a silent "failed: 1" never happens again
+                    msg = format!("{msg} — {w}"); // the failure reason inline: the status line does not show a second line
                 }
                 ui::notice(h, msg);
                 0
@@ -3188,6 +3207,30 @@ mod tests {
         assert_eq!(h.back(), Some("b".into()));
         h.visit("x".into()); h.visit("x".into()); // same folder twice is one step
         assert_eq!(h.v.len(), 3);
+    }
+
+    /// The `$I` path length counts the terminating NUL; keeping it in the PathBuf made every restore fail inside Win32.
+    #[test]
+    fn trash_i_path_has_no_nul() {
+        let path = "C:\\Users\\x\\a.txt";
+        let units: Vec<u16> = path.encode_utf16().chain([0]).collect();
+        let mut d = vec![];
+        d.extend_from_slice(&2u64.to_le_bytes());
+        d.extend_from_slice(&1u64.to_le_bytes());
+        d.extend_from_slice(&0u64.to_le_bytes());
+        d.extend_from_slice(&(units.len() as u32).to_le_bytes());
+        for u in &units {
+            d.extend_from_slice(&u.to_le_bytes());
+        }
+        let dir = std::env::temp_dir().join(format!("winrust-trashi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("$Itest.txt");
+        std::fs::write(&f, &d).unwrap();
+        let (_, _, p) = parse_trash_i(&f).unwrap();
+        assert_eq!(p, PathBuf::from(path));
+        assert!(!p.to_string_lossy().contains('\0'));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The Recycle Bin restore renames through a watchdog: it must still be a plain rename when nothing is wrong.

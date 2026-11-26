@@ -278,19 +278,23 @@ pub fn set_dark_titlebar(h: winapi::shared::windef::HWND, dark: bool) {
 /// Заголовки видимых окон верхнего уровня по PID (без окон-владельцев и без пустых заголовков).
 pub fn window_titles() -> HashMap<u32, String> {
     use winapi::shared::{minwindef::{BOOL, LPARAM}, windef::HWND};
-    use winapi::um::winuser::{EnumWindows, GetWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER};
+    use winapi::um::winuser::{EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_GETTEXT, GW_OWNER};
     unsafe extern "system" fn cb(h: HWND, l: LPARAM) -> BOOL {
         unsafe {
             let map = &mut *(l as *mut HashMap<u32, String>);
             if IsWindowVisible(h) == 0 || !GetWindow(h, GW_OWNER).is_null() {
                 return 1;
             }
+            // WM_GETTEXT with a deadline: GetWindowTextW can wait for the hung-window timeout (the task manager's own
+            // refresh then looked frozen when an Explorer window was stuck on a dead drive).
             let mut buf = [0u16; 256];
-            let n = GetWindowTextW(h, buf.as_mut_ptr(), 256);
+            let mut got = 0usize;
+            let ok = SendMessageTimeoutW(h, WM_GETTEXT, 256, buf.as_mut_ptr() as isize, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &mut got);
+            let n = if ok != 0 { (got as usize).min(buf.len()) } else { 0 };
             if n > 0 {
                 let mut pid = 0u32;
                 GetWindowThreadProcessId(h, &mut pid);
-                map.entry(pid).or_insert_with(|| String::from_utf16_lossy(&buf[..n as usize]));
+                map.entry(pid).or_insert_with(|| String::from_utf16_lossy(&buf[..n]));
             }
         }
         1
@@ -435,13 +439,16 @@ pub fn dpc_share(a: CpuTimes, b: CpuTimes) -> (f32, f32) {
 /// Видимые окна верхнего уровня, которые Windows считает зависшими (не обрабатывают сообщения 5 с).
 pub fn hung_windows() -> Vec<(u32, String)> {
     use winapi::shared::{minwindef::{BOOL, LPARAM}, windef::HWND};
-    use winapi::um::winuser::{EnumWindows, GetWindow, GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, GW_OWNER};
+    use winapi::um::winuser::{EnumWindows, GetWindow, GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_GETTEXT, GW_OWNER};
     unsafe extern "system" fn cb(h: HWND, l: LPARAM) -> BOOL {
         unsafe {
             let v = &mut *(l as *mut Vec<(u32, String)>);
             if IsWindowVisible(h) != 0 && GetWindow(h, GW_OWNER).is_null() && IsHungAppWindow(h) != 0 {
+                // The window is hung by definition: ask for its text with a deadline instead of the hung-window timeout.
                 let mut buf = [0u16; 256];
-                let n = GetWindowTextW(h, buf.as_mut_ptr(), 256).max(0) as usize;
+                let mut got = 0usize;
+                let ok = SendMessageTimeoutW(h, WM_GETTEXT, 256, buf.as_mut_ptr() as isize, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &mut got);
+                let n = if ok != 0 { (got as usize).min(buf.len()) } else { 0 };
                 let mut pid = 0u32;
                 GetWindowThreadProcessId(h, &mut pid);
                 if n > 0 && !v.iter().any(|x| x.0 == pid) {

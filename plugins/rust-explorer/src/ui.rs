@@ -357,8 +357,12 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
                 let State { dir, rows, .. } = &mut *st;
                 let r = rows.get_mut(i)?;
                 if r.icon < 0 && !r.hdr { r.icon = icon_of(&r.full(dir), r.dir); }
-                // a drive row: its kind goes in the Type column and its free / total space in Size
-                let dtype = r.path.as_ref().map(|p| windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(w(&p.to_string_lossy()).as_ptr()));
+                // a drive row: its kind goes in the Type column and its free / total space in Size. The type comes from
+                // the drive cache: querying the device while painting stalls every repaint of a dead drive's row.
+                let dtype = r.path.as_ref().map(|p| {
+                    let root = p.to_string_lossy();
+                    crate::drives::cached().iter().find(|d| d.root.eq_ignore_ascii_case(&root)).map_or(3, |d| d.ty)
+                });
                 Some((r.name.clone(), r.dir, r.time, r.size, r.icon, r.hdr, r.cap, dtype))
             });
             let Some((name, is_dir, time, size, icon, hdr, cap, dtype)) = row else { return CDRF_DODEFAULT as isize };

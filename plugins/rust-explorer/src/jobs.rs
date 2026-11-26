@@ -289,7 +289,12 @@ pub fn copy(h: isize, from: Vec<PathBuf>, to: PathBuf, then_delete: bool) -> boo
     let what = if then_delete { t!("Перемещение", "Moving", ja: "移動中", pt: "Movendo", zh: "正在移动") } else { t!("Копирование", "Copying", ja: "コピー中", pt: "Copiando", zh: "正在复制") }.to_string();
     spawn(h, what, move |p| {
         p.io_watch.store(true, Relaxed); // watchdog + cancellable syscalls: the destination can vanish mid-copy
+        // Register this thread *before* touching the filesystem: `walk` (source) and `free_name` (destination) run before
+        // the per-file workers exist, and a dead device blocks there too (Esc / the watchdog uses these ids).
+        let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+        p.io_threads.lock().unwrap().push(id);
         let r = copy_now(&from, &to, then_delete, p);
+        p.io_threads.lock().unwrap().retain(|x| *x != id);
         p.io_watch.store(false, Relaxed);
         r
     })
