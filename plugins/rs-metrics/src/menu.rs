@@ -35,6 +35,8 @@ pub const ID_SETTINGS: u32 = 902;
 pub const ID_COLUMNS: u32 = 903;
 pub const ID_RESET: u32 = 904;
 pub const ID_CLOSE: u32 = 905;
+pub const ID_DETACH: u32 = 906;
+pub const ID_ATTACH: u32 = 907;
 
 const CLASS: &str = "WinRustMetricsMenu";
 
@@ -58,8 +60,18 @@ fn style_label(s: Style) -> &'static str {
     }
 }
 
-fn items(c: &Config) -> Vec<Item> {
-    let mut v = Vec::with_capacity(18);
+fn items(c: &Config, context: Option<(usize, bool)>) -> Vec<Item> {
+    let mut v = Vec::with_capacity(20);
+    // the module the click came from: separate/acoplar right here, before the rest
+    if let Some((m, detached)) = context {
+        let label = if detached {
+            format!("{} {}", t!("Присоединить", "Attach", ja: "戻す", pt: "Fixar", zh: "收回"), c.label[m])
+        } else {
+            format!("{} {}", t!("Отделить", "Detach", ja: "分離", pt: "Separar", zh: "分离"), c.label[m])
+        };
+        v.push(Item { id: if detached { ID_ATTACH } else { ID_DETACH }, label, check: None, module: None, sep: false });
+        v.push(Item { id: 0, label: String::new(), check: None, module: None, sep: true });
+    }
     for i in 0..config::MODS.len() {
         v.push(Item { id: ID_TOGGLE + i as u32, label: c.label[i].clone(), check: Some(c.on[i]), module: Some(i), sep: false });
     }
@@ -290,8 +302,8 @@ fn as_style(cfg: &Config) -> [Style; 8] {
 }
 
 /// Opens the menu at screen `(x, y)` and returns the chosen id (0 when nothing was picked).
-pub unsafe fn show(x: i32, y: i32, cfg: &Config, scale: f32) -> u32 {
-    let items = items(cfg);
+pub unsafe fn show(x: i32, y: i32, cfg: &Config, scale: f32, context: Option<usize>) -> u32 {
+    let items = items(cfg, context.map(|m| (m, cfg.detached[m])));
     let fonts = Fonts::new(winrust_common::style::ui_face(), scale);
     let pad = (8.0 * scale).round() as i32;
     let row_h = (30.0 * scale).round() as i32;

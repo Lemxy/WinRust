@@ -160,6 +160,35 @@ impl Canvas {
         }
     }
 
+    /// A rounded rectangle whose per-pixel colour comes from `color(px, py)` (the frosted fill).
+    pub fn round_rect_with<F: FnMut(i32, i32) -> u32>(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, alpha: u32, mut color: F) {
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        let (hw, hh) = ((w / 2.0).max(0.0), (h / 2.0).max(0.0));
+        let r = radius.min(hw).min(hh).max(0.0);
+        let (ix, iy) = ((hw - r).max(0.0), (hh - r).max(0.0));
+        let x0 = (x.floor() as i32).max(0);
+        let y0 = (y.floor() as i32).max(0);
+        let x1 = ((x + w).ceil() as i32).min(self.w);
+        let y1 = ((y + h).ceil() as i32).min(self.h);
+        for py in y0..y1 {
+            for pxi in x0..x1 {
+                let dx = (pxi as f32 + 0.5 - cx).abs() - ix;
+                let dy = (py as f32 + 0.5 - cy).abs() - iy;
+                let sd = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt() + dx.max(dy).min(0.0) - r;
+                let c = coverage(sd);
+                if c > 0 {
+                    let col = color(pxi, py);
+                    if let Some(p) = self.at(pxi, py) {
+                        over(p, col, alpha, c);
+                    }
+                }
+            }
+        }
+    }
+
     /// A progress ring. `frac` of the circumference is drawn in `color`, the rest in `track`.
     pub fn ring(&mut self, cx: f32, cy: f32, radius: f32, thick: f32, frac: f32, color: u32, track: u32) {
         let frac = frac.clamp(0.0, 1.0);

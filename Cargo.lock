@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-launcher"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "ed25519-dalek",
  "embed-resource",
@@ -552,6 +552,7 @@ name = "rs-metrics"
 version = "0.1.0"
 dependencies = [
  "embed-resource",
+ "windows",
  "windows-sys",
  "winrust-common",
 ]

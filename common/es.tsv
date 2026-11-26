@@ -1586,8 +1586,9 @@ Reload config	Recargar configuración
 Open config	Abrir configuración
 Two columns	Dos columnas
 Reset position	Restablecer posición
-Temp	Temp
-free	libres
+Board	Placa
+Detach	Separar
+Attach	Acoplar
 Widgets	Widgets
 Desktop metrics: modules and behavior	Métricas del escritorio: módulos y comportamiento
 Desktop widgets	Widgets del escritorio
@@ -1602,3 +1603,5 @@ Restart the widget	Reiniciar el widget
 The first widget; more will live here. These options write metrics.txt, which the widget re-reads every second.	El primer widget; aquí vendrán más. Estas opciones escriben metrics.txt, que el widget relee cada segundo.
 Show system metrics	Mostrar métricas del sistema
 First in the list: each widget gets its own on/off switch. The options below write metrics.txt, which the widget re-reads every second.	El primero de la lista: cada widget tendrá su propio interruptor. Las opciones de abajo escriben metrics.txt, que el widget relee cada segundo.
+Temp	Temp
+free	libres

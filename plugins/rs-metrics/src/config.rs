@@ -84,6 +84,18 @@ pub struct Config {
     pub topmost: bool,
     /// The Widgets page's on/off: hidden but still running when false, so turning it back on is instant.
     pub enabled: bool,
+    /// Module order on the card (`order=cpu,gpu,...`), always a permutation of `MODS`.
+    pub order: Vec<usize>,
+    /// Modules that live in their own little window (`detached-<mod>=1`), with their screen position.
+    pub detached: [bool; 8],
+    pub dx: [i32; 8],
+    pub dy: [i32; 8],
+    /// Temperatures: the ACPI zone is off unless asked, the disks and LibreHardwareMonitor sensors are on.
+    pub temp_acpi: bool,
+    pub temp_disks: bool,
+    pub temp_lhm: bool,
+    /// Frosted pills: the wallpaper behind each pill, downscaled and box-blurred.
+    pub blur: bool,
     /// Every pair read, so a save keeps keys this version does not know.
     map: HashMap<String, String>,
 }
@@ -168,7 +180,7 @@ fn defaults() -> Config {
         cols: 1,
         gap: 8,
         pad: 14,
-        opacity: 222,
+        opacity: 185,
         accent: style::pal().accent,
         decimals: 0,
         units: true,
@@ -179,8 +191,34 @@ fn defaults() -> Config {
         shadow: true,
         topmost: false,
         enabled: true,
+        order: (0..8).collect(),
+        detached: [false; 8],
+        dx: std::array::from_fn(|i| 140 + i as i32 * 30),
+        dy: std::array::from_fn(|i| 140 + i as i32 * 40),
+        temp_acpi: false,
+        temp_disks: true,
+        temp_lhm: true,
+        blur: true,
         map: HashMap::new(),
     }
+}
+
+/// `order=cpu,gpu,...` -> indices, dropping unknown names and repeats, then appending whatever is missing.
+fn order_of(v: &str) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::with_capacity(8);
+    for name in v.split(',') {
+        if let Some(i) = MODS.iter().position(|m| m.eq_ignore_ascii_case(name.trim())) {
+            if !out.contains(&i) {
+                out.push(i);
+            }
+        }
+    }
+    for i in 0..8 {
+        if !out.contains(&i) {
+            out.push(i);
+        }
+    }
+    out
 }
 
 /// Reads the file (missing or unreadable: the defaults). A missing file is created so "Open config" always has one.
@@ -218,6 +256,16 @@ pub fn read() -> Config {
     c.shadow = flag(m, "shadow", c.shadow);
     c.topmost = flag(m, "topmost", c.topmost);
     c.enabled = flag(m, "enabled", c.enabled);
+    c.order = m.get("order").map(|v| order_of(v)).unwrap_or(c.order);
+    for i in 0..8 {
+        c.detached[i] = flag(m, &format!("detached-{}", MODS[i]), c.detached[i]);
+        c.dx[i] = num(m, &format!("x-{}", MODS[i]), c.dx[i], -20000, 20000);
+        c.dy[i] = num(m, &format!("y-{}", MODS[i]), c.dy[i], -20000, 20000);
+    }
+    c.temp_acpi = flag(m, "temp-acpi", c.temp_acpi);
+    c.temp_disks = flag(m, "temp-disks", c.temp_disks);
+    c.temp_lhm = flag(m, "temp-lhm", c.temp_lhm);
+    c.blur = flag(m, "blur", c.blur);
     c
 }
 
@@ -246,9 +294,19 @@ impl Config {
             ("snap", i32::from(self.snap).to_string()),
             ("shadow", i32::from(self.shadow).to_string()),
             ("topmost", i32::from(self.topmost).to_string()),
-        ("enabled", i32::from(self.enabled).to_string()),
+            ("enabled", i32::from(self.enabled).to_string()),
+            ("order", self.order.iter().map(|&i| MODS[i]).collect::<Vec<_>>().join(",")),
+            ("temp-acpi", i32::from(self.temp_acpi).to_string()),
+            ("temp-disks", i32::from(self.temp_disks).to_string()),
+            ("temp-lhm", i32::from(self.temp_lhm).to_string()),
+            ("blur", i32::from(self.blur).to_string()),
         ] {
             v.push((k.to_string(), val));
+        }
+        for i in 0..8 {
+            v.push((format!("detached-{}", MODS[i]), i32::from(self.detached[i]).to_string()));
+            v.push((format!("x-{}", MODS[i]), self.dx[i].to_string()));
+            v.push((format!("y-{}", MODS[i]), self.dy[i].to_string()));
         }
         v
     }
@@ -267,7 +325,11 @@ impl Config {
              # styles: bar ring text spark pill   (style-cpu=ring)\n\
              # edit a label with label-cpu=CPU, the accent with accent=#0A84FF\n\
              # topmost=0 lives on the desktop (behind the app windows); topmost=1 stays above them\n\
-             # enabled=1 shows the widget; enabled=0 hides it (it keeps running, so it comes back instantly)\n",
+             # enabled=1 shows the widget; enabled=0 hides it (it keeps running, so it comes back instantly)\n\
+             # order=cpu,gpu,ram,disk,io,net,temp,uptime (drag a pill to change it)\n\
+             # detached-<mod>=1 + x-<mod>=/y-<mod>= move a module to its own little window\n\
+             # temp-acpi=1 adds the ACPI zone (chassis, not the CPU); temp-disks/temp-lhm=0 skip those sensors\n\
+             # blur=1 frosts each pill with the wallpaper behind it; opacity=40..255\n",
         );
         for k in keys {
             text.push_str(k);
@@ -318,6 +380,12 @@ impl Config {
             "units" => self.units = value != "0",
             "cores" => self.cores = value != "0",
             "topmost" => self.topmost = value != "0",
+            "enabled" => self.enabled = value != "0",
+            "blur" => self.blur = value != "0",
+            "temp-acpi" => self.temp_acpi = value != "0",
+            "temp-disks" => self.temp_disks = value != "0",
+            "temp-lhm" => self.temp_lhm = value != "0",
+            "order" => self.order = order_of(value),
             "net-iface" => self.net_iface = value.to_string(),
             "disk-letters" => {
                 let l = letters(value);

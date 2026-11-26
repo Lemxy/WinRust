@@ -8,11 +8,7 @@
 use std::{
     ffi::c_void,
     ptr::null_mut,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicI32, Ordering::Relaxed},
-    },
-    time::Duration,
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
 use windows_sys::Win32::{
@@ -25,11 +21,11 @@ use windows_sys::Win32::{
     System::{
         Performance::*,
         SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX},
-        Threading::{GetCurrentThread, GetSystemTimes, SetThreadPriority, THREAD_PRIORITY_LOWEST},
+        Threading::GetSystemTimes,
     },
 };
 
-use crate::config::{Config, TEMP};
+use crate::config::Config;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
@@ -232,8 +228,6 @@ pub struct Sample {
     pub io: Option<(f64, f64)>,
     /// down / up MB/s
     pub net: Option<(f64, f64)>,
-    pub temp_cpu: Option<f32>,
-    pub temp_gpu: Option<f32>,
     pub uptime: u64,
 }
 
@@ -436,8 +430,6 @@ impl Sampler {
         // Network: byte counters of the interfaces that are up, summed
         s.net = self.net(cfg);
 
-        s.temp_cpu = temp(&TEMP_CPU);
-        s.temp_gpu = temp(&TEMP_GPU);
         s
     }
 
@@ -519,71 +511,3 @@ fn disk_row(letter: char, labels: bool) -> Option<DiskRow> {
     }
 }
 
-// ---------- temperatures ----------
-
-/// Tenths of a degree Celsius, `i32::MIN` when nothing is known.
-pub static TEMP_CPU: AtomicI32 = AtomicI32::new(i32::MIN);
-pub static TEMP_GPU: AtomicI32 = AtomicI32::new(i32::MIN);
-
-fn temp(a: &AtomicI32) -> Option<f32> {
-    let v = a.load(Relaxed);
-    (v != i32::MIN).then(|| v as f32 / 10.0)
-}
-
-/// The ACPI thermal-zone counter, when the firmware exposes one. Its own lowest-priority thread, every 3 s, only while
-/// the module is on: this is the one probe that may touch a slow firmware path, and it must never hold up a frame.
-pub fn temp_loop(cfg: Arc<Mutex<Config>>) {
-    unsafe {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST as i32);
-    }
-    let mut q: PDH_HQUERY = null_mut();
-    let mut h: PDH_HCOUNTER = null_mut();
-    let mut primed = false;
-    loop {
-        let on = cfg.lock().map(|c| c.on[TEMP]).unwrap_or(false);
-        if !on {
-            TEMP_CPU.store(i32::MIN, Relaxed);
-            std::thread::sleep(Duration::from_secs(1));
-            continue;
-        }
-        unsafe {
-            if q.is_null() {
-                let mut nq: PDH_HQUERY = null_mut();
-                if PdhOpenQueryW(std::ptr::null(), 0, &mut nq) == 0 && !nq.is_null() {
-                    if let Some(nh) = pdh_add(nq, r"\Thermal Zone Information(*)\Temperature") {
-                        q = nq;
-                        h = nh;
-                    } else {
-                        PdhCloseQuery(nq);
-                    }
-                }
-            }
-            if !q.is_null() {
-                if PdhCollectQueryData(q) == 0 {
-                    if primed {
-                        let mut best: Option<f64> = None;
-                        for (_, v) in pdh_array(h) {
-                            // some firmware reports tenths of Kelvin (3000 = 300.0 K), some tenths of Celsius,
-                            // some whole degrees; keep whatever lands in a plausible range
-                            let c = if v >= 2000.0 {
-                                v / 10.0 - 273.15
-                            } else if v >= 200.0 {
-                                v - 273.15
-                            } else {
-                                v
-                            };
-                            if (-20.0..=125.0).contains(&c) && best.is_none_or(|b| c > b) {
-                                best = Some(c);
-                            }
-                        }
-                        TEMP_CPU.store(best.map_or(i32::MIN, |c| (c * 10.0).round() as i32), Relaxed);
-                    }
-                    primed = true;
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_secs(3));
-    }
-}
-
-// Memoized last GPU reading: the sample every other tick repeats it, so the widget keeps a steady number.
