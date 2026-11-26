@@ -299,13 +299,18 @@ fn main() {
         match evt {
             E::OnWindowClose => {
                 if let nwg::EventData::OnWindowClose(d) = data {
-                    let to_tray = a.data.borrow().cfg.to_tray;
-                    if to_tray {
-                        d.close(false);
-                        a.save_settings();
-                        a.win.set_visible(false);
-                    } else {
-                        a.quit();
+                    let (asked, to_tray) = {
+                        let c = &a.data.borrow().cfg;
+                        (c.tray_asked, c.to_tray)
+                    };
+                    match if asked { Some(to_tray) } else { a.ask_tray() } {
+                        None => d.close(false), // "Cancel": the window stays
+                        Some(true) => {
+                            d.close(false);
+                            a.save_settings();
+                            a.win.set_visible(false);
+                        }
+                        Some(false) => a.quit(),
                     }
                 }
             }

@@ -1567,3 +1567,4 @@ Select the items to delete	Selecciona los elementos que quieres eliminar
 Monitors	Monitores
 primary	principal
 Uncheck a screen to leave the bar off it.	Desmarca una pantalla para no poner la barra en ella.
+Keep Task Manager running in the tray when you close the window?\n\nIn the tray it keeps collecting history and applying rules. You can change this later in Settings or in the tray icon's menu.	¿Mantener el Administrador de tareas en la bandeja al cerrar la ventana?\n\nEn la bandeja sigue recopilando el historial y aplicando las reglas. Puedes cambiarlo luego en Ajustes o en el menú del icono de la bandeja.
