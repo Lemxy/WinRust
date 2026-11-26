@@ -441,8 +441,7 @@ fn read_brightness() {
         };
         let v = lcd_io(0x23_0498, None).map(|b| if ac { b[1] } else { b[2] } as i32).filter(|v| *v <= 100).or_else(|| {
             // no answer from the driver: WMI (some panels only show up there)
-            let o = Command::new("powershell").args(["-NoProfile", "-Command", "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction SilentlyContinue).CurrentBrightness"]).creation_flags(NO_WINDOW).output();
-            o.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            crate::wmi::int(r"root\WMI", "SELECT CurrentBrightness FROM WmiMonitorBrightness", "CurrentBrightness")
         });
         BRIGHT.store(v.unwrap_or(-1), Relaxed);
     });
@@ -452,8 +451,7 @@ fn set_brightness(v: i32) {
     std::thread::spawn(move || {
         let b = v.clamp(0, 100) as u8;
         if lcd_io(0x23_049C, Some([3, b, b])).is_none() {
-            let c = format!("Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1;Brightness={v}}}");
-            let _ = Command::new("powershell").args(["-NoProfile", "-Command", &c]).creation_flags(NO_WINDOW).output();
+            crate::wmi::set_brightness(b);
         }
     });
 }
@@ -696,17 +694,27 @@ fn r(l: i32, t: i32, rr: i32, b: i32) -> RECT {
     RECT { left: sc(l), top: sc(t), right: sc(rr), bottom: sc(b) }
 }
 
+/// The tile's corner button: Wi-Fi's network list, the settings pages of Bluetooth and the hotspot.
+fn more(tile: u8) -> Option<Act> {
+    match tile {
+        0 => Some(Act::WifiMore),
+        1 => Some(Act::Settings("ms-settings:bluetooth")),
+        6 => Some(Act::Settings("ms-settings:network-mobilehotspot")),
+        _ => None,
+    }
+}
+
 fn rects(k: Kind) -> Vec<(RECT, Act)> {
     let (w, h) = size(k);
     match k {
         Kind::Quick => {
-            // a 3x2 grid of tiles; the Wi-Fi tile has a round "more" button in its corner (found first: act_at searches backwards)
+            // a 3x3 grid of tiles; Wi-Fi, Bluetooth and the hotspot have a round "more" button in the corner (found first: act_at searches backwards)
             let mut v = vec![];
             for i in 0..TILES {
                 let (tl, tt) = (16 + 112 * (i as i32 % 3), 16 + 84 * (i as i32 / 3));
                 v.push((r(tl, tt, tl + 104, tt + 76), Act::Tile(i)));
-                if i == 0 {
-                    v.push((r(tl + 66, tt + 8, tl + 96, tt + 38), Act::WifiMore));
+                if let Some(a) = more(i) {
+                    v.push((r(tl + 66, tt + 8, tl + 96, tt + 38), a));
                 }
             }
             let mc = media_card(w);
@@ -1370,13 +1378,15 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 if i == 0 {
                     // the same arcs as the bar: lit by the signal, a cross when not connected
                     wifi_glyph(dc, (badge.left + badge.right) / 2, (badge.top + badge.bottom) / 2 - sc(1), sc(15), if q >= 0 { arcs_lit(q) } else { 0 }, ink, mix(ink, if on { pal().accent } else { card }, 0.55), if q < 0 { 1 } else { 0 });
-                    let more = rs.iter().find(|(_, a)| *a == Act::WifiMore).unwrap().0;
-                    g(Act::WifiMore, more, base, mix(base, pal().text, 0.1), sc(30));
-                    SelectObject(dc, f_gs);
-                    text(dc, "\u{E76C}", more, pal().dim, DT_CENTER);
                 } else {
                     SelectObject(dc, f_glyph);
                     text(dc, glyph, badge, ink, DT_CENTER);
+                }
+                if let Some(m) = more(i as u8) {
+                    let mr = rs.iter().find(|(_, a)| *a == m).unwrap().0;
+                    g(m, mr, base, mix(base, pal().text, 0.1), sc(30));
+                    SelectObject(dc, f_gs);
+                    text(dc, "\u{E76C}", mr, pal().dim, DT_CENTER);
                 }
                 SelectObject(dc, f_label);
                 text(dc, label.as_str(), r(tl + 12, tt + 46, tl + 102, tt + 62), pal().text, DT_LEFT);

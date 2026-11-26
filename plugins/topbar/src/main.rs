@@ -30,6 +30,7 @@ mod shot;
 mod lang;
 mod settings;
 mod thumbs;
+mod wmi;
 use {tray::*, status::*, run::*, shot::*, lang::*, settings::*};
 use windows::{
     Win32::{
@@ -2429,16 +2430,12 @@ unsafe fn lnk_args(lnk: &[u16]) -> String {
 
 /// What a running process was started with, minus the exe (e.g. `--profile-directory="Profile 2"`).
 fn proc_args(pid: u32) -> String {
-    use std::os::windows::process::CommandExt;
     if pid == 0 {
         return String::new();
     }
-    // the PEB first (microseconds); PowerShell (about a second) only for a process that cannot be opened for reading
-    let cl = winrust_common::proc::cmdline(pid).map(|c| c.trim().to_string()).unwrap_or_else(|| {
-        let script = format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8;(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
-        let out = Command::new("powershell.exe").args(["-NoProfile", "-Command", &script]).creation_flags(NO_WINDOW).output();
-        out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
-    });
+    // the PEB first (microseconds); WMI only for a process that cannot be opened for reading
+    let cl = winrust_common::proc::cmdline(pid).or_else(|| wmi::string(r"root\cimv2", &format!("SELECT CommandLine FROM Win32_Process WHERE ProcessId={pid}"), "CommandLine"));
+    let cl = cl.map(|c| c.trim().to_string()).unwrap_or_default();
     let rest = match cl.strip_prefix('"') {
         Some(r) => r.split_once('"').map_or("", |x| x.1),
         None => cl.split_once(' ').map_or("", |x| x.1),
@@ -3159,6 +3156,7 @@ fn main() {
         load_pins();
         fly::init(GetModuleHandleW(null()));
         thread::spawn(fly::load_apps);
+        thread::spawn(winrust_common::eco::auto_loop); // efficiency mode for background CPU hogs while the Game profile is on
         thread::spawn(winrust_common::mem::auto_loop); // standby purge when memory runs short, switched on from the task manager's Speed page
         let hi = GetModuleHandleW(null());
         let class = wide("topbar");

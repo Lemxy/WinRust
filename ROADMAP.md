@@ -6,6 +6,11 @@ Each item says how far it was checked: **tests** (unit tests), **built** (compil
 
 ## Done
 
+### After v0.5.9
+- **Speed:** while the Game profile is on, topbar gives background programs that use over half a CPU core efficiency mode (EcoQoS + idle priority) and puts them back when the profile is off or the program comes to the front; two new debloat groups on the Speed page: `background` (Store apps kept out of the background, no peer-to-peer Delivery Optimization, startup apps without Explorer's delay) and `vbs` (virtualization-based security and memory integrity off, asks first, after a reboot). *tests (the rules, live process and registry reads); the groups were only dry-run, the profile thread never ran in a game*
+- **Fewer processes:** topbar reads and sets brightness and reads a process's command line through WMI over COM instead of starting PowerShell; debloat changes the registry and services through the Win32 API (`common::reg`, `common::svc`) instead of `reg.exe` / `sc.exe`; rs-shell reads the Run keys natively at sign-in; rtaskmgr reads the boot log through `EvtQuery` instead of `wevtutil` and ends processes without `taskkill`. *tests (live WMI, registry, services and event log reads; native start modes match `sc qc` for every service debloat touches); brightness through WMI not checked on a panel that needs it*
+- **Removed:** rust-search's unused `rs-debloat` and `rs-top` (not shipped) and with them the `sysinfo` dependency of rust-search. *built*
+
 ### v0.5.9
 - **Pull requests:** a lone Win press no longer opens Windows' Start as well (#182) and a middle click on a folder opens it in a background tab (#180), both by @2sulraw; apps can take their button off the bar again, `ITaskbarList` works (#163), the search makes a change journal on a drive without one (#143), and Task Manager asks on the first close whether to stay in the tray (#145), all by @Tkyoxx; the file manager's windows belong to the File Explorer pin (#168) by @GuilhermeProvenci. *built, tests; not run on a live system*
 - **Fixes from issues:** Alt+Tab no longer picks the window under a still pointer, so a quick Alt+Tab returns to the previous window (#183, #116); the Performance page's details (base speed, cores, caches...) move under the big numbers in a narrow window instead of off its right edge (#170); typing a name in rust-explorer selects the matching row (#130); rs-shell waits until Explorer stops starting autostart programs before ending it (#159); WinRust is listed in Settings → Apps → Installed apps, so it can be removed without the downloaded exe (#178). *built, tests; not run on a live system*
@@ -77,7 +82,7 @@ emoved.txt`. `purge.exe` lists, `--ask` asks for YES (the bar's right-click menu
 0. **rust-explorer: Network and a scrollbar** (#75): a Network entry (shares, computers) and a scrollbar for long Quick access lists.
 1. **Test on a clean Windows 11 VM**: install, uninstall, rollback, reboot, for each plugin. Nothing has been checked on another machine yet.
 2. **One undo journal for every plugin**: each change (registry value, service, file) written as "before → after" before it is made; uninstall and rollback replay it backwards. Replaces the hand-written uninstall of each plugin. Needs step 1 first, and a migration for installs made by the current version.
-3. **Registry through the Win32 API** (`RegGetValueW`/`RegSetValueExW`) instead of running `reg.exe` and parsing its output.
+3. **Registry through the Win32 API** (`RegGetValueW`/`RegSetValueExW`) instead of running `reg.exe` and parsing its output: debloat and rs-shell are done (`common::reg`, `common::svc`), the installer (`src/install/`) still runs `reg.exe` and `sc.exe`.
 4. **Releases**: SHA-256 next to the exe, version in the window, update check.
 5. **Code signing** (removes the SmartScreen warning and part of the antivirus false positives).
 6. **PowerShell profile**: optionally install rg/fd/bat/eza/zoxide through winget (a checkbox in the topbar settings).

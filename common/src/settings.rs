@@ -250,7 +250,7 @@ fn own_page(uri: &str) -> Option<&'static str> {
         "ms-settings:sound" => Some("sound"),
         "ms-settings:personalization" | "ms-settings:colors" | "ms-settings:personalization-colors" | "ms-settings:themes" => Some("personalization"),
         "ms-settings:powersleep" | "ms-settings:storagesense" | "ms-settings:batterysaver" => Some("power"),
-        "ms-settings:network-status" | "ms-settings:network-wifi" | "ms-settings:network-wifisettings" | "ms-settings:network-vpn" | "ms-settings:network-proxy" => Some("network"),
+        "ms-settings:network-status" | "ms-settings:network-wifi" | "ms-settings:network-wifisettings" | "ms-settings:network-vpn" | "ms-settings:network-proxy" | "ms-settings:network-mobilehotspot" => Some("network"),
         "ms-settings:bluetooth" | "ms-settings:network-airplanemode" => Some("bluetooth"),
         "ms-settings:appsfeatures" => Some("apps"),
         "ms-settings:windowsupdate" => Some("update"),
@@ -301,6 +301,7 @@ mod tests {
         assert_eq!(own_page("ms-settings:personalization-background"), None);
         assert_eq!(own_page("ms-settings:network-wifi"), Some("network"));
         assert_eq!(own_page("ms-settings:bluetooth"), Some("bluetooth"));
+        assert_eq!(own_page("ms-settings:network-mobilehotspot"), Some("network"));
         assert_eq!(own_page("ms-settings:windowsupdate"), Some("update"));
         assert_eq!(own_page("ms-settings:easeofaccess"), None);
         assert_eq!(own_page("ms-settings:sound; calc"), None);

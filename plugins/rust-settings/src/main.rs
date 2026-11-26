@@ -2,7 +2,7 @@
 // rust-settings [page]   A small Settings window that does not need Explorer or the Store Settings app.
 // Pages: Display (resolution, refresh rate, scale, orientation, HDR, night light, arrangement of several displays by dragging), Sound (output/input
 // device, volume, mute, volume per app), Power & storage (battery, power plan, drives, disk cleanup), Network (adapters, Wi-Fi on every adapter:
-// radio, connect with a password or 802.1X user name/password, hidden networks, disconnect/forget on right click; VPN; proxy), Bluetooth (radio,
+// radio, connect with a password or 802.1X user name/password, hidden networks, disconnect/forget on right click; mobile hotspot; VPN; proxy), Bluetooth (radio,
 // airplane mode, paired and nearby devices), Apps (installed programs, uninstall), Windows Update (check, install), Personalization, About.
 // `page` is a name or an ms-settings: address; anything unknown opens the first page. Esc closes, Up/Down change the page.
 // A new resolution or refresh rate is temporary until confirmed: Enter keeps it, Esc or 15 s without a key goes back.
@@ -19,6 +19,7 @@ mod audio;
 mod bt;
 mod display;
 mod ext;
+mod hotspot;
 mod net;
 mod power;
 mod sys;
@@ -93,6 +94,9 @@ enum Op {
     Pac,    // asks for the proxy script address
     Bt,     // Bluetooth radio
     Air,    // airplane mode
+    Hot,    // mobile hotspot on/off
+    HotName, // asks for the hotspot's network name
+    HotPass, // asks for the hotspot's password
     UiLang, // the language of every WinRust program
 }
 
@@ -180,6 +184,9 @@ enum Prompt {
     EapPass(wifi::Net, String),
     /// The network and whether it is a hidden one (then an empty password means an open network).
     Key(wifi::Net, bool),
+    /// The mobile hotspot's network name / password.
+    HotName,
+    HotPass,
 }
 thread_local! { static APP: RefCell<App> = RefCell::new(App::default()) }
 
@@ -444,6 +451,18 @@ fn air_on() -> Option<bool> {
     bt::state().air
 }
 
+fn hot_on() -> Option<bool> {
+    hotspot::state().on
+}
+
+fn hot_name() -> String {
+    hotspot::state().ssid
+}
+
+fn hot_pass() -> String {
+    hotspot::state().pass
+}
+
 fn screen_text() -> String {
     power::timeout_text(power::Timeout::Screen)
 }
@@ -529,6 +548,17 @@ fn network_rows() -> Vec<Row> {
         if radio.is_some_and(|r| r.0 && r.1) {
             rows.push(Row::Cycle(t!("Другая сеть…", "Other network…", ja: "その他のネットワーク…", pt: "Outra rede…", zh: "其他网络…").into(), String::new, Op::Hidden));
         }
+    }
+    rows.push(Row::Header(t!("Мобильная точка доступа", "Mobile hotspot", ja: "モバイル ホットスポット", pt: "Hotspot móvel", zh: "移动热点").into()));
+    let hs = hotspot::state();
+    let label = if hs.on.is_some() { t!("Раздавать интернет по Wi-Fi", "Share the internet over Wi-Fi", ja: "Wi-Fi でインターネットを共有", pt: "Compartilhar a internet por Wi-Fi", zh: "通过 Wi-Fi 共享网络") } else { t!("Точка доступа: нет подключения к интернету для раздачи", "Hotspot: no internet connection to share", ja: "ホットスポット: 共有できるインターネット接続がありません", pt: "Hotspot: sem conexão com a internet para compartilhar", zh: "移动热点：没有可共享的互联网连接") };
+    rows.push(Row::Switch(label.into(), hot_on, Op::Hot));
+    if hs.on.is_some() {
+        rows.push(Row::Cycle(t!("Имя сети", "Network name", ja: "ネットワーク名", pt: "Nome da rede", zh: "网络名称").into(), hot_name, Op::HotName));
+        rows.push(Row::Cycle(t!("Пароль сети", "Network password", ja: "ネットワーク パスワード", pt: "Senha da rede", zh: "网络密码").into(), hot_pass, Op::HotPass));
+    }
+    if !hs.note.is_empty() {
+        rows.push(Row::Info(t!("Последняя ошибка", "Last error", ja: "最後のエラー", pt: "Último erro", zh: "上次错误").into(), hs.note));
     }
     rows.push(Row::Header("VPN".into()));
     let vpns = ext::vpns();
@@ -1157,6 +1187,8 @@ unsafe fn paint(hwnd: HWND) {
                 shape(mem, inset(e, -p(2)), t.accent, rd(8) * 2);
                 shape(mem, e, t.bg, rd(6) * 2);
                 let ask = match pr {
+                    Prompt::HotName => t!("Имя сети точки доступа (до 32 байт)", "Hotspot network name (up to 32 bytes)", ja: "ホットスポットのネットワーク名 (32 バイトまで)", pt: "Nome da rede do hotspot (até 32 bytes)", zh: "热点网络名称（最多 32 字节）").into(),
+                    Prompt::HotPass => t!("Новый пароль точки доступа (8–63 символа, латиница)", "New hotspot password (8–63 ASCII characters)", ja: "ホットスポットの新しいパスワード (ASCII 8 ～ 63 文字)", pt: "Nova senha do hotspot (8–63 caracteres ASCII)", zh: "新的热点密码（8–63 个 ASCII 字符）").into(),
                     Prompt::Ssid => t!("Имя скрытой сети", "Hidden network name", ja: "非表示のネットワーク名", pt: "Nome da rede oculta", zh: "隐藏网络名称").into(),
                     Prompt::Proxy(false) => t!("Прокси: адрес:порт (пусто: убрать)", "Proxy: host:port (empty: remove)", ja: "プロキシ: ホスト:ポート (空欄で削除)", pt: "Proxy: host:porta (vazio: remover)", zh: "代理：主机:端口（留空：移除）").into(),
                     Prompt::Proxy(true) => t!("Адрес скрипта PAC (пусто: убрать)", "PAC script address (empty: remove)", ja: "PAC スクリプトのアドレス (空欄で削除)", pt: "Endereço do script PAC (vazio: remover)", zh: "PAC 脚本地址（留空：移除）").into(),
@@ -1306,6 +1338,13 @@ unsafe fn display_or_mute(_hwnd: HWND, op: Op) {
                 bt::set_airplane(!on, ping);
             }
         }
+        Op::Hot => {
+            if let Some(on) = hotspot::state().on {
+                hotspot::set(!on, ping);
+            }
+        }
+        Op::HotName => unsafe { open_prompt(_hwnd, Prompt::HotName) },
+        Op::HotPass => unsafe { open_prompt(_hwnd, Prompt::HotPass) },
         Op::Proxy => unsafe { open_prompt(_hwnd, Prompt::Proxy(false)) },
         Op::Pac => unsafe { open_prompt(_hwnd, Prompt::Proxy(true)) },
         _ => {}
@@ -1364,7 +1403,10 @@ unsafe fn goto(hwnd: HWND, i: usize) {
             }
         });
         match i {
-            NET_PAGE => wifi::scan(),
+            NET_PAGE => {
+                wifi::scan();
+                hotspot::refresh(ping);
+            }
             BT_PAGE => bt::refresh(ping),
             2 => {
                 if ext::TEMP_BYTES.load(std::sync::atomic::Ordering::Relaxed) == u64::MAX {
@@ -1515,11 +1557,13 @@ unsafe fn close_prompt(hwnd: HWND) {
 unsafe fn open_prompt(hwnd: HWND, pr: Prompt) {
     unsafe {
         close_prompt(hwnd);
-        let key = matches!(pr, Prompt::Key(..) | Prompt::EapPass(..));
+        let key = matches!(pr, Prompt::Key(..) | Prompt::EapPass(..) | Prompt::HotPass);
         let limit = match pr {
             Prompt::Ssid => 32,
             Prompt::Proxy(_) => 300,
             Prompt::EapUser(_) => 64,
+            Prompt::HotName => 32,
+            Prompt::HotPass => 63,
             _ => 128,
         };
         let mut rc: RECT = std::mem::zeroed();
@@ -1602,6 +1646,21 @@ unsafe fn submit_prompt(hwnd: HWND) {
                 } else {
                     APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::Proxy(pac)), Some(t!("Неверный адрес", "Not a valid address", ja: "無効なアドレスです", pt: "Endereço inválido", zh: "地址无效").into())));
                 }
+            }
+            Some(Prompt::HotName) if !hotspot::valid_ssid(&s) => {
+                APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::HotName), Some(t!("Имя сети: от 1 до 32 байт", "Network name: 1 to 32 bytes", ja: "ネットワーク名: 1 ～ 32 バイト", pt: "Nome da rede: de 1 a 32 bytes", zh: "网络名称：1 到 32 字节").into())));
+            }
+            Some(Prompt::HotPass) if !hotspot::valid_pass(&s) => {
+                APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::HotPass), Some(t!("Пароль: от 8 до 63 символов латиницей", "Password: 8 to 63 ASCII characters", ja: "パスワード: ASCII 8 ～ 63 文字", pt: "Senha: de 8 a 63 caracteres ASCII", zh: "密码：8 到 63 个 ASCII 字符").into())));
+                SendMessageW(ed as HWND, EM_SETSEL, 0, -1);
+            }
+            Some(Prompt::HotName) => {
+                close_prompt(hwnd);
+                hotspot::configure(Some(s.trim().to_string()), None, ping);
+            }
+            Some(Prompt::HotPass) => {
+                close_prompt(hwnd);
+                hotspot::configure(None, Some(s.clone()), ping);
             }
             Some(Prompt::EapUser(n)) if s.trim().is_empty() => APP.with_borrow_mut(|a| (a.prompt, a.msg) = (Some(Prompt::EapUser(n)), Some(t!("Введите имя пользователя", "Enter the user name", ja: "ユーザー名を入力してください", pt: "Digite o nome de usuário", zh: "输入用户名").into()))),
             Some(Prompt::EapUser(n)) => open_prompt(hwnd, Prompt::EapPass(n, s.trim().to_string())),

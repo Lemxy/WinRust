@@ -13,6 +13,7 @@
 // StartupApproved), topbar's "open" still shells out to explorer.exe for /select; upgrade when those matter.
 use std::{os::windows::process::CommandExt, path::PathBuf, process::Command, ptr, thread, time::{Duration, Instant}};
 use windows_sys::{core::BOOL, Win32::{Foundation::{HWND, LPARAM, RECT}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
+use winrust_common::reg;
 
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
 const NO_WINDOW: u32 = 0x0800_0000;
@@ -30,27 +31,17 @@ fn reg(args: &[&str]) -> Option<String> {
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
-/// Commands from `reg query <Run key>` output: "    Name    REG_SZ    command line".
-fn parse_run(out: &str) -> Vec<String> {
-    parse_run_named(out).into_iter().map(|(_, c)| c).collect()
-}
+type Values = [(String, u32, Vec<u8>)];
 
-/// (value name, command) pairs from `reg query <Run key>` output.
-fn parse_run_named(out: &str) -> Vec<(String, String)> {
-    out.lines().filter_map(|l| {
-        let (n, v) = l.split_once("    REG_EXPAND_SZ").or_else(|| l.split_once("    REG_SZ"))?;
-        Some((n.trim().to_string(), v.trim().to_string())).filter(|(_, v)| !v.is_empty())
-    }).collect()
+/// (value name, command) pairs of a Run key's values (`reg::values`); empty commands are left out.
+fn parse_run_named(vals: &Values) -> Vec<(String, String)> {
+    vals.iter().filter_map(|(n, ty, b)| Some((n.clone(), reg::text(*ty, b)?.trim().to_string())).filter(|(_, v)| !v.is_empty())).collect()
 }
 
 /// Names (lowercase) the user turned off in Task Manager's Startup tab: under StartupApproved each entry is a
 /// REG_BINARY whose first byte is even when enabled (02, 06) and odd when disabled (03, 07). Explorer skips those.
-fn parse_disabled(out: &str) -> std::collections::HashSet<String> {
-    out.lines().filter_map(|l| {
-        let (n, v) = l.split_once("    REG_BINARY")?;
-        let first = u8::from_str_radix(v.trim().get(..2)?, 16).ok()?;
-        (first & 1 == 1).then(|| n.trim().to_lowercase())
-    }).collect()
+fn parse_disabled(vals: &Values) -> std::collections::HashSet<String> {
+    vals.iter().filter(|(_, ty, b)| *ty == 3 && b.first().is_some_and(|f| f & 1 == 1)).map(|(n, _, _)| n.to_lowercase()).collect()
 }
 
 const APPROVED: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved";
@@ -73,7 +64,7 @@ fn exe_path(cmd: &str) -> Option<String> {
 /// Everything the shell should start at logon (commands for `cmd /c start ""`).
 fn autostart() -> Vec<String> {
     let mut v = vec![];
-    let off = |key: String| reg(&["query", &key]).map(|o| parse_disabled(&o)).unwrap_or_default();
+    let off = |key: String| parse_disabled(&reg::values(&key));
     // each Run key with the StartupApproved list Task Manager keeps for it; 32-bit programs register under WOW6432Node
     let runs = [
         (r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run", format!(r"HKLM\{APPROVED}\Run")),
@@ -82,7 +73,7 @@ fn autostart() -> Vec<String> {
     ];
     for (key, approved) in runs {
         let disabled = off(approved);
-        v.extend(reg(&["query", key]).map(|o| parse_run_named(&o)).unwrap_or_default().into_iter().filter(|(n, _)| !disabled.contains(&n.to_lowercase())).map(|(_, c)| c));
+        v.extend(parse_run_named(&reg::values(key)).into_iter().filter(|(n, _)| !disabled.contains(&n.to_lowercase())).map(|(_, c)| c));
     }
     let dirs = [
         (std::env::var("APPDATA").map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\Startup")), format!(r"HKCU\{APPROVED}\StartupFolder")),
@@ -467,7 +458,7 @@ fn main() {
         [] => { if !bootstrap() { run_shell(); } 0 }
         ["--overlay"] => { overlay(); 0 }
         ["--dry-run"] => {
-            println!("wallpaper: {:?}", reg(&["query", r"HKCU\Control Panel\Desktop", "/v", "WallPaper"]).map(|o| parse_run(&o)));
+            println!("wallpaper: {:?}", reg::get_text(r"HKCU\Control Panel\Desktop", "WallPaper"));
             autostart().iter().for_each(|c| println!("autostart: {c}"));
             println!("topbar: {} ({})", find_exe("topbar.exe").display(), if find_exe("topbar.exe").exists() { "found" } else { "MISSING" });
             println!("explorer ran this session's autostart: {}", startup_run());
@@ -496,7 +487,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{exe_path, may_end_explorer, parse_run, to_bmp};
+    use super::{exe_path, may_end_explorer, to_bmp};
     use std::time::Duration;
     #[test]
     fn converts_a_jpeg_to_bmp() {
@@ -560,16 +551,18 @@ mod tests {
         assert!(exe_path(r"%windir%\system32\z.exe").unwrap().to_lowercase().ends_with(r"system32\z.exe"));
     }
     #[test]
-    fn parses_reg_query_lines() {
-        let out = "\nHKEY_CURRENT_USER\\X\n    Foo    REG_SZ    foo.exe --x\n    Bar    REG_EXPAND_SZ    %APPDATA%\\bar.exe\n    Empty    REG_SZ    \n";
-        assert_eq!(parse_run(out), ["foo.exe --x", "%APPDATA%\\bar.exe"]);
-        // a name with spaces stays whole
-        assert_eq!(super::parse_run_named("    Steam Client    REG_SZ    \"C:\\s\\steam.exe\" -silent\n"), [("Steam Client".to_string(), "\"C:\\s\\steam.exe\" -silent".to_string())]);
+    fn reads_run_values() {
+        let sz = |n: &str, ty: u32, s: &str| (n.to_string(), ty, s.encode_utf16().chain([0]).flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>());
+        let vals = [sz("Foo", 1, "foo.exe --x"), sz("Bar", 2, "%APPDATA%\\bar.exe"), sz("Empty", 1, " "), ("Bin".into(), 3, vec![1, 2])];
+        let named = super::parse_run_named(&vals);
+        assert_eq!(named.iter().map(|x| x.1.as_str()).collect::<Vec<_>>(), ["foo.exe --x", "%APPDATA%\\bar.exe"]);
+        assert_eq!(super::parse_run_named(&[sz("Steam Client", 1, "\"C:\\s\\steam.exe\" -silent")]), [("Steam Client".to_string(), "\"C:\\s\\steam.exe\" -silent".to_string())]);
     }
     #[test]
     fn reads_task_managers_disabled_entries() {
-        let out = "\nHKEY_CURRENT_USER\\...\\StartupApproved\\Run\n    Discord    REG_BINARY    030000006A1B2C3D4E5F6071\n    OneDrive    REG_BINARY    020000000000000000000000\n    Spotify Web    REG_BINARY    07000000FFFFFFFF00000000\n    Odd    REG_BINARY    06\n    Junk    REG_BINARY    \n";
-        let off = super::parse_disabled(out);
+        let b = |n: &str, d: &[u8]| (n.to_string(), 3u32, d.to_vec());
+        let out = [b("Discord", &[3, 0, 0, 0, 0x6A]), b("OneDrive", &[2, 0, 0, 0]), b("Spotify Web", &[7, 0, 0, 0, 0xFF]), b("Odd", &[6]), b("Junk", &[]), ("Sz".into(), 1, vec![3, 0])];
+        let off = super::parse_disabled(&out);
         assert!(off.contains("discord") && off.contains("spotify web"));
         assert!(!off.contains("onedrive") && !off.contains("odd") && !off.contains("junk"));
     }
