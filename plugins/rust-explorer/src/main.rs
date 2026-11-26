@@ -2670,7 +2670,16 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             10 | 11 if !paths.is_empty() && !in_virtual() => clip_selected(h, wp == 10),
                             12 if !in_virtual() => { paste(h, &dir); reload(h); }
                             13 if !in_zip() && !in_virtual() => rename_selected(),
-                            14 if !paths.is_empty() && !in_zip() && !in_virtual() => { sh::delete(h, &paths); } // WM_DELETED reloads
+                            // the eye button: show / hide hidden files, the same switch as Ctrl+H. The trash button it
+                            // replaced is still on the Del key and the context menu; a mouse-only delete was redundant.
+                            14 => {
+                                SHOW_HIDDEN.fetch_xor(true, Relaxed);
+                                reload(h);
+                                let chrome = ST.with_borrow(|st| st.tab);
+                                if !chrome.is_null() {
+                                    InvalidateRect(chrome, ptr::null(), 0);
+                                }
+                            }
                             _ => {}
                         }
                     }

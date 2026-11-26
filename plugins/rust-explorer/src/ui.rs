@@ -30,8 +30,8 @@ const RELOAD: i32 = 4;
 const SEARCH: i32 = 5;
 const VIEW: i32 = 6;
 const PLUS: i32 = 7;
-const CMD: i32 = 10; // + 0..5: cut, copy, paste, rename, delete (Windows 11 command buttons)
-const CMD_GLYPHS: [&str; 5] = ["\u{E8C6}", "\u{E8C8}", "\u{E77F}", "\u{E8AC}", "\u{E74D}"];
+const CMD: i32 = 10; // + 0..5: cut, copy, paste, rename, show hidden (Windows 11 command buttons)
+const CMD_GLYPHS: [&str; 5] = ["\u{E8C6}", "\u{E8C8}", "\u{E77F}", "\u{E8AC}", "\u{E7B3}"]; // the last one: an eye
 const TAB: i32 = 100; // + index
 const CLOSE: i32 = 200; // + index
 const CRUMB: i32 = 400; // + index: a part of the path in the address pill
@@ -786,13 +786,30 @@ unsafe fn frost_bg(hwnd: HWND, dc: HDC, dst: RECT) -> bool {
     painted
 }
 
+/// A glyph for a tab: the kind of place it points at, without asking the shell (a path on a dead drive must not stall a
+/// repaint). This PC, the Recycle Bin, a drive root and everything else (a folder).
+fn tab_glyph(p: &std::path::PathBuf) -> &'static str {
+    if super::is_this_pc(p) {
+        "\u{E7F4}"
+    } else if super::is_trash(p) {
+        "\u{E74D}"
+    } else {
+        let s = p.to_string_lossy();
+        if s.len() == 3 && s.ends_with(":\\") {
+            "\u{EDA2}"
+        } else {
+            "\u{E8B7}"
+        }
+    }
+}
+
 unsafe fn paint_chrome(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let wdc = BeginPaint(hwnd, &mut ps);
     let mut cr: RECT = std::mem::zeroed();
     GetClientRect(hwnd, &mut cr);
     // everything painting needs from the window state, copied out so nothing is borrowed while drawing
-    let snap = ST.with(|c| c.try_borrow().ok().map(|s| (s.tabs.iter().map(label).collect::<Vec<_>>(), s.active, s.hist.pos > 0, s.hist.pos + 1 < s.hist.v.len(), s.thumbs, s.edit, s.dir.clone())));
+    let snap = ST.with(|c| c.try_borrow().ok().map(|s| (s.tabs.iter().map(|t| (label(t), tab_glyph(t))).collect::<Vec<_>>(), s.active, s.hist.pos > 0, s.hist.pos + 1 < s.hist.v.len(), s.thumbs, s.edit, s.dir.clone())));
     let Some((labels, active, can_back, can_fwd, thumbs, edit, dir)) = snap else { EndPaint(hwnd, &ps); return };
     BUSY.set(false);
     let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
@@ -818,8 +835,11 @@ unsafe fn paint_chrome(hwnd: HWND) {
         let p = press_t(TAB + i as i32);
         fill(dc, *t, mix(mix(mix(pal().bg, pal().hover, th), pal().active, ta), pal().accent, 0.35 * p), sc(8));
         if ta > 0.01 { fill(dc, rc(t.left + (t.right - t.left) / 2 - sc(12), t.bottom - sc(3), t.left + (t.right - t.left) / 2 + sc(12), t.bottom), mix(pal().active, pal().accent, ta), sc(3)); }
+        // the kind of place the tab points at, before its name (a glyph, not a shell icon: a dead drive cannot stall a paint)
+        SelectObject(dc, f_small);
+        text(dc, labels[i].1, rc(t.left + sc(9), t.top, t.left + sc(31), t.bottom), mix(pal().dim, pal().text, ta.max(th) * 0.85), DT_CENTER);
         SelectObject(dc, f_txt);
-        text(dc, &labels[i], rc(t.left + sc(14), t.top, t.right - sc(if labels.len() > 1 { 30 } else { 10 }), t.bottom), mix(pal().dim, pal().text, ta.max(th)), DT_LEFT);
+        text(dc, &labels[i].0, rc(t.left + sc(33), t.top, t.right - sc(if labels.len() > 1 { 30 } else { 10 }), t.bottom), mix(pal().dim, pal().text, ta.max(th)), DT_LEFT);
         if labels.len() > 1 && (on || th > 0.05) {
             let c = l.close[i];
             glow(dc, CLOSE + i as i32, c, mix(pal().bg, pal().active, ta), pal().hover, sc(6), hot == CLOSE + i as i32);
@@ -846,9 +866,15 @@ unsafe fn paint_chrome(hwnd: HWND) {
         text(dc, g, r, if enabled { pal().text } else { off() }, DT_CENTER);
     }
 
+    // the eye stays accent-coloured while hidden files are on, so its state reads at a glance
+    let hidden = super::SHOW_HIDDEN.load(std::sync::atomic::Ordering::Relaxed);
     for (i, r) in l.cmds.iter().enumerate() {
+        let on = i == 4 && hidden;
         glow(dc, CMD + i as i32, *r, pal().bg, pal().hover, sc(8), hot == CMD + i as i32);
-        text(dc, CMD_GLYPHS[i], *r, pal().text, DT_CENTER);
+        if on {
+            fill(dc, *r, mix(pal().bg, pal().accent, 0.22), sc(8));
+        }
+        text(dc, CMD_GLYPHS[i], *r, if on { pal().accent } else { pal().text }, DT_CENTER);
     }
 
     // address pill: accent outline while it is being edited
