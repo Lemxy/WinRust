@@ -23,7 +23,7 @@
 //   drag-to-position / auto-arrange, items from the public desktop can't be renamed.
 #![windows_subsystem = "windows"]
 use std::{cell::RefCell, env, fs, os::windows::fs::MetadataExt, path::{Path, PathBuf}, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed}};
-use winrust_common::{t, tf};
+use winrust_common::{look, t, tf};
 use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{ClientToScreen, GetStockObject, InvalidateRect, ScreenToClient}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
 
 mod zipx; // our own ZIP engine (deflate, inflate, container)
@@ -53,9 +53,10 @@ fn virt() -> (i32, i32, i32, i32) {
 }
 /// The desktop's icon list stays on the primary monitor (at screen 0,0, i.e. -vx, -vy inside the desktop window), between the bar's strips.
 fn place_desk_list(list: HWND) {
-    let (vx, vy, ..) = virt();
-    let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    unsafe { MoveWindow(list, -vx, -vy + desk_top(), sw, (sh - desk_top() - desk_bottom()).max(0), 1) };
+    // The icon list covers the *whole* virtual desktop, not just the primary monitor: icons can be dragged to any
+    // screen (the bar's strips only exist on the primary; on the others the list just starts a little lower).
+    let (vx, vy, vw, vh) = virt();
+    unsafe { MoveWindow(list, -vx, -vy + desk_top(), vw, (vh - desk_top() - desk_bottom()).max(0), 1) };
 }
 /// Renders the wallpaper for the current monitor layout (at start and when monitors change), freeing the old one.
 fn reload_wall() {
@@ -195,10 +196,15 @@ fn drives() -> Vec<Row> {
 /// The "Type" column of a row: a drive says what kind it is, everything else goes by its name.
 fn row_type(r: &Row) -> String {
     match &r.path {
+        // Only a drive root is a drive: a folder with an absolute path (a recycled folder, a search hit) is a folder.
         Some(p) if r.dir => {
             let root = p.to_string_lossy();
-            let ty = drives::cached().iter().find(|d| d.root.eq_ignore_ascii_case(&root)).map_or(3, |d| d.ty);
-            drive_kind(ty)
+            if root.len() == 3 && root.ends_with(":\\") {
+                let ty = drives::cached().iter().find(|d| d.root.eq_ignore_ascii_case(&root)).map_or(3, |d| d.ty);
+                drive_kind(ty)
+            } else {
+                type_text(&r.name, true)
+            }
         }
         _ => type_text(&r.name, r.dir),
     }
@@ -263,7 +269,8 @@ fn trash_rows() -> Vec<Row> {
                 let Some((size, time, orig)) = parse_trash_i(&i) else { continue };
                 // the row shows the file name; the original path (Restore's destination) travels in `path`
                 let shown = orig.file_name().map_or_else(|| orig.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
-                out.push(Row { name: shown, dir: false, size, time, icon: -1, thumb: -2, hdr: false, path: Some(orig), cap: None, trash: Some(Trash { r, i }) });
+                let is_dir = r.is_dir(); // a recycled folder keeps its folder icon (worked on the scan thread)
+                out.push(Row { name: shown, dir: is_dir, size, time, icon: -1, thumb: -2, hdr: false, path: Some(orig), cap: None, trash: Some(Trash { r, i }) });
                 if out.len() >= 5000 { break; } // a bin with a million files must not fill the window
             }
         }
@@ -913,6 +920,67 @@ unsafe fn apply_icon_size(list: HWND) {
 /// The icon index of a desktop item: our own list when it is attached, the shell's index otherwise. `icon::best` gives
 /// the same size the list wants, so the control never stretches anything; a path the shell has no icon for still gets
 /// the shell's (a document type, a drive), copied over from its list.
+/// Image-list indexes of the "This PC" (0) and "Recycle Bin" (1) icons on the desktop: the shell's own, appended to the
+/// list the desktop draws, and built once per process.
+thread_local! {
+    static SPECIAL_ICONS: [std::cell::Cell<i32>; 2] = [const { std::cell::Cell::new(-1) }, const { std::cell::Cell::new(-1) }];
+}
+
+/// A Segoe MDL2 glyph rendered straight into the desktop's image list: the shell stock icons came out as blank pages in
+/// the colour-keyed list, and these match the sidebar's glyphs. White glyph over a dark 1 px shadow, transparent around.
+fn special_icon(slot: usize, glyph: &str) -> i32 {
+    let cached = SPECIAL_ICONS.with(|c| c[slot].get());
+    if cached >= 0 {
+        return cached;
+    }
+    let (ours, _, px) = DESK_IL.with(|c| c.get());
+    if ours == 0 || px <= 0 {
+        return -1;
+    }
+    unsafe {
+        use windows_sys::Win32::Graphics::Gdi::{BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, CreateFontW, DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, SelectObject, SetBkMode, SetTextColor, TRANSPARENT};
+        let bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: px, biHeight: -px, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() },
+            ..std::mem::zeroed()
+        };
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let bmp = CreateDIBSection(std::ptr::null_mut(), &bi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        if bmp.is_null() || bits.is_null() {
+            return -1;
+        }
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let old = SelectObject(dc, bmp as _);
+        let f = CreateFontW(-(px * 3 / 4), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, w(winrust_common::style::icon_face()).as_ptr());
+        let of = SelectObject(dc, f as _);
+        SetBkMode(dc, TRANSPARENT as i32);
+        let mut r = RECT { left: 0, top: 0, right: px, bottom: px };
+        SetTextColor(dc, 0x0018_1818); // the shadow, not pure black: pure black would read as "nothing drawn" below
+        let mut sh = r;
+        sh.left += 1;
+        sh.top += 1;
+        sh.right += 1;
+        sh.bottom += 1;
+        DrawTextW(dc, w(glyph).as_ptr(), -1, &mut sh, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(dc, 0x00FF_FFFF);
+        DrawTextW(dc, w(glyph).as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, of);
+        DeleteObject(f as _);
+        SelectObject(dc, old);
+        // GDI does not fill the alpha channel: every drawn pixel becomes opaque, the zeroed background stays transparent
+        let p = bits as *mut u32;
+        for i in 0..(px * px) as usize {
+            let v = *p.add(i) & 0x00FF_FFFF;
+            *p.add(i) = if v != 0 { v | 0xFF00_0000 } else { 0 };
+        }
+        let i = ImageList_Add(ours as _, bmp as _, std::ptr::null_mut());
+        DeleteObject(bmp as _);
+        DeleteDC(dc);
+        we::log(&format!("glyph icon {slot}: list={ours} px={px} index={i}"));
+        SPECIAL_ICONS.with(|c| c[slot].set(i));
+        i
+    }
+}
+
 fn desk_icon(path: &PathBuf, dir: bool) -> i32 {
     let (ours, shell, px) = DESK_IL.with(|c| c.get());
     if ours == 0 || px <= 0 { return icon_of(path, dir); }
@@ -945,6 +1013,7 @@ fn reset_desk_icons() {
     let ours = DESK_IL.with(|c| c.get()).0;
     if ours != 0 { unsafe { ImageList_Remove(ours as _, -1) }; }
     DESK_ICON_AT.with_borrow_mut(|m| m.clear());
+    SPECIAL_ICONS.with(|c| for s in c { s.set(-1) }); // the list is empty: the namespace glyph indexes go too
 }
 fn icons_hidden() -> bool { icons_marker().exists() }
 fn set_icons_hidden(hide: bool) {
@@ -1156,6 +1225,17 @@ fn rows_of(dir: &PathBuf) -> Option<Vec<Row>> {
     let mut dirs = vec![dir.clone()];
     if desk() { dirs.extend(sh::desktop_dirs().into_iter().skip(1)); }
     let mut rows = vec![];
+    if desk() {
+        // Explorer's two namespace icons, each one its own switch (look.txt desk-thispc / desk-bin). Their time is now so
+        // date grouping, when the user turns it on, keeps them with today's files.
+        let now = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() / 100) as i64) + 116_444_736_000_000_000;
+        if look::desk_thispc() {
+            rows.push(Row { name: display_dir(&this_pc()), dir: true, size: 0, time: now as u64, icon: -2, thumb: -2, hdr: false, path: Some(this_pc()), cap: None, trash: None });
+        }
+        if look::desk_bin() {
+            rows.push(Row { name: display_dir(&trash_dir()), dir: true, size: 0, time: now as u64, icon: -2, thumb: -2, hdr: false, path: Some(trash_dir()), cap: None, trash: None });
+        }
+    }
     for (n, d) in dirs.iter().enumerate() {
         let Ok(rd) = fs::read_dir(d) else { if n == 0 { return None } else { continue } };
         for e in rd.flatten() {
@@ -1200,6 +1280,23 @@ fn load(h: HWND, dir: PathBuf) {
     put(list, LVM_SETCOLUMNWIDTH, 3, ui::sc(if pc { 190 } else { 96 }) as isize);
     reset_thumbs();
     reset_desk_icons(); // the rows are replaced: their indexes into the desktop's icon list are stale
+    // The list is empty now, so the two namespace glyphs get the first indexes; point their rows at them. Doing this
+    // before the reset left the cached 0/1 pointing at the first two files (both showed a folder icon).
+    if desk() {
+        let this_i = if look::desk_thispc() { special_icon(0, "\u{E7F4}") } else { -1 };
+        let bin_i = if look::desk_bin() { special_icon(1, "\u{E74D}") } else { -1 };
+        ST.with_borrow_mut(|st| {
+            for r in &mut st.rows {
+                if let Some(p) = &r.path {
+                    if is_this_pc(p) {
+                        r.icon = this_i;
+                    } else if is_trash(p) {
+                        r.icon = bin_i;
+                    }
+                }
+            }
+        });
+    }
     put(list, LVM_DELETEALLITEMS, 0, 0);
     if desk() { desk::fill(list, n); } else { put(list, LVM_SETITEMCOUNT, n, 0); }
     if trash { trash_scan(h); } // the bins are read on a worker: the list fills when WM_TRASH arrives
@@ -2199,7 +2296,7 @@ mod desk {
     }
 
     /// The icon grid: cell size, and how many columns / rows fit.
-    struct Grid { cx: i32, cy: i32, cols: i32, rows: i32 }
+    struct Grid { cx: i32, cy: i32, cols: i32, rows: i32, right: i32, m: i32 }
 
     impl Grid {
         fn of(list: HWND) -> Grid {
@@ -2208,17 +2305,30 @@ mod desk {
             let mut r: RECT = unsafe { std::mem::zeroed() };
             unsafe { GetClientRect(list, &mut r) };
             if r.bottom <= 0 {
-                // the first fill runs in WM_CREATE, before WM_SIZE gives the list its size: the size it is about to get
-                r = unsafe { RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) - desk_top() - desk_bottom() } };
+                // the first fill runs in WM_CREATE, before WM_SIZE gives the list its size: the size it is about to
+                // get (the whole virtual desktop, so the default layout already reaches the last monitor)
+                let (_, _, vw, vh) = super::virt();
+                r = unsafe { RECT { left: 0, top: 0, right: vw, bottom: vh - desk_top() - desk_bottom() } };
             }
-            Grid { cx, cy, cols: (r.right / cx).max(1), rows: (r.bottom / cy).max(1) }
+            let m = (cx / 8).max(8); // the frame around the last icon, not a whole empty cell
+            Grid { cx, cy, cols: ((r.right - m).max(cx) / cx).max(1), rows: ((r.bottom - m).max(cy) / cy).max(1), right: r.right, m }
         }
-        /// Nearest cell to a position; None if it is off the grid (screen got smaller).
+        /// Nearest cell to a position; None if it is off the grid (screen got smaller). Anything dropped on the last
+        /// cell's side goes to the rightmost column, which is aligned to the edge (not at col*cx: that left a cell-sized
+        /// hole between the icon and the real margin).
         fn cell(&self, (x, y): (i32, i32)) -> Option<(i32, i32)> {
-            let c = ((x + self.cx / 2).div_euclid(self.cx), (y + self.cy / 2).div_euclid(self.cy));
-            (c.0 >= 0 && c.1 >= 0 && c.0 < self.cols && c.1 < self.rows).then_some(c)
+            let c = if x >= self.right - 2 * self.cx {
+                self.cols - 1
+            } else {
+                ((x + self.cx / 2).div_euclid(self.cx)).min(self.cols - 1)
+            };
+            let r = ((y + self.cy / 2).div_euclid(self.cy)).min(self.rows - 1);
+            (c >= 0 && r >= 0 && c < self.cols && r < self.rows).then_some((c, r))
         }
-        fn at(&self, (c, r): (i32, i32)) -> (i32, i32) { (c * self.cx, r * self.cy) }
+        fn at(&self, (c, r): (i32, i32)) -> (i32, i32) {
+            let x = if c == self.cols - 1 { self.right - self.cx - self.m } else { c * self.cx };
+            (x, r * self.cy)
+        }
         /// Free cell nearest to `want`; with no wish the first free one going down the columns, like Windows.
         fn free(&self, taken: &HashSet<(i32, i32)>, want: Option<(i32, i32)>) -> (i32, i32) {
             let all = (0..self.cols).flat_map(|c| (0..self.rows).map(move |r| (c, r))).filter(|c| !taken.contains(c));
@@ -2241,10 +2351,22 @@ mod desk {
             put(list, LVM_INSERTITEMW, 0, &it as *const _ as isize);
         }
         let (g, old, names) = (Grid::of(list), saved(), names());
+        // Default layout for the two namespace icons: This PC in the first cell, the Recycle Bin in the last column
+        // (the right edge of the virtual desktop). A saved position always wins; this is what a fresh desktop gets.
+        let this_name = super::display_dir(&super::this_pc());
+        let bin_name = super::display_dir(&super::trash_dir());
         let mut taken = HashSet::new();
         let mut later = vec![];
         for (i, name) in names.iter().enumerate() {
-            match old.get(name).and_then(|&p| g.cell(p)).filter(|c| !taken.contains(c)) {
+            let def = if name.eq_ignore_ascii_case(&this_name) {
+                Some((0, 0))
+            } else if name.eq_ignore_ascii_case(&bin_name) {
+                Some((g.cols - 1, 0))
+            } else {
+                None
+            };
+            let cell = old.get(name).and_then(|&p| g.cell(p)).filter(|c| !taken.contains(c)).or_else(|| def.filter(|c| !taken.contains(c)));
+            match cell {
                 Some(c) => { taken.insert(c); set_pos(list, i, g.at(c)); }
                 None => later.push(i),
             }
@@ -2517,9 +2639,11 @@ unsafe extern "system" fn edit_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> 
 unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if m == winrust_common::style::msg() {
-            // the topbar switched the WinRust style: take it now (the desktop's list keeps its see-through colours)
+            // the topbar switched the WinRust style: take it now (the desktop's list keeps its see-through colours).
+            // The same message announces look.txt keys from WinRust Settings, so the desktop also rebuilds its icons
+            // (This PC / Recycle Bin on or off) instead of waiting for a restart.
             winrust_common::style::reload();
-            if desk() { InvalidateRect(h, ptr::null(), 1); } else { ui::restyle(h); }
+            if desk() { reload(h); InvalidateRect(h, ptr::null(), 1); } else { ui::restyle(h); }
             return 0;
         }
         match m {
@@ -2770,12 +2894,18 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                             if it.mask & LVIF_IMAGE != 0 && *thumbs {
                                 if r.thumb == -2 {
                                     r.thumb = -1;
-                                    if let Some(tx) = TX.get() { let _ = tx.send((GEN.load(std::sync::atomic::Ordering::Relaxed), i, r.full(dir))); }
+                                    // a recycled item's original path is gone: thumbnail the payload, which also gives
+                                    // the shortcut's / document's icon through GetImage
+                                    let p = r.trash.as_ref().map_or_else(|| r.full(dir), |t| t.r.clone());
+                                    if let Some(tx) = TX.get() { let _ = tx.send((GEN.load(std::sync::atomic::Ordering::Relaxed), i, p)); }
                                 }
                                 it.iImage = if r.thumb >= 0 { r.thumb } else { I_IMAGENONE };
                             } else if it.mask & LVIF_IMAGE != 0 {
                                 if r.icon < 0 {
-                                    let p = r.full(dir);
+                                    // A recycled item's original path is gone: the icon has to come from the payload
+                                    // ($R...), which still has the file (a .lnk keeps pointing at its app, a folder is
+                                    // a folder). Before this, every bin row fell back to the generic page.
+                                    let p = r.trash.as_ref().map_or_else(|| r.full(dir), |t| t.r.clone());
                                     // the desktop's list holds our own copies: render the icon at its size, not at 16 px
                                     r.icon = if desk() { desk_icon(&p, r.dir) } else { icon_of(&p, r.dir) };
                                 }
@@ -3058,6 +3188,11 @@ fn namespace_target() -> Option<String> {
     env::args().skip(1).find_map(|a| {
         let t = a.trim_matches('"').rsplit(',').next().unwrap_or("").to_string(); // `/e,::{...}`
         let l = t.to_lowercase();
+        // This PC and the Recycle Bin are *our* views: handle them here instead of asking the shell to open its own
+        // (the desktop's own icons spawn this exe with exactly these CLSIDs).
+        if l.eq_ignore_ascii_case(THIS_PC) || l.eq_ignore_ascii_case(TRASH) {
+            return None;
+        }
         (l.starts_with("::{") || l.starts_with("shell:")).then_some(t)
     })
 }

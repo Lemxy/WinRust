@@ -190,7 +190,7 @@ fn defaults() -> Config {
         snap: true,
         shadow: true,
         topmost: false,
-        enabled: true,
+        enabled: false,
         order: (0..8).collect(),
         detached: [false; 8],
         dx: std::array::from_fn(|i| 140 + i as i32 * 30),

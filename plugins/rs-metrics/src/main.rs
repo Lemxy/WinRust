@@ -415,7 +415,11 @@ unsafe fn build_window(c: &Config, module: Option<usize>) -> HWND {
 }
 
 unsafe fn destroy_all() {
-    for h in std::mem::take(&mut *WINDOWS.lock().unwrap_or_else(|e| e.into_inner())) {
+    // Clone the list *before* destroying: `DestroyWindow` sends WM_DESTROY synchronously and the window proc calls
+    // `unregister`, which locks WINDOWS again. Holding the lock across the loop deadlocked the UI thread (the widget
+    // froze with its windows still on screen when the menu's Close ran).
+    let ws = windows();
+    for h in ws {
         let hwnd = h as HWND;
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);

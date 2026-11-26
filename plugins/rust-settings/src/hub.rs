@@ -77,6 +77,8 @@ enum Op {
     WinBlur,
     DeskIcons,
     SmallIcons,
+    DeskThisPc,
+    DeskBin,
     Wallpaper,
     WallpaperReload,
     Recycle,
@@ -397,6 +399,9 @@ fn rows(cat: u8) -> Vec<Row> {
             v.push(head(t!("Значки", "Icons", ja: "アイコン", pt: "Ícones", zh: "图标")));
             v.push(check(t!("Показывать значки рабочего стола", "Show desktop icons", ja: "デスクトップのアイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标"), !icons_hidden(), Op::DeskIcons));
             v.push(check(t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标"), small_icons(), Op::SmallIcons));
+            // the two shell views as icons of their own, each one independent (look.txt desk-thispc / desk-bin)
+            v.push(check(t!("Этот компьютер", "This PC", ja: "PC", pt: "Este Computador", zh: "此电脑"), lk::desk_thispc(), Op::DeskThisPc));
+            v.push(check(t!("Корзина", "Recycle Bin", ja: "ごみ箱", pt: "Lixeira", zh: "回收站"), lk::desk_bin(), Op::DeskBin));
             v.push(info(t!("Размер значков применится после перезапуска рабочего стола", "The icon size applies when the desktop starts again", ja: "アイコンのサイズはデスクトップの再起動後に反映されます", pt: "O tamanho dos ícones vale quando a área de trabalho reiniciar", zh: "图标大小在桌面重新启动后生效")));
             v.push(head(t!("Фон", "Background", ja: "背景", pt: "Plano de fundo", zh: "背景")));
             v.push(action(t!("Выбрать изображение…", "Pick a picture…", ja: "画像を選ぶ…", pt: "Escolher uma imagem…", zh: "选择图片…"), "›", Op::Wallpaper));
@@ -1121,6 +1126,14 @@ unsafe fn apply(op: Op, h: HWND) -> bool {
             changed();
         }
         Op::DeskIcons => set_icons_hidden(!icons_hidden()),
+        Op::DeskThisPc => {
+            lk::desk_thispc_set(!lk::desk_thispc());
+            winrust_common::style::announce();
+        }
+        Op::DeskBin => {
+            lk::desk_bin_set(!lk::desk_bin());
+            winrust_common::style::announce();
+        }
         Op::SmallIcons => marker_set("small-icons", !small_icons()),
         Op::Wallpaper => open_target("ms-settings:personalization-background"),
         Op::WallpaperReload => wallpaper_reload(),

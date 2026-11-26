@@ -91,10 +91,45 @@ rs-notify --app "Download" --title "Downloading" --body "Windows.iso" --progress
 
 ![This PC](docs/screenshots/this-pc.png)
 
-Tabs in the title bar, **This PC** with every drive as its own cell (letter tag + free space), a 48 px icon grid as the
-default view, a scrollable left pane with Quick access / This PC / Removable devices / Network / Recycle Bin, Quick access
-that can be pinned, unpinned, reordered by drag and drop, a Recycle Bin view with Restore and Empty, and a delete path that
-reports the real error when the shell cannot recycle.
+Tabs in the title bar, each one starting with a glyph for where it points; **This PC** with every drive as its own cell
+(letter tag + free space); a 48 px icon grid as the default view; a scrollable left pane with Quick access / This PC /
+Removable devices / Network / Recycle Bin; Quick access that can be pinned, unpinned and reordered by drag and drop; a
+Recycle Bin view with Restore and Empty; and a delete path that reports the real error when the shell cannot recycle. The
+toolbar's eye shows hidden files (the same switch as Ctrl+H; the trash button it replaced is still on Del and the context
+menu). Copies run in 1 MB chunks and stop with Esc or when the destination stops answering, and Restore works from the
+bin, refusing a drive that is gone with a visible reason; recycled items take their icon and thumbnail from the payload, so a shortcut keeps its app's icon.
+
+### Desktop
+
+![The desktop with its icons and the metrics widget](docs/screenshots/desktop-metrics.jpg)
+
+The desktop is ours: Wallpaper Engine paints behind the icons (`we=1`), the labels are drawn by hand (white text over a
+black 1 px shadow) and the icons reload when either Desktop folder changes. **This PC** and the **Recycle Bin** can live
+on the desktop as icons of their own, each with its own switch in Ajustes → Escritorio (`desk-thispc`, `desk-bin`); the
+same page hides all icons or makes them small. The icon list spans the whole virtual desktop, so icons can be dragged to
+any monitor (with a margin at the far edge), and a fresh layout puts This PC in the first cell and the Recycle Bin in the
+last column.
+
+![The selection marquee](docs/screenshots/desktop-marquee.jpg)
+
+Dragging on the empty desktop draws our own marquee: a translucent white wash inside a crisp frame, a child of the
+desktop so it never paints over another application. The file list uses the same band and its selection is whitish too.
+
+### Desktop widgets
+
+![The metrics widget](docs/screenshots/widget-metrics.jpg)
+
+`rs-metrics` is the first widget: one frosted pill per module (CPU, GPU, RAM, disks, disk I/O, network, temperatures and
+uptime), each one on/off, reorderable by drag and detachable into its own always-there window. Temperatures are per
+component — GPU through AMD ADL or NVIDIA NVML, disks through SMART, CPU and board through LibreHardwareMonitor when it
+runs; the ACPI zone is a separate opt-in row and a sensor that is not there shows "—", never a number under the wrong
+name. Off by default: turn it on in Ajustes → Widgets (it hides without stopping, so it comes back instantly). About
+0.05 % of one core and 10 MB.
+
+![Widgets in WinRust Settings](docs/screenshots/settings-widgets.png)
+
+Ajustes → Widgets is the list of widgets: each one has its own on/off (the metrics widget hides without stopping, so it
+comes back instantly), the module switches, always-on-top, opening `%ProgramData%\WinRust\metrics.txt` and restarting it.
 
 ### Control Panel
 
@@ -194,6 +229,8 @@ start-scale=0
 start-style=1
 notify=1
 notify-timeout=5
+desk-thispc=1
+desk-bin=1
 ```
 
 `lang.txt` holds the language code (`es` for Spanish). Window frost (`win-blur`) stays off by default: on bright wallpapers

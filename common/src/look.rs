@@ -205,6 +205,24 @@ pub fn we_set(on: bool) {
     set("we", i32::from(on));
 }
 
+/// Show "This PC" as an icon on the desktop (Explorer's own default), independent of the Recycle Bin one.
+pub fn desk_thispc() -> bool {
+    flag("desk-thispc", true)
+}
+
+pub fn desk_thispc_set(on: bool) {
+    set("desk-thispc", i32::from(on));
+}
+
+/// Show the Recycle Bin as an icon on the desktop, independent of the This PC one.
+pub fn desk_bin() -> bool {
+    flag("desk-bin", true)
+}
+
+pub fn desk_bin_set(on: bool) {
+    set("desk-bin", i32::from(on));
+}
+
 /// The wallpaper WE opens in its pop-out: a `project.json`, a `scene.pkg`, an `.mp4` or an `index.html`/folder. Empty =
 /// ask WE for the wallpaper it is already showing (`-control getWallpaper`).
 pub fn we_file() -> String {

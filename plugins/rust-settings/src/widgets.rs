@@ -79,7 +79,7 @@ pub fn running() -> bool {
 /// The Widgets page's on/off (`enabled` in metrics.txt). Hidden but alive when off: turning it back on is instant, and
 /// the state survives a sign-in because rs-shell only starts the process.
 pub fn enabled() -> bool {
-    flag("enabled", true)
+    flag("enabled", false)
 }
 
 /// Writes the switch; turning it on also starts the process when nothing is running (first launch after an update).

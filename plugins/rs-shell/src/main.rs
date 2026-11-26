@@ -135,6 +135,20 @@ fn find_exe(name: &str) -> PathBuf {
     PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into())).join("topbar").join(name)
 }
 
+/// The Widgets page's on/off: `enabled=1` in `%ProgramData%\WinRust\metrics.txt`. Missing file or key means the widget's
+/// default, off: a fresh install does not spend RAM on it until the user turns it on in WinRust Settings → Widgets (which
+/// starts the process itself).
+fn metrics_enabled() -> bool {
+    let Ok(base) = std::env::var("ProgramData") else { return false };
+    let text = std::fs::read_to_string(PathBuf::from(base).join("WinRust").join("metrics.txt")).unwrap_or_default();
+    text.lines()
+        .find_map(|l| {
+            let (k, v) = l.trim().split_once('=')?;
+            (k.trim() == "enabled").then(|| v.trim() != "0")
+        })
+        .unwrap_or(false)
+}
+
 fn bar_up() -> bool { unsafe { !FindWindowW(wide("topbar").as_ptr(), std::ptr::null()).is_null() } }
 
 /// A minimized window left on screen (or minimized before the hide setting was applied) shows as a caption stub on
@@ -261,10 +275,13 @@ fn run_shell() {
     // Win+V / Win+.: its own resident process (a second copy exits at once)
     let clip = find_exe("rs-clip.exe");
     if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
-    // the desktop metrics widget, in its own Program Files folder (not next to the shell)
-    let pf = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
-    let metrics = [pf.join(r"rs-metrics\rs-metrics.exe"), dir().join("rs-metrics.exe")].into_iter().find(|p| p.exists());
-    if let Some(m) = metrics { log(&format!("rs-metrics spawn -> {:?}", quiet(&m).spawn().map(|_| ()))); }
+    // the desktop metrics widget, in its own Program Files folder (not next to the shell). It is off until the user
+    // enables it in WinRust Settings -> Widgets, and a disabled widget is not started at all (the page starts it).
+    if metrics_enabled() {
+        let pf = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
+        let metrics = [pf.join(r"rs-metrics\rs-metrics.exe"), dir().join("rs-metrics.exe")].into_iter().find(|p| p.exists());
+        if let Some(m) = metrics { log(&format!("rs-metrics spawn -> {:?}", quiet(&m).spawn().map(|_| ()))); }
+    }
     let desktop = dir().join("rust-explorer.exe");
     // the rust-explorer desktop: class "Progman", title "Program Manager" like Explorer's, marked with a window property
     // (winrust_common::desktop::MARKER) so this supervisor can still tell it from a real Explorer desktop
@@ -402,10 +419,12 @@ fn overlay() {
     if hk.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hk).spawn().map(|_| ()))); }
     let clip = find_exe("rs-clip.exe");
     if clip.exists() { log(&format!("rs-clip spawn -> {:?}", quiet(&clip).spawn().map(|_| ()))); }
-    // the desktop metrics widget, in its own Program Files folder
-    let pf = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
-    let metrics = [pf.join(r"rs-metrics\rs-metrics.exe"), dir().join("rs-metrics.exe")].into_iter().find(|p| p.exists());
-    if let Some(m) = metrics { log(&format!("rs-metrics spawn -> {:?}", quiet(&m).spawn().map(|_| ()))); }
+    // the desktop metrics widget, in its own Program Files folder; disabled by default (see run_shell)
+    if metrics_enabled() {
+        let pf = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
+        let metrics = [pf.join(r"rs-metrics\rs-metrics.exe"), dir().join("rs-metrics.exe")].into_iter().find(|p| p.exists());
+        if let Some(m) = metrics { log(&format!("rs-metrics spawn -> {:?}", quiet(&m).spawn().map(|_| ()))); }
+    }
     let _ = wp.join(); // the BMP conversion (only on a fresh install or a new wallpaper) finishes before the desktop paints it
     let desktop = dir().join("rust-explorer.exe");
     let up = || winrust_common::desktop::is_up();

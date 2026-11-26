@@ -392,6 +392,12 @@ pub fn reset_custom() {
     set_bar_opacity(100);
 }
 
+/// Tells every WinRust window that a `look.txt` key changed and it should re-read it (the desktop rebuilds its icons,
+/// the bar its flags). Same message the style changes use.
+pub fn announce() {
+    unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
+}
+
 fn save_colors(c: [u32; 7]) {
     let text = colors_text(&c, "\n");
     if let Some(f) = colors_file() {
