@@ -128,6 +128,6 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     };
     match result {
         Ok(m) => { say(&m); 0 }
-        Err(e) => { say(&tf!("ошибка: {e}", "error: {e}", ja: "エラー: {e}", pt: "erro: {e}", zh: "错误：{e}")); 1 }
+        Err(e) => { say(&tf!("ошибка: {}", "error: {}", ja: "エラー: {}", pt: "erro: {}", zh: "错误：{}", e)); 1 }
     }
 }

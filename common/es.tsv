@@ -183,7 +183,7 @@ automatic rollback failed: {u}	error en la reversión automática: {u}
 automatic updates were not enabled	las actualizaciones automáticas no estaban activadas
 Autostart is disabled	El inicio automático está desactivado
 Auto-start service (disabling = manual start)	Servicio de inicio automático (desactivarlo = inicio manual)
-autoupdate: ERROR {e}	actualización automática: ERROR {e}
+autoupdate: ERROR {}	actualización automática: ERROR {}
 Available	Disponible
 Average response time	Tiempo de respuesta medio
 Back	Atrás
@@ -406,7 +406,7 @@ Enterprise (802.1X)  ·  user name and password	Empresa (802.1X)  ·  nombre de 
 Enterprise with certificates: not supported	Empresa con certificados: no compatible
 Error reports and crash dumps	Informes de errores y volcados de fallos
 error: {0}: {1}	error: {0}: {1}
-error: {e}	error: {e}
+error: {}	error: {}
 Esc hides this card; the result waits for the next Alt+Space.	Esc oculta esta tarjeta; el resultado espera al siguiente Alt+Space.
 Everything recommended is already there: the installed components are updated from this version, settings are kept.	Ya está todo lo recomendado: los componentes instalados se actualizan desde esta versión y los ajustes se conservan.
 Exit	Salir
@@ -1320,7 +1320,7 @@ removed	eliminado
 off	desactivado
 none	ninguno
 SYSTEM	SISTEMA
-ERROR: {e}	ERROR: {e}
+error: {}	error: {}
 Local Disk	Disco local
 Network Drive	Unidad de red
 Loopback	Bucle invertido
@@ -1340,7 +1340,7 @@ WinRust is the shell: there is no other taskbar.\n\nrs-shell restarts the bar in
 \nPress Enter to close.	\nPulsa Enter para cerrar.
 Installed	Instalado
 Failed	Fallido
-Error: {e}	Error: {e}
+error: {}	error: {}
 All screens	Todas las pantallas
 Monitor	Monitor
 Open with…	Abrir con…

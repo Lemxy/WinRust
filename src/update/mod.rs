@@ -17,6 +17,9 @@ const KEY: &str = include_str!("../../update-key.pub");
 // shell nor the fork's binaries (an unsigned fork release fails verification and installs nothing, which is the safe case).
 pub(crate) const BASE: &str = "https://github.com/RexxColder/WinRust/releases";
 const TASK: &str = "WinRust-update";
+/// The "Installed apps" entry: WinRust can be removed from Windows Settings even when the downloaded exe is gone
+/// (upstream #178).
+const ARP: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WinRust";
 
 fn home() -> PathBuf {
     program_files().join("WinRust")
@@ -78,7 +81,7 @@ pub(crate) fn autoupdate() -> Result<String, String> {
         match r {
             Ok(m) if m.is_empty() => {}
             Ok(m) => log(&format!("autoupdate: {m}")),
-            Err(e) => log(&tf!("autoupdate: ОШИБКА {e}", "autoupdate: ERROR {e}", ja: "自動更新: エラー {e}", pt: "autoupdate: ERRO {e}", zh: "autoupdate: 错误 {e}")),
+            Err(e) => log(&tf!("autoupdate: ОШИБКА {}", "autoupdate: ERROR {}", ja: "自動更新: エラー {}", pt: "autoupdate: ERRO {}", zh: "autoupdate: 错误 {}", e)),
         }
     }
     // a new WinRust.exe was swapped in: it brings its plugins now (from_self), not at the next daily run
@@ -198,6 +201,7 @@ pub(crate) fn updater_sync() {
         soft(t!("автообновление не включено", "automatic updates were not enabled", ja: "自動更新は有効になりませんでした", pt: "as atualizações automáticas não foram ativadas", zh: "未启用自动更新"), enable());
     } else {
         let _ = run("schtasks", &["/delete", "/tn", TASK, "/f"]);
+        let _ = run("reg", &["delete", ARP, "/f"]);
         let _ = fs::remove_dir_all(home()); // fails harmlessly if this very copy is running
     }
 }
@@ -208,6 +212,13 @@ fn enable() -> Result<(), String> {
     let same = me.canonicalize().ok().zip(self_exe().canonicalize().ok()).is_some_and(|(a, b)| a == b);
     if !same {
         put(&me, &self_exe())?;
+    }
+    // "Installed apps": WinRust can be removed from Windows Settings even when the downloaded exe is gone (upstream #178).
+    let exe = self_exe().display().to_string();
+    let uninstall = format!("\"{exe}\" rollback --yes");
+    let vals = [("DisplayName", "REG_SZ", "WinRust".to_string()), ("DisplayVersion", "REG_SZ", format!("v{}", env!("CARGO_PKG_VERSION"))), ("Publisher", "REG_SZ", "WinRust fork".to_string()), ("DisplayIcon", "REG_SZ", exe.clone()), ("UninstallString", "REG_SZ", uninstall), ("NoModify", "REG_DWORD", "1".to_string()), ("NoRepair", "REG_DWORD", "1".to_string())];
+    for (name, kind, data) in vals {
+        soft(t!("нет записи в «Установленных приложениях»", "no entry in Installed apps", ja: "インストール済みアプリに登録されませんでした", pt: "sem entrada em Aplicativos instalados", zh: "未添加到“已安装的应用”"), run("reg", &["add", ARP, "/v", name, "/t", kind, "/d", &data, "/f"]));
     }
     // SYSTEM: writes Program Files without asking. At boot (after 5 min: the network is up) and daily at a random time.
     let task = format!(
