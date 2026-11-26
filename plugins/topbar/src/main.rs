@@ -357,6 +357,8 @@ fn lnk_uses(lnk: &std::path::Path) -> u32 {
 
 thread_local! {
     static HOST: Cell<HWND> = const { Cell::new(null_mut()) };
+    /// Windows their app took off the taskbar (ITaskbarList::DeleteTab): no button until it says AddTab (upstream #163).
+    static SKIP: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
     static TIPWND: Cell<HWND> = const { Cell::new(null_mut()) };
     static SWWND: Cell<HWND> = const { Cell::new(null_mut()) }; // the Alt+Tab switcher
     static SW: RefCell<(Vec<HWND>, usize)> = const { RefCell::new((Vec::new(), 0)) }; // its windows (z-order) and selection
@@ -1019,7 +1021,8 @@ unsafe extern "system" fn collect(h: HWND, lp: LPARAM) -> i32 {
     let mut cls = [0u16; 32];
     let n = GetClassNameW(h, cls.as_mut_ptr(), 32) as usize;
     let ours = String::from_utf16_lossy(&cls[..n]) == "topbar";
-    if IsWindowVisible(h) != 0 && GetWindow(h, GW_OWNER).is_null() && cloaked == 0 && !ours && GetWindowTextLengthW(h) > 0 && (ex & WS_EX_TOOLWINDOW == 0 || ex & WS_EX_APPWINDOW != 0) {
+    let skipped = SKIP.with_borrow(|s| s.contains(&h)); // its app took it off the taskbar (ITaskbarList::DeleteTab)
+    if IsWindowVisible(h) != 0 && GetWindow(h, GW_OWNER).is_null() && cloaked == 0 && !ours && GetWindowTextLengthW(h) > 0 && (ex & WS_EX_TOOLWINDOW == 0 || ex & WS_EX_APPWINDOW != 0) && !skipped {
         (*(lp as *mut Vec<HWND>)).push(h);
     }
     1
@@ -3836,6 +3839,10 @@ fn main() {
         HOST.set(CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, tc.as_ptr(), null(), WS_POPUP, 0, 0, 0, 0, null_mut(), null_mut(), hi, null()));
         // The bar may run elevated while apps and explorer do not; UIPI would drop their messages to us (icon data, appbar callbacks).
         ChangeWindowMessageFilterEx(HOST.get(), WM_COPYDATA, MSGFLT_ALLOW, null_mut());
+        // ITaskbarList::HrInit reads the task band from this property of the first Shell_TrayWnd, which is ours: without it
+        // HrInit failed (E_NOTIMPL) for every app while the bar ran. DeleteTab / AddTab then come here (tray_proc).
+        SetPropW(HOST.get(), wide("TaskbandHWND").as_ptr(), HOST.get());
+        ChangeWindowMessageFilterEx(HOST.get(), SH_MSG.get(), MSGFLT_ALLOW, null_mut());
         let fc = wide("topbar_trayfly");
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(fly_proc), hInstance: hi, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: fc.as_ptr(), ..zeroed() });
         TRAYFLY.set(CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, fc.as_ptr(), null(), WS_POPUP, 0, 0, 1, 1, null_mut(), null_mut(), hi, null()));
