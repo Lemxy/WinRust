@@ -1,4 +1,4 @@
-﻿//! Real blur behind the bar.
+//! Real blur behind the bar.
 //!
 //! The bar paints its own background with GDI, and GDI cannot leave per-pixel-transparent holes, so Windows' own
 //! acrylic (SetWindowCompositionAttribute) can never show through it. What this module does instead is the honest
@@ -14,7 +14,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::{
         AC_SRC_OVER, AlphaBlend, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, BitBlt, CreateCompatibleDC,
         CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, ReleaseDC, SRCCOPY, SelectObject,
-        StretchDIBits,
+        StretchBlt, StretchDIBits,
     },
     System::SystemInformation::GetTickCount64,
     UI::WindowsAndMessaging::{GetSystemMetrics, GetWindowRect},
@@ -32,19 +32,23 @@ pub fn set(on: bool) {
 struct Cache {
     at: u64,
     bar: isize, // the bar window it was captured for: one bar per monitor, and each monitor shows other pixels
-    w: i32,
+    w: i32,     // the size it is painted at
     h: i32,
     x: i32,
     y: i32,
+    sw: i32, // the size it was captured and blurred at (half of w/h: 4x fewer pixels and 4x less memory)
+    sh: i32,
     px: Vec<u32>,
 }
 
-static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+/// One capture per bar: a single slot meant that painting monitor 1 threw away monitor 2's capture, so with two bars
+/// every paint recaptured and reblurred (the 3 % of one core the bar used to show while idle).
+static CACHE: Mutex<Vec<Cache>> = Mutex::new(Vec::new());
 
 /// How long a capture is reused: faster than the bar repaints anyway (the clock ticks once a second).
 const TTL_MS: u64 = 150;
 
-unsafe fn capture(bar: HWND, w: i32, h: i32) -> Option<(i32, i32, Vec<u32>)> {
+unsafe fn capture(bar: HWND, w: i32, h: i32) -> Option<(i32, i32, i32, i32, Vec<u32>)> {
     let mut r: RECT = std::mem::zeroed();
     if GetWindowRect(bar, &mut r) == 0 || w <= 0 || h <= 0 {
         return None;
@@ -70,6 +74,9 @@ unsafe fn capture(bar: HWND, w: i32, h: i32) -> Option<(i32, i32, Vec<u32>)> {
     }
     sx = sx.clamp(vx, (vx + vw - w).max(vx));
     sy = sy.clamp(vy, (vy + vh - h).max(vy));
+    // Half resolution: a blur throws the detail away anyway, and this quarters both the pixels to process and the memory
+    // the capture keeps. StretchBlt does the downscale (and the paint does the upscale).
+    let (sw, sh) = ((w / 2).max(1), (h / 2).max(1));
     let sdc = GetDC(std::ptr::null_mut());
     if sdc.is_null() {
         return None;
@@ -77,8 +84,8 @@ unsafe fn capture(bar: HWND, w: i32, h: i32) -> Option<(i32, i32, Vec<u32>)> {
     let mdc = CreateCompatibleDC(sdc);
     let mut bi: BITMAPINFO = std::mem::zeroed();
     bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h; // top-down
+    bi.bmiHeader.biWidth = sw;
+    bi.bmiHeader.biHeight = -sh; // top-down
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
@@ -87,13 +94,11 @@ unsafe fn capture(bar: HWND, w: i32, h: i32) -> Option<(i32, i32, Vec<u32>)> {
     let mut out = None;
     if !dib.is_null() && !bits.is_null() {
         let old = SelectObject(mdc, dib);
-        let blt = BitBlt(mdc, 0, 0, w, h, sdc, sx, sy, SRCCOPY);
+        StretchBlt(mdc, 0, 0, sw, sh, sdc, sx, sy, w, h, SRCCOPY);
         SelectObject(mdc, old);
-        let px = std::slice::from_raw_parts(bits as *const u32, (w * h) as usize).to_vec();
-        let sum: u64 = px.iter().map(|p| ((p & 255) + ((p >> 8) & 255) + ((p >> 16) & 255)) as u64).sum();
-        out = Some((sx, sy, px));
+        let px = std::slice::from_raw_parts(bits as *const u32, (sw * sh) as usize).to_vec();
+        out = Some((sx, sy, sw, sh, px));
         DeleteObject(dib);
-    } else {
     }
     DeleteDC(mdc);
     ReleaseDC(std::ptr::null_mut(), sdc);
@@ -193,31 +198,42 @@ pub unsafe fn paint(bar: HWND, dc: windows_sys::Win32::Graphics::Gdi::HDC, w: i3
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
-    let mut fresh = false;
     let key = bar as isize;
-    let matches = guard.as_ref().is_some_and(|c| c.bar == key && c.w == w && c.h == h);
-    if !matches || guard.as_ref().is_some_and(|c| now.saturating_sub(c.at) > TTL_MS) {
-        if let Some((x, y, mut px)) = capture(bar, w, h) {
-            let radius = winrust_common::look::bar_radius() as usize;
-            blur(&mut px, w as usize, h as usize, radius);
-            *guard = Some(Cache { at: now, bar: key, w, h, x, y, px });
+    let (sw, sh) = ((w / 2).max(1), (h / 2).max(1));
+    let i = guard.iter().position(|c| c.bar == key && c.w == w && c.h == h);
+    let stale = i.is_none_or(|i| now.saturating_sub(guard[i].at) > TTL_MS);
+    let mut fresh = false;
+    if stale {
+        if let Some((x, y, cw, ch, mut px)) = capture(bar, w, h) {
+            let radius = (winrust_common::look::bar_radius().max(1) as f32 * cw as f32 / w.max(1) as f32).round() as usize;
+            blur(&mut px, cw as usize, ch as usize, radius.max(1));
+            let c = Cache { at: now, bar: key, w, h, x, y, sw: cw, sh: ch, px };
+            match i {
+                Some(i) => guard[i] = c,
+                None => guard.push(c),
+            }
+            if guard.len() > 4 {
+                let oldest = guard.iter().enumerate().min_by_key(|(_, c)| c.at).map_or(0, |(i, _)| i);
+                guard.remove(oldest);
+            }
             fresh = true;
         }
     }
-    let Some(c) = guard.as_ref() else {
+    let Some(c) = guard.iter().find(|c| c.bar == key && c.w == w && c.h == h) else {
         return false;
     };
-    if !fresh && c.w != w {
+    if !fresh && c.sw != sw && c.sh != sh {
         return false;
     }
     let mut bi: BITMAPINFO = std::mem::zeroed();
     bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bi.bmiHeader.biWidth = c.w;
-    bi.bmiHeader.biHeight = -c.h;
+    bi.bmiHeader.biWidth = c.sw;
+    bi.bmiHeader.biHeight = -c.sh;
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
-    StretchDIBits(dc, 0, 0, w, h, 0, 0, c.w, c.h, c.px.as_ptr() as *const c_void, &bi, DIB_RGB_COLORS, SRCCOPY);
+    // the half-resolution capture is stretched back to the bar's size
+    StretchDIBits(dc, 0, 0, w, h, 0, 0, c.sw, c.sh, c.px.as_ptr() as *const c_void, &bi, DIB_RGB_COLORS, SRCCOPY);
     // The tint: how much of the bar's own colour sits over the blur. The slider still means "how solid the bar looks",
     // but it is taken at 80 % so the blur is actually visible at the default 85 %.
     let a = (255 * opacity.min(100) / 100 * 4 / 5) as u8;
