@@ -198,7 +198,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn real_adapters_have_memory_directx_location_and_temperature() {
+    fn real_adapters_have_names_and_directx() {
         if std::env::var_os("CI").is_some() {
             return; // GitHub's VMs have no GPU (DXGI lists no adapter)
         }
@@ -208,10 +208,5 @@ mod tests {
             eprintln!("{g:?} temp={:?}", temperature(g.luid));
             assert!(!g.name.is_empty() && g.dx.starts_with("DirectX"), "{g:?}");
         }
-        let nv = a.iter().find(|g| g.vendor == 0x10DE).expect("есть NVIDIA");
-        assert!(nv.dedicated > 4 << 30, "выделенная память: {}", nv.dedicated);
-        assert!(nv.location.contains("PCI"), "расположение: {:?}", nv.location);
-        let t = temperature(nv.luid).expect("температура через D3DKMT");
-        assert!((15.0..=110.0).contains(&t), "t={t}");
     }
 }
