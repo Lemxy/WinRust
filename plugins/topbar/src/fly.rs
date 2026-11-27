@@ -1238,8 +1238,7 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
                     let _ = Command::new("rundll32.exe").args(["user32.dll,LockWorkStation"]).creation_flags(NO_WINDOW).spawn();
                 }
                 1 => {
-                    // not `rundll32 powrprof.dll,SetSuspendState`: rundll32 passes garbage arguments and the PC hibernates
-                    // instead of sleeping whenever hibernation is on. On its own thread: the call returns only after wake-up.
+                    // on its own thread: the call returns only after wake-up
                     std::thread::spawn(|| sleep_now());
                 }
                 2 => {
@@ -1253,26 +1252,7 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
     }
 }
 
-/// Sleep (S3 / modern standby), never hibernate. SetSuspendState needs the shutdown privilege switched on in our token.
-pub fn sleep_now() {
-    use windows_sys::Win32::{
-        Security::{AdjustTokenPrivileges, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES},
-        System::{Power::SetSuspendState, Threading::{GetCurrentProcess, OpenProcessToken}},
-    };
-    unsafe {
-        let mut tok = null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &mut tok) != 0 {
-            let mut tp: TOKEN_PRIVILEGES = zeroed();
-            tp.PrivilegeCount = 1;
-            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-            if LookupPrivilegeValueW(null(), wide("SeShutdownPrivilege").as_ptr(), &mut tp.Privileges[0].Luid) != 0 {
-                AdjustTokenPrivileges(tok, 0, &tp, 0, null_mut(), null_mut());
-            }
-            CloseHandle(tok);
-        }
-        SetSuspendState(false, false, false);
-    }
-}
+pub use winrust_common::power::sleep_now;
 
 // ---------- painting ----------
 

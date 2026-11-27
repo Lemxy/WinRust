@@ -26,6 +26,7 @@ mod zipx; // our own ZIP engine (deflate, inflate, container)
 mod jobs; // our own copier, ZIP packer, ZIP/7z unpacker (background, progress in the status line)
 mod shellwin; // registers the window as a shell window: "Show in folder" from other apps selects the file
 mod menu; // the folder's own menu, painted in our colours
+mod power; // the desktop's Alt+F4: shut down, restart, sleep, sign out
 mod ui; // the look: palette, painted tabs / toolbar / address pill / status line, dark theme
 
 static DESKTOP: AtomicBool = AtomicBool::new(false);
@@ -1972,6 +1973,9 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             WM_CONTEXTMENU if desk() && (icons_hidden() || wp as HWND == h) => { bg_menu(h); 0 }
             desk::SPAWN_WORKERW if desk() => { desk::spawn_workerw(h); 0 }
             WM_TIMER if desk() && wp == 7 => { desk::check_live(ST.with_borrow(|st| st.list)); 0 }
+            // Alt+F4 on the desktop or its icon list (Windows passes it up to us) ends up here. Like Explorer's desktop it
+            // offers to shut down; DefWindowProcW would destroy the desktop, wallpaper and icons included (#189)
+            WM_CLOSE if desk() => { power::ask(); 0 }
             WM_DESTROY => { if !desk() { save_place(h); } shellwin::revoke(); PostQuitMessage(0); 0 }
             _ => DefWindowProcW(h, m, wp, lp),
         }

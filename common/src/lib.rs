@@ -15,6 +15,7 @@ pub mod journal;
 pub mod launch;
 pub mod mem;
 pub mod mft;
+pub mod power;
 pub mod proc;
 pub mod reg;
 pub mod search;
