@@ -82,10 +82,18 @@ pub(crate) unsafe fn style_menu() {
     });
 }
 
-/// One page of the gear's menu, opened at the gear.
+thread_local! {
+    static STYLE_X: Cell<i32> = const { Cell::new(0) };
+}
+
+pub(crate) unsafe fn open_style_menu(x: i32) {
+    STYLE_X.set(x);
+    style_menu();
+}
+
+/// One page of the bar settings menu, opened at the last right-click position.
 pub(crate) unsafe fn gear_page(glyph: &'static str, title: &str, sub: &str, items: Vec<fly::MItem>, pick: impl FnOnce(usize) + 'static) {
-    let bar = BAR.load(Relaxed) as HWND;
-    fly::menu(tip_cx(&bar_layout(bar), GEAR), Some((null_mut(), glyph, title.to_string(), sub.to_string())), items, pick);
+    fly::menu(STYLE_X.get(), Some((null_mut(), glyph, title.to_string(), sub.to_string())), items, pick);
 }
 
 pub(crate) fn back() -> fly::MItem {
