@@ -591,6 +591,44 @@ fn parse_undo_line(line: &str) -> Option<UndoEntry<'_>> {
     })
 }
 
+fn registry_value_is_missing(key: &str, value: &str) -> bool {
+    use winrust_common::reg;
+    let keys = reg::user_args(&[key]);
+    let target = &keys[0];
+    if target != key {
+        // A missing signed-in user's hive does not tell us whether the value exists.
+        let hive = target.splitn(3, '\\').take(2).collect::<Vec<_>>().join("\\");
+        if !reg::exists(&hive, None) {
+            return false;
+        }
+    }
+    reg::value_is_missing(target, value)
+}
+
+fn powershell_confirms_absence((ok, output): (bool, String)) -> bool {
+    ok && output.trim() == "absent"
+}
+
+fn task_is_missing(path: &str, powershell: impl FnOnce(&str) -> (bool, String)) -> bool {
+    let Some((folder, task)) = path.rsplit_once('\\') else { return false };
+    if task.is_empty() {
+        return false;
+    }
+    let folder = psq(if folder.is_empty() { r"\" } else { folder });
+    let task = psq(task);
+    // Ask for the exact task. Only file/path-not-found from the lookup proves absence.
+    let script = format!(
+        "$s=New-Object -ComObject Schedule.Service -ErrorAction Stop; $s.Connect(); \
+         try {{ $null=$s.GetFolder({folder}).GetTask({task}) }} catch {{ \
+             $e=$_.Exception; while ($null -ne $e) {{ \
+                 if ($e.HResult -eq -2147024894 -or $e.HResult -eq -2147024893) {{ 'absent'; return }} \
+                 $e=$e.InnerException \
+             }}; throw \
+         }}"
+    );
+    powershell_confirms_absence(powershell(&script))
+}
+
 fn restore_defender_exclusion(
     kind: &str,
     value: &str,
@@ -602,27 +640,26 @@ fn restore_defender_exclusion(
     }
 
     // A previous attempt can have removed this exclusion before a later record failed.
-    let (ok, result) = powershell(&format!(
+    powershell_confirms_absence(powershell(&format!(
         "$p=Get-MpPreference -ErrorAction Stop; \
          if ($null -ne $p -and $p.Exclusion{kind} -notcontains {value}) {{ 'absent' }}"
-    ));
-    ok && result.trim() == "absent"
+    )))
 }
 
 fn restore_entry(entry: UndoEntry<'_>) -> bool {
     match entry {
         UndoEntry::Service { name, mode } => run("sc.exe", &["config", name, "start=", mode]).0,
         UndoEntry::Registry { key, value, previous: "-" } => {
-            run("reg.exe", &["delete", key, "/v", value, "/f"]).0 || reg_val(key, value) == Val::Missing
+            run("reg.exe", &["delete", key, "/v", value, "/f"]).0 || registry_value_is_missing(key, value)
         }
         UndoEntry::Registry { key, value, previous } => {
             run("reg.exe", &["add", key, "/v", value, "/t", "REG_DWORD", "/d", previous, "/f"]).0
         }
         UndoEntry::EnableTask(name) => {
-            run("schtasks.exe", &["/change", "/tn", name, "/enable"]).0 || task_enabled(name).is_none()
+            run("schtasks.exe", &["/change", "/tn", name, "/enable"]).0 || task_is_missing(name, ps)
         }
         UndoEntry::DeleteTask(name) => {
-            run("schtasks.exe", &["/delete", "/tn", name, "/f"]).0 || task_enabled(name).is_none()
+            run("schtasks.exe", &["/delete", "/tn", name, "/f"]).0 || task_is_missing(name, ps)
         }
         UndoEntry::DefenderExclusion { kind, value } => restore_defender_exclusion(kind, value, ps),
         UndoEntry::HostsBlock => {
@@ -787,6 +824,17 @@ mod tests {
             let output = if script.starts_with("Remove-MpPreference") { "" } else { "absent\r\n" };
             (false, output.into())
         }));
+    }
+
+    #[test]
+    fn undo_task_only_accepts_explicitly_confirmed_absence() {
+        let task = r"\Vendor\Update";
+        assert!(task_is_missing(task, |script| {
+            assert!(script.contains(r"GetFolder('\Vendor').GetTask('Update')"));
+            (true, "absent\r\n".into())
+        }));
+        assert!(!task_is_missing(task, |_| (true, String::new())));
+        assert!(!task_is_missing(task, |_| (false, "absent".into())));
     }
 
     #[test]

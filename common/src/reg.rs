@@ -21,9 +21,37 @@ pub fn get_dword(path: &str, name: &str) -> Option<u32> {
     raw(path, Some(name)).and_then(|(ty, b)| (ty == 4 && b.len() >= 4).then(|| u32::from_le_bytes(b[..4].try_into().unwrap())))
 }
 
-fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
+/// True only when Windows confirms that the key or value is missing. An unreadable value is not missing.
+pub fn value_is_missing(path: &str, name: &str) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND},
+        System::Registry::{RRF_RT_ANY, RegGetValueW},
+    };
+    let Some((root, subkey)) = location(path) else { return false };
+    let subkey = wide(subkey);
+    let name = wide(name);
+    let mut size = 0;
+    let status = unsafe {
+        RegGetValueW(
+            root,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_ANY,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    matches!(status, ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND)
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain([0]).collect()
+}
+
+fn location(path: &str) -> Option<(windows_sys::Win32::System::Registry::HKEY, &str)> {
     use windows_sys::Win32::System::Registry::*;
-    let (root, sub) = path.split_once('\\').unwrap_or((path, ""));
+    let (root, subkey) = path.split_once('\\').unwrap_or((path, ""));
     let root = match root.to_ascii_uppercase().as_str() {
         "HKLM" | "HKEY_LOCAL_MACHINE" => HKEY_LOCAL_MACHINE,
         "HKCU" | "HKEY_CURRENT_USER" => HKEY_CURRENT_USER,
@@ -31,8 +59,13 @@ fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
         "HKCR" | "HKEY_CLASSES_ROOT" => HKEY_CLASSES_ROOT,
         _ => return None,
     };
-    let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    let sub = w(sub);
+    Some((root, subkey))
+}
+
+fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
+    use windows_sys::Win32::System::Registry::*;
+    let (root, sub) = location(path)?;
+    let sub = wide(sub);
     unsafe {
         let mut k = std::ptr::null_mut();
         if RegOpenKeyExW(root, sub.as_ptr(), 0, KEY_READ, &mut k) != 0 {
@@ -41,7 +74,7 @@ fn raw(path: &str, name: Option<&str>) -> Option<(u32, Vec<u8>)> {
         let r = match name {
             None => Some((0, vec![])),
             Some(n) => {
-                let n = w(n);
+                let n = wide(n);
                 let (mut ty, mut len) = (0u32, 0u32);
                 if RegQueryValueExW(k, n.as_ptr(), std::ptr::null(), &mut ty, std::ptr::null_mut(), &mut len) != 0 {
                     None
@@ -116,6 +149,9 @@ mod tests {
         assert!(exists(r"HKLM\SOFTWARE\Microsoft", None));
         assert!(!exists(r"HKLM\SOFTWARE\no-such-key-winrust", None));
         assert!(!exists(r"BAD\x", None));
+        assert!(value_is_missing(r"HKLM\SOFTWARE\no-such-key-winrust", "Name"));
+        assert!(!value_is_missing(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ProductName"));
+        assert!(!value_is_missing(r"BAD\x", "Name"));
         assert!(get_dword(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentMajorVersionNumber").is_some_and(|v| v >= 10));
         assert_eq!(get_dword(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ProductName"), None, "REG_SZ is not a DWORD");
     }
