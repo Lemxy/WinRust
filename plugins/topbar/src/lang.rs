@@ -10,33 +10,6 @@ pub(crate) unsafe fn layouts() -> (Vec<HKL>, HKL) {
     (l[..n].to_vec(), GetKeyboardLayout(GetWindowThreadProcessId(app_window(), null_mut())))
 }
 
-/// A layout's language as Windows names it in the user's language ("Русский (Россия)"), and its short code ("RUS").
-pub(crate) unsafe fn layout_names(k: HKL) -> (String, String) {
-    let id = k as usize as u32 & 0xffff;
-    let get = |what: u32| {
-        let mut b = [0u16; 96];
-        let n = GetLocaleInfoW(id, what, b.as_mut_ptr(), 96).max(1) as usize - 1;
-        String::from_utf16_lossy(&b[..n])
-    };
-    let short = get(3).to_uppercase(); // LOCALE_SABBREVLANGNAME
-    (get(2), if short == "ENU" { "ENG".into() } else { short }) // LOCALE_SLOCALIZEDDISPLAYNAME
-}
-
-/// The input language picker above the language button.
-pub(crate) unsafe fn lang_menu(bar: HWND) {
-    let (list, cur) = layouts();
-    let mut items: Vec<fly::MItem> = list.iter().map(|&k| {
-        let (name, short) = layout_names(k);
-        fly::MItem::new(name).on(k == cur).hint(Box::leak(short.into_boxed_str())) // a handful of short strings, kept for the bar's lifetime
-    }).collect();
-    items.push(fly::MItem::new(t!("Языковые параметры", "Language settings", ja: "言語設定", pt: "Configurações de idioma", zh: "语言设置")).sep());
-    let head = (null_mut(), "\u{E775}", t!("Язык ввода", "Input language", ja: "入力言語", pt: "Idioma de entrada", zh: "输入语言").to_string(), t!("Win+Пробел — следующий", "Win+Space — next one", ja: "Win+Space — 次の言語", pt: "Win+Espaço — o próximo", zh: "Win+Space — 下一个").to_string());
-    fly::menu(tip_cx(&bar_layout(bar), LANG), Some(head), items, move |i| match list.get(i) {
-        Some(&k) => set_lang(bar, k),
-        None => open(&wide("ms-settings:regionlanguage")),
-    });
-}
-
 /// The window in front is one of the bar's own (Start, a flyout).
 pub(crate) unsafe fn own_foreground() -> bool {
     let mut pid = 0u32;
@@ -73,15 +46,6 @@ pub(crate) unsafe fn set_lang(bar: HWND, next: HKL) {
     PostMessageW(target, WM_INPUTLANGCHANGEREQUEST, 0, next as isize);
     LANG_TRY.set((tid, cur as usize, next as usize));
     SetTimer(bar, 7, 250, None);
-}
-
-pub(crate) unsafe fn lang_name() -> String {
-    let tid = GetWindowThreadProcessId(app_window(), null_mut());
-    let id = GetKeyboardLayout(tid) as usize as u32 & 0xffff;
-    let mut b = [0u16; 16];
-    let n = GetLocaleInfoW(id, 3, b.as_mut_ptr(), 16).max(1) as usize - 1; // LOCALE_SABBREVLANGNAME
-    let s = String::from_utf16_lossy(&b[..n]).to_uppercase();
-    if s == "ENU" { "ENG".into() } else { s }
 }
 
 thread_local! {
