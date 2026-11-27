@@ -570,7 +570,8 @@ unsafe fn sw_layout(sw: HWND) {
     let (scr, sch) = (mon.right - mon.left, mon.bottom - mon.top);
     let pad = sc(thumbs::GAP) + sc(4);
     let wins = SW.with_borrow(|(v, _)| v.clone());
-    let (mut rects, tw, th) = thumbs::grid(wins.len(), scr * 9 / 10 - 2 * pad, sch * 8 / 10 - 2 * pad, sc(thumbs::CARD_W), sc(thumbs::CARD_H), sc(thumbs::GAP));
+    let (cw, ch) = thumbs::alttab_card_size(i18n::style::alttab_size());
+    let (mut rects, tw, th) = thumbs::grid(wins.len(), scr * 9 / 10 - 2 * pad, sch * 8 / 10 - 2 * pad, sc(cw), sc(ch), sc(thumbs::GAP));
     rects.iter_mut().for_each(|r| *r = RECT { left: r.left + pad, top: r.top + pad, right: r.right + pad, bottom: r.bottom + pad });
     let (w, h) = (tw + 2 * pad, th + 2 * pad);
     SW_CARDS.with_borrow_mut(|(_, ids)| thumbs::unregister(sw, ids));

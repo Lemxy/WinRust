@@ -176,6 +176,10 @@ pub(crate) unsafe fn bar_page() {
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10")).on(st::align_left()),
         fly::MItem::new(t!("Alt+Tab: только этот монитор", "Alt+Tab: this monitor only", ja: "Alt+Tab: このモニターのみ", pt: "Alt+Tab: somente este monitor", zh: "Alt+Tab：仅限此显示器")).on(st::alttab_per_monitor()),
         fly::MItem::new(t!("Окна прилипают к краям и друг к другу", "Windows stick to edges and each other", ja: "ウィンドウを端やほかのウィンドウに吸着", pt: "Janelas grudam nas bordas e umas nas outras", zh: "窗口吸附到屏幕边缘和其他窗口")).on(crate::stick()),
+        fly::MItem::head(t!("Размер Alt+Tab", "Alt+Tab size", ja: "Alt+Tab サイズ", pt: "Tamanho do Alt+Tab", zh: "Alt+Tab 大小")),
+        fly::MItem::new(t!("Маленький", "Small", ja: "小", pt: "Pequeno", zh: "小")).on(st::alttab_size() == 0),
+        fly::MItem::new(t!("Обычный", "Normal", ja: "通常", pt: "Normal", zh: "正常")).on(st::alttab_size() == 1),
+        fly::MItem::new(t!("Большой", "Large", ja: "大", pt: "Grande", zh: "大")).on(st::alttab_size() == 2),
     ];
     gear_page("\u{E8A1}", t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏"), t!("Где она, какого размера и как себя ведёт", "Where it sits, its size and behavior", ja: "配置場所、サイズ、動作", pt: "Onde fica, seu tamanho e comportamento", zh: "其位置、大小和行为"), items, move |i| {
         match i {
@@ -197,9 +201,10 @@ pub(crate) unsafe fn bar_page() {
             14 => st::set_align_left(!st::align_left()),
             15 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
             16 => crate::set_stick(!crate::stick()),
+            18..=20 => st::set_alttab_size((i - 18) as u8),
             _ => return style_menu(),
         }
-        relook(i != 15 && i != 16);
+        relook(i != 15 && i != 16 && !(18..=20).contains(&i));
         bar_page();
     });
 }
