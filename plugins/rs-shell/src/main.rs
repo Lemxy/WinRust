@@ -431,16 +431,23 @@ fn recover_explorer(
     launch: impl FnOnce() -> bool,
     mut pause: impl FnMut(),
 ) -> bool {
-    match state() {
-        ExplorerShell::Ready => return true,
-        ExplorerShell::Missing if !launch() => return false,
-        _ => {}
-    }
-    // The process can return from spawn before Explorer has registered its shell window.
-    (0..20).any(|_| {
+    let mut launch = Some(launch);
+    for _ in 0..20 {
+        match state() {
+            ExplorerShell::Ready => return true,
+            ExplorerShell::Missing => {
+                if let Some(start) = launch.take() {
+                    if !start() {
+                        return false;
+                    }
+                }
+            }
+            ExplorerShell::Unresponsive => {}
+        }
+        // Spawn can return before Explorer registers its shell window.
         pause();
-        state() == ExplorerShell::Ready
-    })
+    }
+    state() == ExplorerShell::Ready
 }
 
 fn desktop_window() -> HWND {
@@ -682,7 +689,7 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
             // Settings borrows Explorer temporarily. An Explorer started outside
             // the watcher also takes priority over a desktop restart.
             let lent = !ready && (winrust_common::settings::explorer_lent()
-                || (replaced && explorer_window().is_some()));
+                || (replaced && explorer_shell_state() == ExplorerShell::Ready));
             let starting = !ready && !lent && child.as_mut().is_some_and(|child: &mut DesktopChild| {
                 child.launched.elapsed() < DESKTOP_START_GRACE
                     && (window.is_null() || unsafe { IsHungAppWindow(window) } == 0)
@@ -845,6 +852,9 @@ mod tests {
         let mut launches = 0;
         assert!(recover_explorer(|| states.next().unwrap(), || { launches += 1; true }, || {}));
         assert_eq!(launches, 1);
+        let mut states = [Unresponsive, Missing, Ready].into_iter();
+        assert!(recover_explorer(|| states.next().unwrap(), || { launches += 1; true }, || {}));
+        assert_eq!(launches, 2);
         assert!(!recover_explorer(|| Missing, || true, || {}));
         assert!(!recover_explorer(|| Unresponsive, || panic!("Explorer is already open"), || {}));
         assert!(recover_explorer(|| Ready, || panic!("Explorer is already ready"), || panic!("no wait needed")));
