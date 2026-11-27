@@ -141,6 +141,17 @@ const GEAR: i32 = -12; // the gear at the left end: the Style menu
 const GEAR_X: (i32, i32) = (6, 36); // its left edge and width, before scaling (sc() is applied where used)
 const POW_R: i32 = -15; // Restart button next to the clock (#173)
 const POW_S: i32 = -16; // Shut down button
+// The right group: the language label, then one pill with the wifi, the volume and (on a laptop) the battery with its
+// percentage. layout() adds these up and paint() draws them at the same offsets, so the group is as wide as it draws.
+const SYS_LANG: i32 = 42; // the language label's slot
+const SYS_WIFI: i32 = 32; // the wifi icon's slot
+const SYS_VOL: i32 = 22; // the volume glyph
+const SYS_BAT_W: i32 = 22; // the battery itself
+const SYS_BAT_PCT: i32 = 40; // the percentage next to it
+const SYS_BAT: i32 = SYS_BAT_W + 8 + SYS_BAT_PCT; // 70: the battery and the percentage
+const SYS_END: i32 = 2; // air after the last icon, inside the pill
+const CLOCK_PAD: i32 = 10; // air on each side of the clock block
+const CLOCK_MIN: i32 = 72; // a short date ("1/1/2026") must not make the block hug its edges
 const SYS_GRP: i32 = -11; // hover key of the one pill around wifi + volume + battery (they open the same panel)
 const WIN_START: u32 = WM_APP + 10; // posted by the keyboard hook: Win key pressed alone
 const ALT_TAB: u32 = WM_APP + 11; // posted by the keyboard hook: Alt+Tab (wp 1 = Shift held: backwards)
@@ -276,7 +287,36 @@ fn bar_h() -> i32 {
     let d = [-6, 0, 8][i18n::style::bar_size() as usize % 3]; // small / normal / large
     if vert() { sc(60 + d) } else { sc(BAR_H + d) }
 }
-/// Screen y of the bar's top edge when it is in place.
+/// The width of the right group: exactly what paint() draws at those offsets. A wider slot was a hole between the
+/// volume icon and the clock (and a click on empty space opened the battery panel).
+fn sys_w() -> i32 {
+    sc(SYS_LANG + SYS_WIFI + SYS_VOL + SYS_END + if BAT.get().0 >= 0 { SYS_BAT } else { 0 })
+}
+/// Width and height of `s` in the font `f` of `dc`.
+unsafe fn text_size(dc: HDC, f: HFONT, s: &str) -> (i32, i32) {
+    SelectObject(dc, f);
+    let w = wide(s);
+    let mut sz: SIZE = zeroed();
+    GetTextExtentPoint32W(dc, w.as_ptr(), w.len() as i32 - 1, &mut sz);
+    (sz.cx, sz.cy)
+}
+/// The clock cell: the wider of the time and the date in the bar's own fonts (the ones it paints them with), with the
+/// same air on both sides, so a narrow clock ("9:05") and a wide date sit the same in it.
+fn clock_w() -> i32 {
+    unsafe {
+        let [_, f_small, _, f_bold] = bar_fonts();
+        let dc = CreateCompatibleDC(null_mut());
+        let (tm, dt) = clock_texts();
+        let w = clock_cell_w(text_size(dc, f_bold, &tm).0, text_size(dc, f_small, &dt).0);
+        DeleteDC(dc);
+        w
+    }
+}
+/// The cell of the clock: the wider of its two lines plus the same air on both sides.
+fn clock_cell_w(tw: i32, dw: i32) -> i32 {
+    (tw.max(dw) + 2 * sc(CLOCK_PAD)).max(sc(CLOCK_MIN))
+}
+/// Screen y of the bar's top edge when it is in place (bottom of the primary monitor, or its top in the tiling style).
 unsafe fn bar_top() -> i32 {
     if at_top() { 0 } else { GetSystemMetrics(SM_CYSCREEN) - bar_h() - dock_gap() }
 }
@@ -1528,9 +1568,9 @@ impl Layout {
 
 fn layout(w: i32) -> Layout {
     let gap = sc(4);
-    let clock = (w - sc(96), w - sc(6));
+    let clock = (w - sc(6) - clock_w(), w - sc(6));
     let power = (clock.0 - sc(4) - sc(32) * POWER_KEYS.len() as i32, clock.0 - sc(4));
-    let sys = (power.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), power.0 - sc(4));
+    let sys = (power.0 - sc(4) - sys_w(), power.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
     let sl = i18n::style::start_left();
@@ -1582,7 +1622,8 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     }
     if x >= l.sys.0 {
         let d = x - l.sys.0;
-        return if d < sc(42) { LANG } else if d < sc(74) { WIFI_I } else if d < sc(106) { VOL_I } else { BAT_I };
+        let (lw, ww) = (sc(SYS_LANG), sc(SYS_WIFI));
+        return if d < lw { LANG } else if d < lw + ww { WIFI_I } else if d < lw + ww + sc(SYS_VOL) { VOL_I } else if BAT.get().0 >= 0 { BAT_I } else { NONE };
     }
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
@@ -1998,11 +2039,15 @@ unsafe fn view_sig() -> u64 {
 }
 
 unsafe fn clock_texts() -> (String, String) {
+    clock_texts_of(0x0400) // LOCALE_USER_DEFAULT
+}
+/// The time and the date as `locale` (an LCID) formats them: short time without seconds, short date.
+unsafe fn clock_texts_of(locale: u32) -> (String, String) {
     let mut t: SYSTEMTIME = zeroed();
     GetLocalTime(&mut t);
     let (mut a, mut b) = ([0u16; 40], [0u16; 40]);
-    let n = GetTimeFormatW(0x0400, 2, &t, null(), a.as_mut_ptr(), 40).max(1) as usize - 1; // LOCALE_USER_DEFAULT, TIME_NOSECONDS
-    let m = GetDateFormatW(0x0400, 1, &t, null(), b.as_mut_ptr(), 40).max(1) as usize - 1; // DATE_SHORTDATE
+    let n = GetTimeFormatW(locale, 2, &t, null(), a.as_mut_ptr(), 40).max(1) as usize - 1; // TIME_NOSECONDS
+    let m = GetDateFormatW(locale, 1, &t, null(), b.as_mut_ptr(), 40).max(1) as usize - 1; // DATE_SHORTDATE
     (String::from_utf16_lossy(&a[..n]), String::from_utf16_lossy(&b[..m]))
 }
 
@@ -2097,30 +2142,32 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     });
 
     paint_power(dc, &l, hot, f_glyph, cell);
-    glow(dc, LANG, hot == LANG, cell(l.sys.0, sc(42)), pal().bg, pal().hover, sc(8));
-    let grp = cell(l.sys.0 + sc(44), l.sys.1 - l.sys.0 - sc(44));
+    glow(dc, LANG, hot == LANG, cell(l.sys.0, sc(SYS_LANG)), pal().bg, pal().hover, sc(8));
+    let grp = cell(l.sys.0 + sc(SYS_LANG + 2), l.sys.1 - l.sys.0 - sc(SYS_LANG + 2));
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
         fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
     }
-    text(dc, &lang_name(), cell(l.sys.0, sc(42)), pal().text, DT_CENTER);
-    net_icon(dc, cx, l.sys.0 + sc(58), icon_sc(17), f_glyph);
+    text(dc, &lang_name(), cell(l.sys.0, sc(SYS_LANG)), pal().text, DT_CENTER);
+    let y0 = l.sys.0 + sc(SYS_LANG);
+    net_icon(dc, cx, y0 + sc(SYS_WIFI) / 2, icon_sc(17), f_glyph);
     SelectObject(dc, f_glyph);
     let (vol, muted) = VOL.get();
     let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
-    text(dc, vg, cell(l.sys.0 + sc(79), sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
+    let y1 = y0 + sc(SYS_WIFI);
+    text(dc, vg, cell(y1, sc(SYS_VOL)), if muted { BAD } else { pal().text }, DT_CENTER);
     let (pct, ac) = BAT.get();
     if pct >= 0 {
         let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
-        let (bw, bh) = (icon_sc(22), icon_sc(11));
-        let (bx, by) = (cx - bw / 2 - sc(1), l.sys.0 + sc(111));
+        let (bw, bh) = (icon_sc(SYS_BAT_W), icon_sc(11));
+        let (bx, by) = (cx - bw / 2 - sc(1), y1 + sc(SYS_VOL));
         fill(dc, RECT { left: bx, top: by, right: bx + bw, bottom: by + bh }, col, sc(4));
         fill(dc, RECT { left: bx + sc(1), top: by + sc(1), right: bx + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
         let fw = ((bw - sc(4)) * pct / 100).max(sc(1));
         fill(dc, RECT { left: bx + sc(2), top: by + sc(2), right: bx + sc(2) + fw, bottom: by + bh - sc(2) }, col, sc(2));
         fill(dc, RECT { left: bx + bw + sc(1), top: by + sc(3), right: bx + bw + sc(3), bottom: by + bh - sc(3) }, col, sc(1));
         SelectObject(dc, f_small);
-        text(dc, &format!("{pct}%"), cell(l.sys.0 + sc(126), sc(18)), pal().text, DT_CENTER);
+        text(dc, &format!("{pct}%"), cell(y1 + sc(SYS_VOL + SYS_BAT_W + 8), sc(18)), pal().text, DT_CENTER);
     }
 
     let cb = cell(l.clock.0, l.clock.1 - l.clock.0);
@@ -2128,9 +2175,9 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let (tm, dt) = clock_texts();
     let mid = (cb.top + cb.bottom) / 2;
     SelectObject(dc, f_bold);
-    text(dc, &tm, RECT { left: 0, top: cb.top, right: cr.right, bottom: mid + sc(1) }, pal().text, DT_CENTER);
+    text(dc, &tm, RECT { left: cb.left, top: cb.top, right: cb.right, bottom: mid + sc(1) }, pal().text, DT_CENTER);
     SelectObject(dc, f_small);
-    text(dc, &dt, RECT { left: 0, top: mid - sc(1), right: cr.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
+    text(dc, &dt, RECT { left: cb.left, top: mid - sc(1), right: cb.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
 }
 
 thread_local! {
@@ -2327,26 +2374,25 @@ unsafe fn paint(hwnd: HWND) {
     // system group: language on its own, then one pill for wifi + volume + battery (like Windows 11: they open one panel)
     paint_power(dc, &l, hot, f_glyph, |s, len| RECT { left: s, top, right: s + len, bottom: bot });
     let tb = RECT { left: l.sys.0, top, right: l.sys.1, bottom: bot };
-    glow(dc, LANG, hot == LANG, RECT { left: tb.left, top, right: tb.left + sc(42), bottom: bot }, pal().bg, pal().hover, sc(8));
-    let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
+    glow(dc, LANG, hot == LANG, cell(tb.left, sc(SYS_LANG)), pal().bg, pal().hover, sc(8));
+    let grp = RECT { left: tb.left + sc(SYS_LANG + 2), top, right: tb.right, bottom: bot };
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
         fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
     }
-    let mut x = tb.left + sc(10);
-    text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
-    x += sc(42);
-    net_icon(dc, x + sc(9), mid, icon_sc(17), f_glyph);
-    x += sc(32);
+    let x = tb.left + sc(SYS_LANG);
+    text(dc, &lang_name(), cell(tb.left, sc(SYS_LANG)), pal().text, DT_CENTER);
+    net_icon(dc, x + sc(SYS_WIFI) / 2, mid, icon_sc(17), f_glyph);
     SelectObject(dc, f_glyph);
     let (vol, muted) = VOL.get();
     let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
-    text(dc, vg, cell(x, sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
-    x += sc(32);
+    let xv = x + sc(SYS_WIFI);
+    text(dc, vg, cell(xv, sc(SYS_VOL)), if muted { BAD } else { pal().text }, DT_CENTER);
     let (pct, ac) = BAT.get();
     if pct >= 0 {
+        let x = xv + sc(SYS_VOL);
         let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
-        let (bw, bh) = (icon_sc(22), icon_sc(11));
+        let (bw, bh) = (icon_sc(SYS_BAT_W), icon_sc(11));
         let by = mid - bh / 2;
         fill(dc, RECT { left: x, top: by, right: x + bw, bottom: by + bh }, col, sc(4)); // outline
         fill(dc, RECT { left: x + sc(1), top: by + sc(1), right: x + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
@@ -2354,10 +2400,10 @@ unsafe fn paint(hwnd: HWND) {
         fill(dc, RECT { left: x + sc(2), top: by + sc(2), right: x + sc(2) + fw, bottom: by + bh - sc(2) }, col, sc(2));
         fill(dc, RECT { left: x + bw + sc(1), top: by + sc(3), right: x + bw + sc(3), bottom: by + bh - sc(3) }, col, sc(1)); // terminal nub
         SelectObject(dc, f_txt);
-        text(dc, &format!("{pct}%"), cell(x + bw + sc(8), sc(40)), pal().text, DT_LEFT);
+        text(dc, &format!("{pct}%"), cell(x + bw + sc(8), sc(SYS_BAT_PCT)), pal().text, DT_LEFT);
     }
 
-    // time (semibold) over the date (dimmed)
+    // time (semibold) over the date (dimmed); the cell is as wide as the wider line, so both get the same air
     let cb = cell(l.clock.0, l.clock.1 - l.clock.0);
     glow(dc, CLOCK, hot == CLOCK || fly::is_open(fly::Kind::Cal), cb, pal().bg, pal().hover, sc(8));
     let (tm, dt) = clock_texts();
@@ -3488,6 +3534,40 @@ mod tests {
         assert_eq!(super::sane_edge(48, 1080), 48); // another bar below ours: stack above it
         assert_eq!(super::sane_edge(540, 1080), 0); // half the screen (#106)
         assert_eq!(super::sane_edge(-20, 1080), 0);
+    }
+
+    /// The clock cell is measured from the time and the date in the bar's own fonts, so the air around the block is the
+    /// same in every language, and the date of a locale still fits (no ellipsis, no clipped slash).
+    #[test]
+    fn clock_cell_fits_every_locale() {
+        use super::*;
+        const LOCALES: [(u32, &str); 5] = [(0x0409, "en-US"), (0x0419, "ru-RU"), (0x0411, "ja-JP"), (0x0416, "pt-BR"), (0x0804, "zh-CN")];
+        unsafe {
+            SCALE.set(2.0); // the 200 % case, the tightest one: everything else scales with it
+            let [_, f_date, _, f_time] = bar_fonts(); // the fonts the bar paints the clock with
+            let dc = CreateCompatibleDC(null_mut());
+            for (locale, name) in LOCALES {
+                let (tm, dt) = clock_texts_of(locale);
+                let (tw, dw) = (text_size(dc, f_time, &tm).0, text_size(dc, f_date, &dt).0);
+                let w = clock_cell_w(tw, dw);
+                assert!(tw <= w - 2 * sc(CLOCK_PAD), "{name}: the time {tm} does not fit its cell");
+                assert!(dw <= w - 2 * sc(CLOCK_PAD), "{name}: the date {dt} does not fit its cell");
+                assert!(w >= sc(CLOCK_MIN), "{name}: the cell is narrower than the minimum");
+            }
+            DeleteDC(dc);
+        }
+    }
+
+    /// The right group ends where its last icon ends: a wider slot was the hole between the volume icon and the clock
+    /// (and a battery panel under a click on empty space).
+    #[test]
+    fn system_group_is_as_wide_as_it_draws() {
+        use super::*;
+        BAT.set((-1, false)); // a desktop: no battery in the group
+        assert_eq!(sys_w(), SYS_LANG + SYS_WIFI + SYS_VOL + SYS_END);
+        BAT.set((80, false));
+        assert_eq!(sys_w(), SYS_LANG + SYS_WIFI + SYS_VOL + SYS_BAT + SYS_END);
+        BAT.set((-1, false));
     }
 
     #[test]
