@@ -1624,10 +1624,11 @@ unsafe fn fg_covers(bar: HWND) -> Option<RECT> {
 }
 
 /// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); but a game in "borderless
-/// window" mode that keeps its caption style while sized exactly to the monitor (Dota 2 and others) is.
+/// window" mode that keeps its caption style while sized to the monitor (SDL, GLFW, Dota 2 and others) is. Such a window
+/// can sit a pixel past the monitor edge (Minecraft: 1921 wide on a 1920 monitor), so it has to "cover", not "equal".
 fn covers_monitor(r: RECT, m: RECT, caption: bool, zoomed: bool) -> bool {
-    if caption {
-        return !zoomed && (r.left, r.top, r.right, r.bottom) == (m.left, m.top, m.right, m.bottom);
+    if caption && zoomed {
+        return false; // a framed maximized window: not a game (#88)
     }
     r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
 }
@@ -3330,6 +3331,8 @@ mod tests {
         let m = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
         assert!(covers_monitor(m, m, false, false)); // plain borderless / exclusive fullscreen
         assert!(covers_monitor(m, m, true, false)); // borderless window that kept its caption style
+        // Minecraft (SDL_app): caption style, not maximized, sized one pixel past the monitor — still fullscreen
+        assert!(covers_monitor(RECT { left: 0, top: 0, right: 1921, bottom: 1080 }, m, true, false));
         assert!(!covers_monitor(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, m, true, true)); // framed maximized window (#88)
         assert!(!covers_monitor(m, m, true, true)); // a maximized window is never a game
         assert!(!covers_monitor(RECT { left: 0, top: 0, right: 1920, bottom: 1032 }, m, false, false)); // leaves the bar's strip
