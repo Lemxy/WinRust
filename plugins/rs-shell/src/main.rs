@@ -12,7 +12,7 @@
 // shortcuts: Win+D only minimizes ordinary top-level windows (no per-monitor / virtual-desktop logic),
 // Run/Startup entries are started through `cmd /c start` (no RunOnce, no startup-delay rules, no disabled-list in
 // StartupApproved), topbar's "open" still shells out to explorer.exe for /select; upgrade when those matter.
-use std::{os::windows::{io::{AsRawHandle, FromRawHandle, OwnedHandle}, process::CommandExt}, path::PathBuf, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
+use std::{os::windows::{io::{AsRawHandle, FromRawHandle, OwnedHandle}, process::CommandExt}, path::{Path, PathBuf}, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
 use windows_sys::{core::BOOL, Win32::{Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, RECT, WAIT_FAILED, WAIT_OBJECT_0}, System::Threading::{CreateEventW, CreateMutexW, OpenProcess, PROCESS_TERMINATE, SetEvent, TerminateProcess, WaitForSingleObject}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
 
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
@@ -303,9 +303,14 @@ fn stop_window_process(window: HWND, pid: u32) -> bool {
     }
 }
 
-fn belongs_to(window: HWND, name: &str) -> Option<u32> {
+fn window_pid(window: HWND) -> Option<u32> {
     let mut pid = 0;
     unsafe { GetWindowThreadProcessId(window, &mut pid) };
+    (pid != 0).then_some(pid)
+}
+
+fn belongs_to(window: HWND, name: &str) -> Option<u32> {
+    let pid = window_pid(window)?;
     winrust_common::proc::exe_name(pid).is_some_and(|exe| exe.eq_ignore_ascii_case(name)).then_some(pid)
 }
 
@@ -314,9 +319,7 @@ fn shell_window() -> Option<(HWND, u32)> {
     if window.is_null() {
         return None;
     }
-    let mut pid = 0;
-    unsafe { GetWindowThreadProcessId(window, &mut pid) };
-    Some((window, pid))
+    Some((window, window_pid(window)?))
 }
 
 /// Ends only the Explorer described by the autostart checks in this session.
@@ -398,10 +401,46 @@ fn last_start(seen: &mut Vec<u32>, kids: Vec<u32>, last: Instant, now: Instant) 
     if new { now } else { last }
 }
 
-/// Gives the user Explorer back (with a normal, not elevated, token: the shell must never run elevated).
-fn start_shell_explorer() {
-    let r = winrust_common::proc::start_shell_explorer();
-    log(&format!("explorer shell started -> {:?}", r.map(|_| ())));
+#[derive(Debug, PartialEq, Eq)]
+enum ExplorerShell {
+    Missing,
+    Unresponsive,
+    Ready,
+}
+
+fn explorer_window() -> Option<(HWND, u32)> {
+    let observed = shell_window()?;
+    (belongs_to(observed.0, "explorer.exe") == Some(observed.1)).then_some(observed)
+}
+
+fn responds(window: HWND) -> bool {
+    unsafe { SendMessageTimeoutW(window, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 100, ptr::null_mut()) != 0 }
+}
+
+fn explorer_shell_state() -> ExplorerShell {
+    let Some(observed) = explorer_window() else { return ExplorerShell::Missing };
+    if responds(observed.0) && shell_window() == Some(observed) {
+        ExplorerShell::Ready
+    } else {
+        ExplorerShell::Unresponsive
+    }
+}
+
+fn recover_explorer(
+    mut state: impl FnMut() -> ExplorerShell,
+    launch: impl FnOnce() -> bool,
+    mut pause: impl FnMut(),
+) -> bool {
+    match state() {
+        ExplorerShell::Ready => return true,
+        ExplorerShell::Missing if !launch() => return false,
+        _ => {}
+    }
+    // The process can return from spawn before Explorer has registered its shell window.
+    (0..20).any(|_| {
+        pause();
+        state() == ExplorerShell::Ready
+    })
 }
 
 fn desktop_window() -> HWND {
@@ -413,12 +452,28 @@ fn desktop_ready(window: HWND) -> bool {
     unsafe { !window.is_null() && IsWindowVisible(window) != 0 && IsHungAppWindow(window) == 0 }
 }
 
-fn desktop_responds() -> bool {
+fn same_executable(actual: &Path, expected: &Path) -> bool {
+    actual == expected || std::fs::canonicalize(actual).ok().is_some_and(|actual| {
+        std::fs::canonicalize(expected).is_ok_and(|expected| actual == expected)
+    })
+}
+
+fn desktop_window_owner(window: HWND, executable: &Path) -> Option<u32> {
+    let pid = window_pid(window)?;
+    let path = winrust_common::proc::exe_path(pid)?;
+    (same_executable(&path, executable)
+        && winrust_common::proc::cmdline(pid).is_some_and(|args| args.split_whitespace().last() == Some("--desktop")))
+        .then_some(pid)
+}
+
+fn desktop_responds(executable: &Path) -> bool {
     let window = desktop_window();
-    // Probe the message loop at the hand-off only, not on every watchdog tick.
-    desktop_ready(window) && unsafe {
-        SendMessageTimeoutW(window, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 100, ptr::null_mut()) != 0
+    if !desktop_ready(window) {
+        return false;
     }
+    let Some(owner) = desktop_window_owner(window, executable) else { return false };
+    // Probe the message loop only at the handoff and make sure the same window answered.
+    responds(window) && desktop_window() == window && window_pid(window) == Some(owner)
 }
 
 const DESKTOP_START_GRACE: Duration = Duration::from_secs(12);
@@ -428,7 +483,7 @@ struct DesktopChild {
     launched: Instant,
 }
 
-fn start_desktop(path: &std::path::Path, child: &mut Option<DesktopChild>) {
+fn start_desktop(path: &Path, child: &mut Option<DesktopChild>) {
     if !path.is_file() || !desktop_window().is_null() {
         return;
     }
@@ -446,7 +501,7 @@ fn start_desktop(path: &std::path::Path, child: &mut Option<DesktopChild>) {
     }
 }
 
-fn stop_desktop(child: &mut Option<DesktopChild>) -> bool {
+fn stop_desktop(executable: &Path, child: &mut Option<DesktopChild>) -> bool {
     if let Some(DesktopChild { process, .. }) = child.as_mut() {
         if !matches!(process.try_wait(), Ok(Some(_))) {
             let _ = process.kill();
@@ -463,21 +518,23 @@ fn stop_desktop(child: &mut Option<DesktopChild>) -> bool {
     if window.is_null() {
         return true;
     }
-    belongs_to(window, "rust-explorer.exe").is_some_and(|pid| {
-        winrust_common::proc::cmdline(pid).is_some_and(|args| args.split_whitespace().last() == Some("--desktop"))
-            && stop_window_process(window, pid)
-    })
+    desktop_window_owner(window, executable).is_some_and(|pid| stop_window_process(window, pid))
 }
 
 fn desktop_start_expired(ready: bool, age: Option<Duration>) -> bool {
     !ready && age.is_some_and(|age| age >= DESKTOP_START_GRACE)
 }
 
-fn restart_desktop(path: &std::path::Path, child: &mut Option<DesktopChild>) {
+fn restart_desktop(path: &Path, child: &mut Option<DesktopChild>) {
     let window = desktop_window();
     let hung = !window.is_null() && unsafe { IsHungAppWindow(window) } != 0;
-    let expired = desktop_start_expired(desktop_ready(window), child.as_ref().map(|child| child.launched.elapsed()));
-    if (hung || expired) && !stop_desktop(child) {
+    let owned_age = child.as_mut().and_then(|child| {
+        (matches!(child.process.try_wait(), Ok(None))
+            && (window.is_null() || window_pid(window) == Some(child.process.id())))
+            .then(|| child.launched.elapsed())
+    });
+    let expired = desktop_start_expired(desktop_ready(window), owned_age);
+    if (hung || expired) && !stop_desktop(path, child) {
         log("overlay: could not stop the unresponsive desktop");
         return;
     }
@@ -496,22 +553,36 @@ fn wants_desktop(replace: bool, desktop_overlay: bool) -> bool {
     replace || desktop_overlay
 }
 
-fn watch_desktop(misses: &mut u8, ready: bool, lent: bool, replaced: bool, starting: bool) -> DesktopAction {
-    if ready || lent {
-        *misses = 0;
-        return DesktopAction::Wait;
-    }
-    *misses = misses.saturating_add(1);
-    if replaced && *misses >= 4 && !starting {
-        return DesktopAction::RestoreExplorer;
-    }
-    if *misses == 2 {
-        if !replaced {
-            *misses = 0;
+#[derive(Default)]
+struct DesktopWatch {
+    misses: u8,
+    retried: bool,
+}
+
+impl DesktopWatch {
+    fn observe(&mut self, ready: bool, lent: bool, replaced: bool, starting: bool) -> DesktopAction {
+        if ready || lent {
+            *self = Self::default();
+            return DesktopAction::Wait;
         }
-        DesktopAction::Restart
-    } else {
-        DesktopAction::Wait
+        self.misses = self.misses.saturating_add(1);
+        if starting || self.misses < 2 {
+            return DesktopAction::Wait;
+        }
+        if !replaced {
+            self.misses = 0;
+            return DesktopAction::Restart;
+        }
+        if !self.retried {
+            self.retried = true;
+            self.misses = 2;
+            return DesktopAction::Restart;
+        }
+        if self.misses >= 4 {
+            DesktopAction::RestoreExplorer
+        } else {
+            DesktopAction::Wait
+        }
     }
 }
 
@@ -546,20 +617,32 @@ fn overlay(desktop_overlay: bool) {
     overlay_watch(replace, desktop, desktop_request);
 }
 
-/// Gives the system taskbar back and starts Explorer if there is no shell in this session.
-fn restore_overlay_shell(replace: bool, desktop: bool, child: &mut Option<DesktopChild>) {
-    if desktop && !stop_desktop(child) {
+/// Gives the system taskbar back and verifies that Explorer is responding as the shell.
+fn restore_overlay_shell(replace: bool, desktop: Option<&Path>, child: &mut Option<DesktopChild>) {
+    if desktop.is_some_and(|path| !stop_desktop(path, child)) {
         log("overlay: could not confirm the WinRust desktop stopped");
     }
     let _ = quiet(find_exe("topbar.exe")).arg("--restore").creation_flags(NO_WINDOW).status();
-    if replace && unsafe { GetShellWindow() }.is_null() && !winrust_common::settings::explorer_lent() {
-        start_shell_explorer();
+    if replace && !winrust_common::settings::explorer_lent() {
+        let recovered = recover_explorer(
+            explorer_shell_state,
+            || match winrust_common::proc::start_shell_explorer() {
+                Ok(()) => true,
+                Err(error) => {
+                    log(&format!("overlay: could not launch Explorer: {error}"));
+                    false
+                }
+            },
+            || thread::sleep(Duration::from_millis(250)),
+        );
+        log(if recovered { "overlay: Explorer shell is responding" } else { "overlay: could not confirm Explorer shell recovery" });
     }
 }
 
 /// Watches the selected surfaces and only gives up Explorer once both replacements are ready.
 fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: HANDLE) {
-    let (mut starts, mut misses, mut dmiss, mut stable, mut replaced) = (0, 0, 0, 0, false);
+    let (mut starts, mut misses, mut stable, mut replaced) = (0, 0, 0, false);
+    let mut desktop_watch = DesktopWatch::default();
     let mut child = None;
     if let Some(path) = &desktop {
         if !winrust_common::settings::explorer_lent() {
@@ -599,19 +682,19 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
             // Settings borrows Explorer temporarily. An Explorer started outside
             // the watcher also takes priority over a desktop restart.
             let lent = !ready && (winrust_common::settings::explorer_lent()
-                || (replaced && !unsafe { GetShellWindow() }.is_null()));
-            let starting = replaced && !ready && !lent && child.as_mut().is_some_and(|child: &mut DesktopChild| {
+                || (replaced && explorer_window().is_some()));
+            let starting = !ready && !lent && child.as_mut().is_some_and(|child: &mut DesktopChild| {
                 child.launched.elapsed() < DESKTOP_START_GRACE
                     && (window.is_null() || unsafe { IsHungAppWindow(window) } == 0)
                     && matches!(child.process.try_wait(), Ok(None))
             });
-            match watch_desktop(&mut dmiss, ready, lent, replaced, starting) {
+            match desktop_watch.observe(ready, lent, replaced, starting) {
                 DesktopAction::Wait => {}
                 DesktopAction::Restart => restart_desktop(path, &mut child),
                 DesktopAction::RestoreExplorer => {
                     log("overlay: desktop did not recover, returning to the system shell");
                     drop(desktop_owner.take());
-                    restore_overlay_shell(replace, true, &mut child);
+                    restore_overlay_shell(replace, Some(path), &mut child);
                     return;
                 }
             }
@@ -634,7 +717,7 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
                 let markers = stable >= 3 && use_startup_markers && startup_run();
                 if stable >= 3 && may_end_explorer(markers, began.elapsed(), missing.is_empty(), untracked, last.elapsed())
                     && !winrust_common::settings::explorer_lent() && winrust_common::settings::replace_explorer_requested()
-                    && bar_up() && desktop_responds()
+                    && bar_up() && desktop_responds(path)
                 {
                     log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", markers, began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
                     if !kill_shell_explorer(observed_shell) {
@@ -659,7 +742,7 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
         if starts > 3 || quiet(find_exe("topbar.exe")).spawn().is_err() {
             log("overlay: topbar keeps dying, returning to the system shell");
             drop(desktop_owner.take());
-            restore_overlay_shell(replace, desktop.is_some(), &mut child);
+            restore_overlay_shell(replace, desktop.as_deref(), &mut child);
             return;
         }
         misses = 0;
@@ -744,6 +827,38 @@ mod tests {
         let _ = std::fs::remove_file(dst);
     }
     #[test]
+    fn waits_for_a_slow_child_then_attempts_one_restart_before_fallback() {
+        use super::{DesktopAction::*, DesktopWatch};
+        let mut watch = DesktopWatch::default();
+        for _ in 0..4 {
+            assert_eq!(watch.observe(false, false, true, true), Wait);
+        }
+        assert_eq!(watch.observe(false, false, true, false), Restart);
+        assert_eq!(watch.observe(false, false, true, true), Wait);
+        assert_eq!(watch.observe(false, false, true, false), RestoreExplorer);
+    }
+
+    #[test]
+    fn recovery_launches_for_a_missing_explorer_and_requires_a_responsive_shell() {
+        use super::{ExplorerShell::*, recover_explorer};
+        let mut states = [Missing, Missing, Unresponsive, Ready].into_iter();
+        let mut launches = 0;
+        assert!(recover_explorer(|| states.next().unwrap(), || { launches += 1; true }, || {}));
+        assert_eq!(launches, 1);
+        assert!(!recover_explorer(|| Missing, || true, || {}));
+        assert!(!recover_explorer(|| Unresponsive, || panic!("Explorer is already open"), || {}));
+        assert!(recover_explorer(|| Ready, || panic!("Explorer is already ready"), || panic!("no wait needed")));
+    }
+
+    #[test]
+    fn a_matching_basename_is_not_enough_to_identify_the_desktop_binary() {
+        let executable = std::env::current_exe().unwrap();
+        let other = executable.with_file_name("other-dir").join(executable.file_name().unwrap());
+        assert!(super::same_executable(&executable, &executable));
+        assert!(!super::same_executable(&other, &executable));
+    }
+
+    #[test]
     fn custom_desktop_requires_replacement_or_explicit_overlay() {
         assert!(!super::wants_desktop(false, false));
         assert!(super::wants_desktop(true, false));
@@ -753,26 +868,26 @@ mod tests {
 
     #[test]
     fn desktop_failure_restarts_then_returns_to_explorer_after_handoff() {
-        use super::{DesktopAction::*, watch_desktop};
-        let mut misses = 0;
+        use super::{DesktopAction::*, DesktopWatch};
+        let mut watch = DesktopWatch::default();
         let expected = [Wait, Restart, Wait, RestoreExplorer];
         for action in expected {
-            assert_eq!(watch_desktop(&mut misses, false, false, true, false), action);
+            assert_eq!(watch.observe(false, false, true, false), action);
         }
-        assert_eq!(watch_desktop(&mut misses, false, true, true, false), Wait);
-        assert_eq!(misses, 0, "Settings owns Explorer temporarily");
-        assert_eq!(watch_desktop(&mut misses, false, false, true, false), Wait);
-        assert_eq!(watch_desktop(&mut misses, true, false, true, false), Wait);
-        assert_eq!(misses, 0, "a recovered desktop clears the counter");
+        assert_eq!(watch.observe(false, true, true, false), Wait);
+        assert_eq!(watch.misses, 0, "Settings owns Explorer temporarily");
+        assert_eq!(watch.observe(false, false, true, false), Wait);
+        assert_eq!(watch.observe(true, false, true, false), Wait);
+        assert_eq!(watch.misses, 0, "a recovered desktop clears the counter");
     }
 
     #[test]
     fn a_recovery_launch_gets_its_full_startup_grace() {
-        use super::{DesktopAction::*, watch_desktop};
-        let mut misses = 3;
-        assert_eq!(watch_desktop(&mut misses, false, false, true, true), Wait);
-        assert_eq!(watch_desktop(&mut misses, false, false, true, true), Wait);
-        assert_eq!(watch_desktop(&mut misses, false, false, true, false), RestoreExplorer);
+        use super::{DesktopAction::*, DesktopWatch};
+        let mut watch = DesktopWatch { misses: 3, retried: true };
+        assert_eq!(watch.observe(false, false, true, true), Wait);
+        assert_eq!(watch.observe(false, false, true, true), Wait);
+        assert_eq!(watch.observe(false, false, true, false), RestoreExplorer);
     }
 
     #[test]
@@ -786,11 +901,11 @@ mod tests {
 
     #[test]
     fn a_desktop_failure_before_handoff_keeps_explorer() {
-        use super::{DesktopAction::*, watch_desktop};
-        let mut misses = 0;
+        use super::{DesktopAction::*, DesktopWatch};
+        let mut watch = DesktopWatch::default();
         let expected = [Wait, Restart, Wait, Restart];
         for action in expected {
-            assert_eq!(watch_desktop(&mut misses, false, false, false, false), action);
+            assert_eq!(watch.observe(false, false, false, false), action);
         }
     }
 

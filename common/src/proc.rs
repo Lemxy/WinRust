@@ -55,8 +55,9 @@ pub fn children(parents: &[u32]) -> Vec<u32> {
     v
 }
 
-/// Exe file name of one process (`SearchHost.exe`), without a snapshot of all of them. None when it cannot be opened.
-pub fn exe_name(pid: u32) -> Option<String> {
+/// Full executable path of one process, without taking a process snapshot.
+pub fn exe_path(pid: u32) -> Option<std::path::PathBuf> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     use windows_sys::Win32::System::Threading::{PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -66,9 +67,13 @@ pub fn exe_name(pid: u32) -> Option<String> {
         let (mut b, mut n) = ([0u16; 520], 520u32);
         let ok = QueryFullProcessImageNameW(h, 0, b.as_mut_ptr(), &mut n) != 0;
         CloseHandle(h);
-        let path = String::from_utf16_lossy(&b[..n as usize]);
-        ok.then(|| path.rsplit('\\').next().unwrap_or("").to_string())
+        ok.then(|| std::path::PathBuf::from(OsString::from_wide(&b[..n as usize])))
     }
+}
+
+/// Exe file name of one process (for example, SearchHost.exe).
+pub fn exe_name(pid: u32) -> Option<String> {
+    Some(exe_path(pid)?.file_name()?.to_string_lossy().into_owned())
 }
 
 /// Pids of the processes with this exe name (case-insensitive, e.g. `explorer.exe`).
@@ -187,6 +192,7 @@ mod tests {
         let me = std::process::id();
         assert!(super::list().iter().any(|(p, _)| *p == me));
         assert!(super::cmdline(me).is_some_and(|c| !c.is_empty()));
+        assert!(super::exe_path(me).is_some_and(|p| p.is_absolute()));
         let name = super::exe_name(me).unwrap();
         assert!(name.to_lowercase().ends_with(".exe") && !name.contains('\\'), "{name}");
         assert!(super::list().iter().any(|(p, n)| *p == me && n.eq_ignore_ascii_case(&name)));
