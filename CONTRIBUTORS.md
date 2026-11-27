@@ -8,3 +8,4 @@ Pull requests merged into WinRust (squashed into `main`).
 | [@ZyyXD1](https://github.com/ZyyXD1) | #201 Alt+F4 on the desktop opens the shut-down box |
 | [@Tkyoxx](https://github.com/Tkyoxx) | #143 search on drives without a change journal, #145 Task Manager asks before staying in the tray, #161 startup programs are not cut off, #163 `ITaskbarList` works with the bar |
 | [@GuilhermeProvenci](https://github.com/GuilhermeProvenci) | #167 type-ahead in rust-explorer, #168 the file manager's windows belong to the File Explorer pin |
+| [@ErrrChill](https://github.com/ErrrChill) | #203 Chrome "Show in folder" opens at once |
