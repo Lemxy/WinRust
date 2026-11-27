@@ -112,6 +112,46 @@ fn find_exe(name: &str) -> PathBuf {
 
 fn bar_up() -> bool { unsafe { !FindWindowW(wide("topbar").as_ptr(), std::ptr::null()).is_null() } }
 
+/// Explorer is not the shell, so the dialogs it normally places (Windows' "How do you want to open this file?" chooser,
+/// Properties, ...) can be created at (0,0) or off the monitor and get clipped (#191). Pull a shown top-level window back
+/// inside its monitor when it sticks out. Small windows only, so a maximized or full-screen one is never touched.
+unsafe fn keep_inside(h: HWND) {
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL};
+    unsafe {
+        if h.is_null() || IsWindowVisible(h) == 0 || IsIconic(h) != 0 || IsZoomed(h) != 0 { return; }
+        if GetAncestor(h, GA_ROOT) != h { return; } // top-level only: a child's rectangle is relative to its parent
+        let mut r: RECT = std::mem::zeroed();
+        if GetWindowRect(h, &mut r) == 0 || r.right <= r.left || r.bottom <= r.top { return; }
+        // not on any monitor at all = parked there on purpose; a tool or no-activate window (bars, popups sliding in) is no dialog
+        if MonitorFromWindow(h, MONITOR_DEFAULTTONULL).is_null() { return; }
+        if GetWindowLongW(h, GWL_EXSTYLE) as u32 & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) != 0 { return; }
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 { return; }
+        let a = mi.rcWork;
+        if r.right - r.left > a.right - a.left || r.bottom - r.top > a.bottom - a.top { return; } // bigger than the screen: not a stray dialog
+        let x = r.left.min(a.right - (r.right - r.left)).max(a.left);
+        let y = r.top.min(a.bottom - (r.bottom - r.top)).max(a.top);
+        if (x, y) != (r.left, r.top) {
+            SetWindowPos(h, ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
+/// Keeps stray dialogs on screen for sessions without Explorer. A WinEvent hook, not a poll: nothing runs until a window
+/// shows, and only that window is looked at. Installed on its own thread, which pumps the messages the hook needs.
+fn watch_stray_windows() {
+    use windows_sys::Win32::UI::Accessibility::SetWinEventHook;
+    unsafe extern "system" fn on_show(_hook: *mut std::ffi::c_void, _event: u32, h: HWND, id_object: i32, id_child: i32, _thread: u32, _time: u32) {
+        if id_object == OBJID_WINDOW && id_child == CHILDID_SELF as i32 { unsafe { keep_inside(h) }; }
+    }
+    thread::spawn(|| unsafe {
+        SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, ptr::null_mut(), Some(on_show), 0, 0, WINEVENT_OUTOFCONTEXT);
+        let mut m: MSG = std::mem::zeroed();
+        while GetMessageW(&mut m, ptr::null_mut(), 0, 0) > 0 { TranslateMessage(&m); DispatchMessageW(&m); }
+    });
+}
+
 /// A minimized window left on screen (or minimized before the hide setting was applied) shows as a caption stub on
 /// the desktop: park it where Windows itself parks hidden minimized windows.
 unsafe extern "system" fn park(h: HWND, _: LPARAM) -> BOOL {
@@ -125,73 +165,12 @@ unsafe extern "system" fn park(h: HWND, _: LPARAM) -> BOOL {
     }
 }
 
-/// GDI+ decodes any format it knows and saves a BMP (what the desktop paints without explorer's transcoder).
-fn to_bmp(src: &str, dst: &std::path::Path) {
-    use windows_sys::{core::GUID, Win32::Graphics::GdiPlus::*};
-    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
-    const BMP: GUID = GUID { data1: 0x557C_F400, data2: 0x1A04, data3: 0x11D3, data4: [0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E] }; // image/bmp encoder
-    unsafe {
-        let (mut token, mut input): (usize, GdiplusStartupInput) = (0, std::mem::zeroed());
-        input.GdiplusVersion = 1;
-        if GdiplusStartup(&mut token, &input, ptr::null_mut()) != 0 {
-            return;
-        }
-        let mut img = ptr::null_mut();
-        if GdipLoadImageFromFile(wide(src).as_ptr(), &mut img) == 0 {
-            GdipSaveImageToFile(img, wide(&dst.to_string_lossy()).as_ptr(), &BMP, ptr::null());
-            GdipDisposeImage(img);
-        }
-        GdiplusShutdown(token);
-    }
-}
-
 /// HKCU\Control Panel\Desktop\WallPaper through the registry API: `reg query` prints in the OEM code page, which garbled
 /// non-ASCII paths (a Cyrillic user name), and REG_EXPAND_SZ came back unexpanded.
-fn wallpaper_value() -> Option<String> {
-    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW};
-    let mut buf = vec![0u16; 1024];
-    let mut len = (buf.len() * 2) as u32;
-    let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, wide(r"Control Panel\Desktop").as_ptr(), wide("WallPaper").as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
-    if r != 0 { return None; }
-    buf.truncate((len as usize / 2).saturating_sub(1));
-    Some(String::from_utf16_lossy(&buf)).filter(|s| !s.trim().is_empty())
-}
-
-/// The picture to show: the WallPaper value, else Explorer's own decoded copy (Spotlight, slideshow and a moved or deleted
-/// source still leave it). None = a solid colour.
-fn wallpaper_source() -> Option<PathBuf> {
-    let transcoded = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Themes\TranscodedWallpaper"));
-    wallpaper_value().map(PathBuf::from).into_iter().chain(transcoded).find(|p| p.is_file())
-}
-
-/// Makes %LOCALAPPDATA%\rs-shell\wallpaper.bmp (what the rust-explorer desktop paints) and returns the file to show.
-/// A failed conversion leaves no stale or missing path behind: the old code then pointed Windows at a file that did not
-/// exist, and the desktop went black until the next reboot (#108, #111).
-fn wallpaper_bmp() -> Option<PathBuf> {
-    let src = wallpaper_source()?;
-    if src.extension().is_some_and(|e| e.eq_ignore_ascii_case("bmp")) {
-        let _ = std::fs::remove_file(bmp_copy()?); // the desktop must not keep painting an old conversion
-        let _ = std::fs::copy(&src, bmp_copy()?);
-        return Some(src);
-    }
-    let bmp = bmp_copy()?;
-    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    if !bmp.is_file() || modified(&bmp) < modified(&src) {
-        let _ = std::fs::create_dir_all(bmp.parent()?);
-        let _ = std::fs::remove_file(&bmp);
-        to_bmp(&src.to_string_lossy(), &bmp);
-    }
-    bmp.is_file().then_some(bmp)
-}
-
-fn bmp_copy() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|b| PathBuf::from(b).join("rs-shell").join("wallpaper.bmp"))
-}
-
 /// Shell mode only: without explorer's transcoder the system desktop paints only BMP. Next to Explorer (`--overlay`) the
 /// system wallpaper is never touched: Explorer shows the original itself.
 fn set_wallpaper() {
-    let Some(path) = wallpaper_bmp() else { return };
+    let Some(path) = winrust_common::wallpaper::bmp(false) else { return };
     unsafe { SystemParametersInfoW(0x14, 0, wide(&path.to_string_lossy()).as_ptr() as _, 0) }; // SPI_SETDESKWALLPAPER
 }
 
@@ -208,6 +187,7 @@ fn log(msg: &str) {
 fn run_shell() {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
     log("start");
+    watch_stray_windows(); // Explorer is gone here: keep its dialogs (the "open this file" chooser) on screen (#191)
     // without explorer a minimized window is drawn as a little caption stub on the desktop (apps started with
     // --minimized left grey rectangles over the icons): hide them, the bar lists the windows anyway
     let mut mm = MINIMIZEDMETRICS { cbSize: size_of::<MINIMIZEDMETRICS>() as u32, iWidth: 0, iHorzGap: 0, iVertGap: 0, iArrange: ARW_HIDE as i32 };
@@ -360,7 +340,8 @@ fn overlay() {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
     let replace = replace_on();
     log(&format!("overlay start (replace explorer: {replace})"));
-    let wp = thread::spawn(wallpaper_bmp); // the BMP the desktop window paints; the system wallpaper stays Explorer's
+    if replace { watch_stray_windows(); } // Explorer is ended below: keep its dialogs on screen (#191)
+    let wp = thread::spawn(|| winrust_common::wallpaper::bmp(false)); // the BMP the desktop window paints; the system wallpaper stays Explorer's
     if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
     // Win+I / Win+E / Win+D live in reshell: its Run entry may be missing (another account's HKCU), and without it Explorer's own Win+I
     // fails once the shell is gone. A second copy exits at once (one hook per session).
@@ -487,20 +468,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{exe_path, may_end_explorer, to_bmp};
+    use super::{exe_path, may_end_explorer};
     use std::time::Duration;
-    #[test]
-    fn converts_a_jpeg_to_bmp() {
-        let src = r"C:\Windows\Web\Wallpaper\Windows\img0.jpg";
-        if !std::path::Path::new(src).is_file() {
-            return;
-        }
-        let dst = std::env::temp_dir().join("rs-shell-test.bmp");
-        let _ = std::fs::remove_file(&dst);
-        to_bmp(src, &dst);
-        assert_eq!(&std::fs::read(&dst).unwrap()[..2], b"BM");
-        let _ = std::fs::remove_file(dst);
-    }
     #[test]
     fn ends_explorer_on_markers_or_after_grace() {
         let (s, q) = (Duration::from_secs, Duration::from_secs(8)); // q: Explorer has started nothing new for 8 s

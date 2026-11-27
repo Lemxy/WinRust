@@ -16,12 +16,14 @@ pub mod journal;
 pub mod launch;
 pub mod mem;
 pub mod mft;
+pub mod power;
 pub mod proc;
 pub mod reg;
 pub mod search;
 pub mod settings;
 pub mod style;
 pub mod svc;
+pub mod wallpaper;
 
 /// Console programs print the UI language, and Rust writes UTF-8: a console decodes those bytes with its output code page,
 /// which is 936 on a Chinese Windows, so every non-ASCII line would come out as noise. Switch this window's output code

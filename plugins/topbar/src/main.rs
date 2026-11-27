@@ -29,6 +29,8 @@ mod run;
 mod shot;
 mod lang;
 mod settings;
+mod second; // a bar on every other monitor
+mod notif; // notifications under the calendar
 mod thumbs;
 mod wmi;
 use {tray::*, status::*, run::*, shot::*, lang::*, settings::*};
@@ -330,9 +332,12 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     match msg {
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
-            let dc = BeginPaint(hwnd, &mut ps);
+            let wdc = BeginPaint(hwnd, &mut ps);
             let mut r: RECT = zeroed();
             GetClientRect(hwnd, &mut r);
+            // drawn off screen first: painting every animation frame straight to the window flickered (#199)
+            let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, r.right, r.bottom));
+            let screen_bmp = SelectObject(dc, bmp);
             fill(dc, r, pal().line, sc(12));
             fill(dc, RECT { left: 1, top: 1, right: r.right - 1, bottom: r.bottom - 1 }, pal().bg, sc(12));
             let (cols, _, _) = fly_size();
@@ -350,8 +355,8 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         tip = ti.tip.clone();
                     }
                     if !ti.icon.is_null() {
-                        let sz = (sc(20) as f32 * (0.4 + 0.6 * tf_progress(n as i32))) as i32; // pops in
-                        DrawIconEx(dc, x + sc(19) - sz / 2, y + sc(18) - sz / 2, ti.icon, sz, sz, 0, null_mut(), DI_NORMAL);
+                        // 16 logical px, the small-icon size apps make theirs for: any other size gets resampled and blurs
+                        DrawIconEx(dc, x + sc(19) - sc(16) / 2, y + sc(18) - sc(16) / 2, ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
                     }
                 }
             });
@@ -362,9 +367,14 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             DrawTextW(dc, wide(&tip).as_ptr(), -1, &mut tr, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
             SelectObject(dc, of);
             DeleteObject(f);
+            BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, screen_bmp);
+            DeleteObject(bmp);
+            DeleteDC(dc);
             EndPaint(hwnd, &ps);
             0
         }
+        WM_ERASEBKGND => 1,
         WM_MOUSEMOVE => {
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
@@ -404,7 +414,7 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             SetLayeredWindowAttributes(hwnd, 0, (255.0 * e) as u8, LWA_ALPHA);
             SetWindowPos(hwnd, null_mut(), x, y + tf_slide(e), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             InvalidateRect(hwnd, null(), 0);
-            if tf_progress(over_idx().len() as i32) >= 1.0 {
+            if e >= 1.0 {
                 KillTimer(hwnd, 1);
             }
             0
@@ -780,6 +790,7 @@ unsafe fn place(hwnd: HWND) {
         SetWindowPos(hwnd, HWND_TOPMOST, x, bar_y(), w, bar_h(), SWP_NOACTIVATE);
     }
     InvalidateRect(hwnd, null(), 0);
+    second::sync();
 }
 
 /// How far from its screen edge the bar may sit after ABM_QUERYPOS (room left for other appbars). Explorer sometimes answers
@@ -790,8 +801,10 @@ fn sane_edge(offset: i32, size: i32) -> i32 {
 }
 
 unsafe fn set_work_area(mut want: RECT) {
-    let mut cur: RECT = zeroed();
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut cur as *mut _ as *mut _, 0);
+    let mut mi: MONITORINFO = zeroed();
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    GetMonitorInfoW(MonitorFromRect(&want, MONITOR_DEFAULTTONEAREST), &mut mi);
+    let cur = mi.rcWork;
     if (cur.left, cur.top, cur.right, cur.bottom) != (want.left, want.top, want.right, want.bottom) {
         // SPIF_SENDCHANGE waits for every top-level window (took ~3 s, #94): set quietly and post the notice instead
         SystemParametersInfoW(SPI_SETWORKAREA, 0, &mut want as *mut _ as *mut _, 0);
@@ -803,8 +816,8 @@ unsafe fn set_work_area(mut want: RECT) {
 /// A window that was already maximized keeps its old height when the work area shrinks: trim it (size only, no restore).
 unsafe extern "system" fn fit_maximized(h: HWND, lp: isize) -> i32 {
     let want = &*(lp as *const RECT);
-    // the work area is the primary monitor's: a window maximized on another monitor would be cut to a sliver
-    if IsWindowVisible(h) == 0 || IsZoomed(h) == 0 || MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) != MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) {
+    // the work area belongs to one monitor: a window maximized on another one would be cut to a sliver
+    if IsWindowVisible(h) == 0 || IsZoomed(h) == 0 || MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) != MonitorFromRect(want, MONITOR_DEFAULTTONEAREST) {
         return 1;
     }
     let mut r: RECT = zeroed();
@@ -1231,6 +1244,25 @@ fn as_pinned_exe(exe: &str, explorer: &str, explorer_pinned: bool) -> String {
     if explorer_pinned && exe.ends_with(r"\rust-explorer\rust-explorer.exe") { explorer.to_string() } else { exe.to_string() }
 }
 
+/// `...\app-1.0.9001\discord.exe` without the version folder: Squirrel apps (Discord, Slack...) move on every update.
+fn unversioned(exe: &str) -> String {
+    exe.split('\\').filter(|p| !p.strip_prefix("app-").is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit()))).collect::<Vec<_>>().join(r"\")
+}
+
+/// A window of `exe` (with AppUserModelID `id`) belongs to a pin of another exe (#198): the same AppUserModelID, a pin of
+/// Squirrel's launcher (`Update.exe --processStart App.exe`) or of an older version folder. All lower-case but `args`.
+fn pin_of_other_exe(target: &str, args: &str, aumid: &str, exe: &str, id: &str) -> bool {
+    if !aumid.is_empty() && aumid == id {
+        return true;
+    }
+    let args = args.to_lowercase();
+    if let (Some(dir), Some(at)) = (target.strip_suffix(r"\update.exe"), args.find("--processstart")) {
+        let name = args[at + "--processstart".len()..].trim_start_matches(['=', ' ', '"']).split(['"', ' ']).next().unwrap_or("");
+        return !name.is_empty() && exe.strip_prefix(dir).is_some_and(|r| r.starts_with('\\') && r.rsplit('\\').next() == Some(name));
+    }
+    !exe.is_empty() && unversioned(target) == unversioned(exe)
+}
+
 fn refresh_buttons() {
     let mut wins: Vec<HWND> = Vec::new();
     unsafe { EnumWindows(Some(collect), &mut wins as *mut _ as LPARAM) };
@@ -1246,10 +1278,10 @@ fn refresh_buttons() {
         // takes any window of its exe
         let pin = PINS.with_borrow(|p| {
             let mine: Vec<usize> = (0..p.len()).filter(|&i| !p[i].target.is_empty() && p[i].target == exe).collect();
-            if mine.is_empty() {
-                return None;
-            }
             let id = unsafe { win_meta(w).0 };
+            if mine.is_empty() {
+                return (0..p.len()).find(|&i| pin_of_other_exe(&p[i].target, &p[i].args, &p[i].aumid, &exe, &id));
+            }
             mine.iter().copied().find(|&i| !id.is_empty() && p[i].aumid == id).or_else(|| mine.iter().copied().find(|&i| id.is_empty() || p[i].aumid.is_empty()))
         });
         match pin {
@@ -1567,14 +1599,19 @@ unsafe fn bar_step(hwnd: HWND) {
 /// True when the foreground window covers the whole primary monitor (game, F11 video, presentation).
 /// A maximized window does not: the bar's reserved strip keeps it below the bar.
 unsafe fn fullscreen_now(bar: HWND) -> bool {
+    fg_covers(bar).is_some_and(|m| (m.left, m.top) == (0, 0))
+}
+
+/// The monitor the foreground window covers whole, if it covers one.
+unsafe fn fg_covers(bar: HWND) -> Option<RECT> {
     let fg = GetForegroundWindow();
     if fg.is_null() || fg == bar || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
-        return false;
+        return None;
     }
     let mut cls = [0u16; 64];
     let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
     if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
-        return false; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
+        return None; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
     }
     let mut r: RECT = zeroed();
     GetWindowRect(fg, &mut r);
@@ -1583,7 +1620,7 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
     GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi);
     let m = mi.rcMonitor;
     let caption = GetWindowLongW(fg, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
-    (m.left, m.top) == (0, 0) && covers_monitor(r, m, caption, IsZoomed(fg) != 0)
+    covers_monitor(r, m, caption, IsZoomed(fg) != 0).then_some(m)
 }
 
 /// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); but a game in "borderless
@@ -1601,6 +1638,7 @@ unsafe fn desktop_now() -> bool {
 }
 
 unsafe fn fs_update(hwnd: HWND) {
+    second::update(hwnd);
     let fs = fullscreen_now(hwnd);
     // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
     // edges all the time); Win opens Start, which brings the bar with it
@@ -1751,6 +1789,7 @@ unsafe fn repaint_if_changed(hwnd: HWND, tick: bool) {
     if s != last || (tick && quiet >= 10) {
         SIG.set((s, 0));
         InvalidateRect(hwnd, null(), 0);
+        second::invalidate();
     } else if tick {
         SIG.set((s, quiet + 1));
     }
@@ -2937,6 +2976,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             _ => return 0,
         }
         InvalidateRect(hwnd, null(), 0);
+        second::invalidate();
         return 0;
     }
     if msg != 0 && msg == TB_MSG.get() {
@@ -3085,6 +3125,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             ab.hWnd = hwnd;
             SHAppBarMessage(ABM_REMOVE, &mut ab);
             set_work_area(RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }); // ours: give the strip back
+            second::release();
             show_taskbar(OLD_STATE.get());
             forget_taskbar_state();
             DestroyWindow(HOST.replace(null_mut()));
@@ -3102,6 +3143,7 @@ fn main() {
             show_taskbar(saved_taskbar_state().unwrap_or(ABS_ALWAYSONTOP as usize));
             forget_taskbar_state();
             set_work_area(RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }); // a killed bar's reserved strip
+            second::restore_work_areas();
             announce(); // a killed bar took its tray icons with it; apps re-register with explorer
             return;
         }
@@ -3243,6 +3285,24 @@ fn main() {
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }
+    }
+}
+
+#[cfg(test)]
+mod pin_match_tests {
+    use super::pin_of_other_exe;
+
+    #[test]
+    fn windows_find_their_pin_across_exes() {
+        let up = r"c:\users\a\appdata\local\discord\update.exe";
+        let app = r"c:\users\a\appdata\local\discord\app-1.0.9002\discord.exe";
+        assert!(pin_of_other_exe(up, "--processStart Discord.exe", "", app, ""));
+        assert!(pin_of_other_exe(up, "--processStart=\"Discord.exe\"", "", app, ""));
+        assert!(pin_of_other_exe(r"c:\users\a\appdata\local\discord\app-1.0.9001\discord.exe", "", "", app, ""));
+        assert!(pin_of_other_exe(r"c:\x\launcher.exe", "", "com.app", app, "com.app"));
+        assert!(!pin_of_other_exe(up, "--processStart Slack.exe", "", app, ""));
+        assert!(!pin_of_other_exe(r"c:\x\launcher.exe", "", "", app, ""));
+        assert!(!pin_of_other_exe("", "", "", app, ""));
     }
 }
 

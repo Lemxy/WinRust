@@ -280,7 +280,7 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
                 SelectObject(dc, of);
                 return CDRF_SKIPDEFAULT as isize;
             }
-            let sel = SendMessageW(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
+            let sel = SendMessageW(list, LVM_GETITEMSTATE, i, (LVIS_SELECTED | LVIS_DROPHILITED) as isize) as u32 & (LVIS_SELECTED | LVIS_DROPHILITED) != 0; // or a drag is over it
             let hot = ROWHOT.get() == i as isize;
             let focus = GetFocus() == list;
             let pill = rc(sc(6), r.top + sc(2), cr.right - sc(6), r.bottom - sc(2));
@@ -798,6 +798,22 @@ pub fn toggle_pin(p: &Path) {
     }
     let h = NAVWND.get() as HWND;
     if !h.is_null() { nav_init(h); nav_dirty(); }
+}
+
+/// Reads the drives again: one was plugged in or removed (#186).
+pub fn nav_refresh() {
+    let h = NAVWND.get() as HWND;
+    if !h.is_null() { nav_init(h); nav_dirty(); }
+}
+
+pub fn nav_window() -> isize { NAVWND.get() }
+
+/// The pane's item at height `y` and the folder it opens (for a drop onto it).
+pub fn nav_at(y: i32) -> Option<(usize, PathBuf)> { nav_hit(y).and_then(|i| nav_path(i).map(|p| (i, p))) }
+
+/// Lights the item a drag is over (-1: none).
+pub fn nav_hot(i: i32) {
+    if NAVHOT.replace(i) != i { nav_dirty(); }
 }
 
 pub fn nav_init(h: HWND) {

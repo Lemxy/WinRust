@@ -26,6 +26,8 @@ mod zipx; // our own ZIP engine (deflate, inflate, container)
 mod jobs; // our own copier, ZIP packer, ZIP/7z unpacker (background, progress in the status line)
 mod shellwin; // registers the window as a shell window: "Show in folder" from other apps selects the file
 mod menu; // the folder's own menu, painted in our colours
+mod preview; // the picture next to the pointer over pictures and videos
+mod power; // the desktop's Alt+F4: shut down, restart, sleep, sign out
 mod ui; // the look: palette, painted tabs / toolbar / address pill / status line, dark theme
 
 static DESKTOP: AtomicBool = AtomicBool::new(false);
@@ -36,17 +38,32 @@ thread_local! { static WALL: std::cell::Cell<(isize, i32, i32)> = const { std::c
 fn virt() -> (i32, i32, i32, i32) {
     unsafe { (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)) }
 }
-/// The desktop's icon list stays on the primary monitor (at screen 0,0, i.e. -vx, -vy inside the desktop window), between the bar's strips.
+/// The desktop's icon list covers every monitor (#125); the icons then keep to the monitors' areas (desk::Grid).
 fn place_desk_list(list: HWND) {
-    let (vx, vy, ..) = virt();
-    let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    unsafe { MoveWindow(list, -vx, -vy + desk_top(), sw, (sh - desk_top() - desk_bottom()).max(0), 1) };
+    let (.., vw, vh) = virt();
+    unsafe { MoveWindow(list, 0, 0, vw, vh, 1) };
+    desk::relayout(list); // the bar's strips or a monitor changed
 }
 /// Renders the wallpaper for the current monitor layout (at start and when monitors change), freeing the old one.
 fn reload_wall() {
     let (vx, vy, cw, ch) = virt();
     let old = WALL.replace((wall::load(vx, vy, cw, ch), cw, ch)).0;
     if old != 0 { unsafe { windows_sys::Win32::Graphics::Gdi::DeleteObject(old as _) }; }
+}
+thread_local! {
+    static WALL_STAMP: std::cell::RefCell<Option<(Option<PathBuf>, Option<std::time::SystemTime>)>> = const { std::cell::RefCell::new(None) };
+}
+/// Repaints the desktop when the wallpaper was changed (#188). Without explorer a change is not always announced, so the
+/// desktop's 2 s timer asks too. The first call only remembers what is there.
+fn follow_wallpaper(h: HWND) {
+    let now = winrust_common::wallpaper::stamp();
+    if WALL_STAMP.replace(Some(now.clone())).is_some_and(|old| old != now) {
+        winrust_common::wallpaper::bmp(true);
+        reload_wall();
+        unsafe { InvalidateRect(h, ptr::null(), 1) };
+        let list = ST.with_borrow(|st| st.list);
+        unsafe { InvalidateRect(list, ptr::null(), 1) };
+    }
 }
 /// Where the file manager window was when it last closed: %APPDATA%\rust-explorer\window.txt, `max|normal left top right bottom`
 /// (the restored rectangle, so un-maximizing goes back to the size it had).
@@ -241,6 +258,13 @@ fn tool(name: &str) -> Option<PathBuf> {
 }
 
 /// Same list as photoview's EXTS.
+/// Windows' "single-click to open an item" folder option (#139): a click opens, a click on empty space goes up.
+fn single_click() -> bool {
+    let mut f: SHELLFLAGSTATE = unsafe { std::mem::zeroed() };
+    unsafe { SHGetSettings(&mut f, SSF_DOUBLECLICKINWEBVIEW) };
+    f._bitfield & 0x20 == 0 // fDoubleClickInWebView, the 6th flag
+}
+
 fn is_pic(p: &std::path::Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["jpg", "jpeg", "jfif", "png", "bmp", "gif", "tif", "tiff", "webp", "heic", "avif"].contains(&e.to_ascii_lowercase().as_str()))
 }
@@ -341,7 +365,11 @@ unsafe fn activate(h: HWND, p: PathBuf, is_dir: bool) {
     else {
         // like Explorer: the exe starts in its own folder (games look for files next to it)
         let dir = p.parent().map(|d| w(&d.to_string_lossy()));
+        let before = sh::top_windows();
         unsafe { ShellExecuteW(h, ptr::null(), w(&p.to_string_lossy()).as_ptr(), ptr::null(), dir.as_ref().map_or(ptr::null(), |d| d.as_ptr()), SW_SHOWNORMAL) };
+        // an unassociated file makes Windows show its "How do you want to open this file?" chooser, which lands partly off
+        // screen without Explorer as the shell (#191): pull it back in, as the context menu's own dialogs already are
+        sh::keep_on_screen(before);
     }
 }
 
@@ -458,6 +486,7 @@ unsafe fn bg_menu(h: HWND) {
         menu::sep(sort);
         menu::item(sort, 14, "\u{E8B7}", t!("Папки сверху", "Folders first", ja: "フォルダーを先頭に表示", pt: "Pastas primeiro", zh: "文件夹优先"), !mixed_marker().exists());
         menu::submenu(m, "\u{E8CB}", t!("Сортировка", "Sort by", ja: "並べ替え", pt: "Classificar por", zh: "排序方式"), sort);
+        menu::item(m, 15, "\u{E91B}", t!("Предпросмотр при наведении", "Preview on hover", ja: "ポイントしてプレビュー", pt: "Pré-visualizar ao passar o mouse", zh: "悬停预览"), !preview::off_marker().exists());
         menu::item(m, 13, "\u{E81C}", t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组"), group_on());
     } else {
         menu::item(m, 8, "\u{E8D2}", t!("Упорядочить значки по имени", "Sort icons by name", ja: "名前順にアイコンを並べ替え", pt: "Classificar ícones por nome", zh: "按名称排列图标"), false);
@@ -483,6 +512,10 @@ unsafe fn bg_menu(h: HWND) {
         13 => {
             let k = group_marker();
             if group_on() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
+        }
+        15 => {
+            let k = preview::off_marker();
+            if k.exists() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
         }
         14 => {
             let k = mixed_marker();
@@ -870,7 +903,7 @@ mod wall {
     }
 
     /// Every monitor's rectangle, relative to the virtual screen's top-left (vx, vy).
-    fn monitors(vx: i32, vy: i32) -> Vec<RECT> {
+    pub fn monitors(vx: i32, vy: i32) -> Vec<RECT> {
         unsafe extern "system" fn each(_: HMONITOR, _: HDC, r: *mut RECT, lp: isize) -> i32 {
             unsafe { (*(lp as *mut Vec<RECT>)).push(*r) };
             1
@@ -1002,6 +1035,17 @@ mod sh {
         tx
     }
 
+    /// The item's picture, at most `size` on a side, as an HBITMAP the caller deletes. Blocks: for worker threads.
+    pub fn image(path: &PathBuf, size: i32) -> Option<isize> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let bmp = SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(PCWSTR(wide(path).as_ptr()), None)
+                .and_then(|f| f.GetImage(SIZE { cx: size, cy: size }, SIIGBF_RESIZETOFIT));
+            CoUninitialize();
+            bmp.ok().map(|b| b.0 as isize)
+        }
+    }
+
     /// Centers `src` (any size up to THUMB, 32-bit with alpha) on a transparent THUMB x THUMB bitmap: ImageList_Add needs exact sizes.
     unsafe fn pad(src: *mut c_void) -> *mut c_void {
         use windows_sys::Win32::Graphics::Gdi::*;
@@ -1117,7 +1161,7 @@ mod sh {
         TRUE
     }
 
-    fn top_windows() -> Vec<isize> {
+    pub(crate) fn top_windows() -> Vec<isize> {
         let mut v: Vec<isize> = vec![];
         unsafe { let _ = EnumWindows(Some(collect), LPARAM(&mut v as *mut _ as isize)); }
         v
@@ -1125,7 +1169,7 @@ mod sh {
 
     /// Dialogs the shell opens for a command ("Open with" > choose another app, Properties) can land partly off screen on some
     /// setups. For a few seconds after the command, any new window that sticks out of its monitor is moved back inside.
-    fn keep_on_screen(before: Vec<isize>) {
+    pub(crate) fn keep_on_screen(before: Vec<isize>) {
         std::thread::spawn(move || unsafe {
             for _ in 0..40 {
                 std::thread::sleep(std::time::Duration::from_millis(150));
@@ -1243,39 +1287,133 @@ mod sh {
     }
 
     #[implement(IDropTarget)]
-    struct DropT { main: isize }
+    struct DropT { main: isize, own: isize, dragged: std::cell::RefCell<Vec<PathBuf>>, lit: std::cell::Cell<isize> }
 
-    fn effect(k: MODIFIERKEYS_FLAGS) -> DROPEFFECT { if k.0 & 8 != 0 { DROPEFFECT_COPY } else { DROPEFFECT_MOVE } } // 8 = MK_CONTROL
+
+    /// Same drive moves, another drive copies, Ctrl forces a copy, like Explorer.
+    fn copies(k: MODIFIERKEYS_FLAGS, from: Option<&PathBuf>, to: &std::path::Path) -> bool {
+        k.0 & 8 != 0 || from.and_then(|p| p.components().next()) != to.components().next() // 8 = MK_CONTROL
+    }
+
+    /// What a drop onto `to` really has to do: nothing for a folder onto itself, or a move into the folder it is in.
+    pub(super) fn to_do(paths: Vec<PathBuf>, to: &std::path::Path, copy: bool) -> Vec<PathBuf> {
+        paths.into_iter().filter(|p| p != to && (copy || p.parent() != Some(to))).collect()
+    }
+
+    impl DropT {
+        /// The folder a drop at screen point `pt` goes into, lighting what the pointer is over (#187): a folder of the
+        /// left pane, a folder row (or desktop icon), else the folder shown.
+        fn target(&self, pt: &POINTL) -> Option<PathBuf> {
+            use windows_sys::Win32::{Foundation::POINT, Graphics::Gdi::ScreenToClient};
+            let mut p = POINT { x: pt.x, y: pt.y };
+            let nav = super::ui::nav_window();
+            if self.own == nav {
+                unsafe { ScreenToClient(nav as _, &mut p) };
+                let hit = super::ui::nav_at(p.y);
+                super::ui::nav_hot(hit.as_ref().map_or(-1, |h| h.0 as i32));
+                return hit.map(|h| h.1);
+            }
+            let list = super::ST.with_borrow(|st| st.list);
+            unsafe { ScreenToClient(list, &mut p) };
+            let mut ht: super::LVHITTESTINFO = unsafe { std::mem::zeroed() };
+            ht.pt = p;
+            let i = super::put(list, super::LVM_HITTEST, 0, &mut ht as *mut _ as isize);
+            let row = super::ST.with_borrow(|st| usize::try_from(i).ok().and_then(|i| st.rows.get(i)).filter(|r| r.dir && !r.hdr).map(|r| st.dir.join(&r.name)));
+            // a folder that is being dragged is no target for itself
+            let row = row.filter(|t| !self.dragged.borrow().contains(t));
+            self.light(if row.is_some() { i } else { -1 });
+            if super::in_zip() { return None; } // nothing can be dropped into an archive
+            Some(row.unwrap_or_else(super::cur_dir))
+        }
+
+        fn light(&self, i: isize) {
+            let old = self.lit.replace(i);
+            if old == i { return; }
+            let list = super::ST.with_borrow(|st| st.list);
+            for (row, state) in [(old, 0), (i, super::LVIS_DROPHILITED)] {
+                if row < 0 { continue; }
+                let mut it: super::LVITEMW = unsafe { std::mem::zeroed() };
+                it.stateMask = super::LVIS_DROPHILITED;
+                it.state = state;
+                super::put(list, super::LVM_SETITEMSTATE, row as usize, &it as *const _ as isize);
+                super::put(list, super::LVM_REDRAWITEMS, row as usize, row);
+            }
+        }
+
+        fn unlight(&self) {
+            if self.own == super::ui::nav_window() { super::ui::nav_hot(-1); } else { self.light(-1); }
+        }
+
+        unsafe fn offer(&self, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) {
+            let to = self.target(pt);
+            unsafe {
+                *e = match to {
+                    None => DROPEFFECT_NONE,
+                    Some(to) if copies(k, self.dragged.borrow().first(), &to) => DROPEFFECT_COPY,
+                    Some(_) => DROPEFFECT_MOVE,
+                }
+            };
+        }
+    }
 
     impl IDropTarget_Impl for DropT_Impl {
-        fn DragEnter(&self, _o: Ref<'_, IDataObject>, k: MODIFIERKEYS_FLAGS, _pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> { unsafe { *e = if super::in_zip() { DROPEFFECT_NONE } else { effect(k) } }; Ok(()) }
-        fn DragOver(&self, k: MODIFIERKEYS_FLAGS, _pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> { unsafe { *e = if super::in_zip() { DROPEFFECT_NONE } else { effect(k) } }; Ok(()) }
-        fn DragLeave(&self) -> Result<()> { Ok(()) }
+        fn DragEnter(&self, o: Ref<'_, IDataObject>, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> {
+            *self.dragged.borrow_mut() = o.ok().and_then(hdrop_paths).unwrap_or_default();
+            unsafe { self.offer(k, pt, e) };
+            Ok(())
+        }
+        fn DragOver(&self, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> {
+            unsafe { self.offer(k, pt, e) };
+            Ok(())
+        }
+        fn DragLeave(&self) -> Result<()> {
+            self.unlight();
+            Ok(())
+        }
         fn Drop(&self, o: Ref<'_, IDataObject>, k: MODIFIERKEYS_FLAGS, pt: &POINTL, e: *mut DROPEFFECT) -> Result<()> {
+            let to = self.target(pt);
+            self.unlight();
             if super::desk::dragging() {
                 // desktop icons dropped back on the desktop: a move of the icons, not of the files (the dragger finishes it)
                 super::desk::dropped_here((pt.x, pt.y));
                 unsafe { *e = DROPEFFECT_NONE };
                 return Ok(());
             }
-            if super::in_zip() { // nothing can be dropped into an archive here
+            let Some(to) = to else {
+                unsafe { *e = DROPEFFECT_NONE };
+                return Ok(());
+            };
+            let paths = hdrop_paths(o.ok()?)?;
+            let copy = copies(k, paths.first(), &to);
+            let paths = to_do(paths, &to, copy);
+            if paths.is_empty() {
                 unsafe { *e = DROPEFFECT_NONE };
                 return Ok(());
             }
-            let paths = hdrop_paths(o.ok()?)?;
-            let to = super::cur_dir();
-            // like Explorer: same drive moves, other drive copies, Ctrl forces copy
-            let copy = k.0 & 8 != 0 || paths.first().and_then(|p| p.components().next()) != to.components().next();
             unsafe { *e = if copy { DROPEFFECT_COPY } else { DROPEFFECT_MOVE } };
             let _ = fileop(self.main as *mut c_void, if copy { Op::Copy } else { Op::Move }, &paths, &to);
-            unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), WM_APP, WPARAM(0), LPARAM(0)); }
+            unsafe { let _ = PostMessageW(Some(HWND(self.main as *mut c_void)), super::WM_APP, WPARAM(0), LPARAM(0)); }
             Ok(())
         }
     }
 
     pub fn register_drop(list: *mut c_void, main: isize) -> Result<()> {
-        let t: IDropTarget = DropT { main }.into();
+        let t: IDropTarget = DropT { main, own: list as isize, dragged: Default::default(), lit: std::cell::Cell::new(-1) }.into();
         unsafe { RegisterDragDrop(HWND(list), &t) }
+    }
+
+    #[cfg(test)]
+    mod drop_tests {
+        use std::path::PathBuf;
+
+        #[test]
+        fn a_drop_that_changes_nothing_is_skipped() {
+            let p = |s: &str| PathBuf::from(s);
+            let to = p(r"C:\a");
+            let list = || vec![p(r"C:\a"), p(r"C:\a\x.txt"), p(r"C:\b\y.txt")];
+            assert_eq!(super::to_do(list(), &to, false), [p(r"C:\b\y.txt")]);
+            assert_eq!(super::to_do(list(), &to, true), [p(r"C:\a\x.txt"), p(r"C:\b\y.txt")]); // Ctrl: a copy next to it
+        }
     }
 }
 
@@ -1310,7 +1448,7 @@ mod desk {
         PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join(r"rust-explorer\desktop-icons.txt")
     }
 
-    /// Saved icon positions: name -> (x, y) in list pixels.
+    /// Saved icon positions: name -> (x, y), from the top left of the primary monitor's icon area.
     fn saved() -> HashMap<String, (i32, i32)> {
         fs::read_to_string(pos_file()).unwrap_or_default().lines().filter_map(|l| {
             let mut p = l.splitn(3, '\t');
@@ -1320,14 +1458,23 @@ mod desk {
 
     fn names() -> Vec<String> { ST.with_borrow(|st| st.rows.iter().map(|r| r.name.clone()).collect()) }
 
+    /// Where the primary monitor's icon area starts in list pixels. Positions are relative to it, so a monitor plugged in on
+    /// the left or a bar on top does not shift the saved icons.
+    fn origin() -> (i32, i32) {
+        let (vx, vy, ..) = virt();
+        (-vx, -vy + desk_top())
+    }
+
     fn pos(list: HWND, i: usize) -> (i32, i32) {
         let mut p = POINT { x: 0, y: 0 };
         put(list, LVM_GETITEMPOSITION, i, &mut p as *mut _ as isize);
-        (p.x, p.y)
+        let o = origin();
+        (p.x - o.0, p.y - o.1)
     }
 
     fn set_pos(list: HWND, i: usize, (x, y): (i32, i32)) {
-        let p = POINT { x, y };
+        let o = origin();
+        let p = POINT { x: x + o.0, y: y + o.1 };
         put(list, LVM_SETITEMPOSITION32, i, &p as *const _ as isize);
     }
 
@@ -1339,33 +1486,57 @@ mod desk {
         let _ = fs::write(f, lines);
     }
 
-    /// The icon grid: cell size, and how many columns / rows fit.
-    struct Grid { cx: i32, cy: i32, cols: i32, rows: i32 }
+    /// The work area of the monitor at `m`; both in desktop window coordinates, (vx, vy) = the virtual screen's corner.
+    fn work_area(m: RECT, (vx, vy): (i32, i32)) -> RECT {
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect};
+        let screen = RECT { left: m.left + vx, top: m.top + vy, right: m.right + vx, bottom: m.bottom + vy };
+        let mut mi: MONITORINFO = unsafe { std::mem::zeroed() };
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if unsafe { GetMonitorInfoW(MonitorFromRect(&screen, MONITOR_DEFAULTTONEAREST), &mut mi) } == 0 { return m; }
+        let r = mi.rcWork;
+        RECT { left: r.left - vx, top: r.top - vy, right: r.right - vx, bottom: r.bottom - vy }
+    }
+
+    /// The icon grid: cell size, and the cells that lie wholly on a monitor, in the order new icons take them.
+    struct Grid { cx: i32, cy: i32, cells: Vec<(i32, i32)> }
 
     impl Grid {
         fn of(list: HWND) -> Grid {
             let s = put(list, LVM_GETITEMSPACING, 0, 0) as u32;
             let (cx, cy) = (((s & 0xFFFF) as i32).max(1), ((s >> 16) as i32).max(1));
-            let mut r: RECT = unsafe { std::mem::zeroed() };
-            unsafe { GetClientRect(list, &mut r) };
-            if r.bottom <= 0 {
-                // the first fill runs in WM_CREATE, before WM_SIZE gives the list its size: the size it is about to get
-                r = unsafe { RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) - desk_top() - desk_bottom() } };
-            }
-            Grid { cx, cy, cols: (r.right / cx).max(1), rows: (r.bottom / cy).max(1) }
+            let (vx, vy, ..) = virt();
+            let o = origin();
+            let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+            // the primary monitor first, without the bar's strips; of the others their work area (topbar has a bar there too)
+            let mut areas = vec![(0, 0, sw, sh - desk_top() - desk_bottom())];
+            areas.extend(super::wall::monitors(vx, vy).iter().filter(|m| (m.left, m.top) != (-vx, -vy)).map(|m| {
+                let w = work_area(*m, (vx, vy));
+                (w.left - o.0, w.top - o.1, w.right - o.0, w.bottom - o.1)
+            }));
+            Grid::new(cx, cy, &areas)
         }
-        /// Nearest cell to a position; None if it is off the grid (screen got smaller).
-        fn cell(&self, (x, y): (i32, i32)) -> Option<(i32, i32)> {
-            let c = ((x + self.cx / 2).div_euclid(self.cx), (y + self.cy / 2).div_euclid(self.cy));
-            (c.0 >= 0 && c.1 >= 0 && c.0 < self.cols && c.1 < self.rows).then_some(c)
+        /// `areas`: (left, top, right, bottom), the primary one first.
+        fn new(cx: i32, cy: i32, areas: &[(i32, i32, i32, i32)]) -> Grid {
+            let mut cells = vec![];
+            for &(l, t, r, b) in areas {
+                for c in (l + cx - 1).div_euclid(cx)..r.div_euclid(cx) {
+                    cells.extend(((t + cy - 1).div_euclid(cy)..b.div_euclid(cy)).map(|row| (c, row)));
+                }
+            }
+            Grid { cx, cy, cells }
+        }
+        fn nearest(&self, (x, y): (i32, i32)) -> (i32, i32) { ((x + self.cx / 2).div_euclid(self.cx), (y + self.cy / 2).div_euclid(self.cy)) }
+        /// Nearest cell to a position; None if it is on no monitor (one was unplugged or got smaller).
+        fn cell(&self, p: (i32, i32)) -> Option<(i32, i32)> {
+            Some(self.nearest(p)).filter(|c| self.cells.contains(c))
         }
         fn at(&self, (c, r): (i32, i32)) -> (i32, i32) { (c * self.cx, r * self.cy) }
         /// Free cell nearest to `want`; with no wish the first free one going down the columns, like Windows.
         fn free(&self, taken: &HashSet<(i32, i32)>, want: Option<(i32, i32)>) -> (i32, i32) {
-            let all = (0..self.cols).flat_map(|c| (0..self.rows).map(move |r| (c, r))).filter(|c| !taken.contains(c));
+            let mut all = self.cells.iter().copied().filter(|c| !taken.contains(c));
             match want {
                 Some((wc, wr)) => all.min_by_key(|&(c, r)| (c - wc).pow(2) + (r - wr).pow(2)),
-                None => all.min(),
+                None => all.next(),
             }
             .unwrap_or((0, 0))
         }
@@ -1381,7 +1552,14 @@ mod desk {
             it.iImage = -1; // I_IMAGECALLBACK
             put(list, LVM_INSERTITEMW, 0, &it as *const _ as isize);
         }
-        let (g, old, names) = (Grid::of(list), saved(), names());
+        relayout(list);
+    }
+
+    pub fn relayout(list: HWND) {
+        let names = names();
+        // not filled yet: saving now would wipe the saved positions
+        if names.is_empty() || put(list, LVM_GETITEMCOUNT, 0, 0) as usize != names.len() { return; }
+        let (g, old) = (Grid::of(list), saved());
         let mut taken = HashSet::new();
         let mut later = vec![];
         for (i, name) in names.iter().enumerate() {
@@ -1447,11 +1625,8 @@ mod desk {
         let (dx, dy) = (pt.x - from.0, pt.y - from.1);
         for &i in &sel {
             let (x, y) = pos(list, i);
-            let want = g.cell((x + dx, y + dy)).unwrap_or_else(|| {
-                // dragged off the grid: the nearest edge cell
-                (((x + dx) / g.cx).clamp(0, g.cols - 1), ((y + dy) / g.cy).clamp(0, g.rows - 1))
-            });
-            let c = if taken.contains(&want) { g.free(&taken, Some(want)) } else { want };
+            // taken, or off every monitor: the nearest free cell
+            let c = g.cell((x + dx, y + dy)).filter(|c| !taken.contains(c)).unwrap_or_else(|| g.free(&taken, Some(g.nearest((x + dx, y + dy)))));
             taken.insert(c);
             set_pos(list, i, g.at(c));
         }
@@ -1525,7 +1700,7 @@ mod desk {
 
         #[test]
         fn grid_cells() {
-            let g = Grid { cx: 100, cy: 90, cols: 5, rows: 4 };
+            let g = Grid::new(100, 90, &[(0, 0, 500, 360)]);
             assert_eq!(g.cell((0, 0)), Some((0, 0)));
             assert_eq!(g.cell((149, 44)), Some((1, 0))); // rounds to the nearest cell
             assert_eq!(g.cell((900, 0)), None); // off the grid
@@ -1533,6 +1708,20 @@ mod desk {
             assert_eq!(g.free(&taken, None), (0, 2)); // down the first column first
             taken.insert((2, 2));
             assert_eq!(g.free(&taken, Some((2, 2))), (1, 2)); // nearest free to the wish (ties: lowest)
+        }
+
+        #[test]
+        fn grid_spans_monitors() {
+            // primary 200x180, one monitor left of it that does not start on a cell edge
+            let g = Grid::new(100, 90, &[(0, 0, 200, 180), (-250, 0, -10, 90)]);
+            assert_eq!(g.cell((-200, 0)), Some((-2, 0)));
+            assert_eq!(g.cell((-300, 0)), None); // that cell would stick out of the left monitor
+            assert_eq!(g.cell((200, 0)), None); // right of the primary there is nothing
+            let mut taken = HashSet::new();
+            for want in [(0, 0), (0, 1), (1, 0), (1, 1), (-2, 0)] {
+                assert_eq!(g.free(&taken, None), want); // the primary fills first
+                taken.insert(want);
+            }
         }
     }
 }
@@ -1638,10 +1827,13 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     col(list, 2, t!("Тип", "Type", ja: "種類", pt: "Tipo", zh: "类型"), ui::sc(140), false);
                     col(list, 3, t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小"), ui::sc(96), true);
                     ui::style_list(list);
+                    if single_click() { put(list, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_ONECLICKACTIVATE as usize, LVS_EX_ONECLICKACTIVATE as isize); }
+                    preview::attach(list);
                 }
                 ST.with_borrow_mut(|st| { st.list = list; st.tab = tab; st.edit = edit; st.tabs = vec![PathBuf::new()]; });
                 if !desk() { ui::place_edit(tab); }
                 let _ = sh::register_drop(list as _, h as isize);
+                if !desk() { let _ = sh::register_drop(ui::nav_window() as _, h as isize); } // drops onto the left pane's folders
                 if desk() && icons_hidden() { ShowWindow(list, SW_HIDE); }
                 // live wallpaper: the list is see-through (colour key), so over empty desktop OLE finds the wallpaper window under it,
                 // and walks up from there to the desktop window: it must accept the drop too
@@ -1667,6 +1859,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     let (vx, vy, vw, vh) = virt();
                     SetWindowPos(h, HWND_BOTTOM, vx, vy, vw, vh, SWP_NOACTIVATE); // WM_SIZE lays out
                     InvalidateRect(h, ptr::null(), 1);
+                } else if wp == SPI_SETDESKWALLPAPER as usize {
+                    follow_wallpaper(h);
                 } else if wp == SPI_SETWORKAREA as usize {
                     place_desk_list(ST.with_borrow(|st| st.list));
                 }
@@ -1710,7 +1904,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     4 => nav(h, true),
                     5 => nav(h, false),
                     6 => { if let Some(p) = cur_dir().parent() { load(h, p.to_path_buf()) } }
-                    7 => reload(h),
+                    7 => { ui::nav_refresh(); reload(h) }
                     8 => toggle_view(h),
                     9 => search_focus(),
                     10..=14 => {
@@ -1732,6 +1926,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 }
                 0
             }
+            // WM_DEVICECHANGE: a drive came or went (device tree changed, arrival, removal): the pane lists them (#186)
+            0x0219 if !desk() && matches!(wp, 0x0007 | 0x8000 | 0x8004) => { ui::nav_refresh(); 1 }
             WM_ERASEBKGND if desk() && desk::erase(wp as _, h) => 1,
             WM_WINDOWPOSCHANGING if desk() => { // the desktop never rises above other windows
                 let wp = &mut *(lp as *mut WINDOWPOS);
@@ -1802,12 +1998,16 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                         return hit.map_or(-1, |i| i as LRESULT);
                     }
                     LVN_ITEMACTIVATE => {
-                        let i = (*(lp as *const NMITEMACTIVATE)).iItem;
+                        let a = &*(lp as *const NMITEMACTIVATE);
+                        // single-click mode: Ctrl / Shift clicks (2 | 4) only extend the selection
+                        if !desk() && a.uKeyFlags & 6 != 0 && single_click() { return 0; }
+                        let i = a.iItem;
                         let hit = ST.with_borrow(|st| usize::try_from(i).ok().and_then(|i| st.rows.get(i)).filter(|r| !r.hdr).map(|r| (st.dir.join(&r.name), r.dir)));
                         if let Some((p, is_dir)) = hit { activate(h, p, is_dir); }
                     }
-                    // a double click on empty space goes up one folder, like QTTabBar (#139); not on the desktop
-                    NM_DBLCLK if nm.hwndFrom == list && !desk() && (*(lp as *const NMITEMACTIVATE)).iItem < 0 => {
+                    // a double click on empty space (a single one in single-click mode) goes up one folder, like QTTabBar
+                    // (#139); not on the desktop
+                    NM_CLICK | NM_DBLCLK if nm.hwndFrom == list && !desk() && (*(lp as *const NMITEMACTIVATE)).iItem < 0 && (nm.code == NM_CLICK) == single_click() => {
                         PostMessageW(h, WM_NAV, 4, 0);
                     }
                     NM_RCLICK if nm.hwndFrom == list => {
@@ -1971,7 +2171,10 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             // a secondary monitor, where the list does not reach (#125)
             WM_CONTEXTMENU if desk() && (icons_hidden() || wp as HWND == h) => { bg_menu(h); 0 }
             desk::SPAWN_WORKERW if desk() => { desk::spawn_workerw(h); 0 }
-            WM_TIMER if desk() && wp == 7 => { desk::check_live(ST.with_borrow(|st| st.list)); 0 }
+            WM_TIMER if desk() && wp == 7 => { follow_wallpaper(h); desk::check_live(ST.with_borrow(|st| st.list)); 0 }
+            // Alt+F4 on the desktop or its icon list (Windows passes it up to us) ends up here. Like Explorer's desktop it
+            // offers to shut down; DefWindowProcW would destroy the desktop, wallpaper and icons included (#189)
+            WM_CLOSE if desk() => { power::ask(); 0 }
             WM_DESTROY => { if !desk() { save_place(h); } shellwin::revoke(); PostQuitMessage(0); 0 }
             _ => DefWindowProcW(h, m, wp, lp),
         }
