@@ -2,7 +2,7 @@
 use crate::*;
 use windows_sys::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD, RRF_RT_REG_DWORD,
-    RegCloseKey, RegFlushKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+    RegCloseKey, RegDeleteValueW, RegFlushKey, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
 };
 
 mod dword_snapshot;
@@ -24,6 +24,19 @@ pub(crate) fn rx_dir() -> PathBuf {
 // Uninstall puts everything back and starts Explorer again. rs-shell itself hands the session back to Explorer if topbar dies.
 pub(crate) const RX_STATE: &str = r"HKLM\SOFTWARE\plugin-launcher\rust-explorer";
 pub(crate) const WINLOGON_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon";
+const RX_SETUP_PENDING: Dword<'static> = (RX_STATE, "SetupPending");
+const AUTO_RESTART_SHELL: dword_snapshot::OptionalDwordBackup<'static> = dword_snapshot::OptionalDwordBackup {
+    target: (WINLOGON_KEY, "AutoRestartShell"),
+    saved: (RX_STATE, "AutoRestartShell"),
+    absent: (RX_STATE, "AutoRestartShellAbsent"),
+};
+const MISSING_AUTO_RESTART_BACKUP: Tr = Tr(
+    "нет копии AutoRestartShell: значение оставлено как есть",
+    "no AutoRestartShell backup: the value was left in place",
+    "AutoRestartShell のバックアップがないため、現在の値を維持しました",
+    "não há backup de AutoRestartShell; o valor atual foi mantido",
+    "未备份 AutoRestartShell；已保留当前值",
+);
 pub(crate) const RX_SWITCH: &str = r"HKCU\Software\rs-shell";
 pub(crate) const RX_FOLDERS: [&str; 3] = [r"HKCU\Software\Classes\Directory\shell\open", r"HKCU\Software\Classes\Folder\shell\open", r"HKCU\Software\Classes\Drive\shell\open"];
 
@@ -314,26 +327,53 @@ pub(crate) fn rx_lnk() -> PathBuf {
     program_data().join(r"plugin-launcher\rs-overlay.lnk")
 }
 
+fn remove_dword((key, name): Dword<'_>) -> Result<(), String> {
+    let subkey = trim_subkey(key);
+    let value_name = wide(name);
+    let mut handle = null_mut();
+    let code = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut handle) };
+    match code {
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => return Ok(()),
+        ERROR_SUCCESS => {}
+        _ => return Err(trim_registry_error(key, name, code)),
+    }
+    let code = unsafe { RegDeleteValueW(handle, value_name.as_ptr()) };
+    unsafe { RegCloseKey(handle) };
+    if !matches!(code, ERROR_SUCCESS | ERROR_FILE_NOT_FOUND) {
+        return Err(trim_registry_error(key, name, code));
+    }
+    if trim_read((key, name))?.is_some() {
+        return Err(tf!("{key}: не удалось подтвердить удаление {name}", "{key}: could not verify the deletion of {name}"));
+    }
+    Ok(())
+}
+
+pub(crate) fn rx_installed() -> bool {
+    // An interrupted or damaged installation can still have registry changes to undo.
+    rx_dir().join("rust-explorer.exe").is_file()
+        || !matches!(AUTO_RESTART_SHELL.load(trim_read), Ok(None))
+}
+
 pub(crate) fn rx_install() -> Result<(), String> {
     if !bar_dir().join("topbar.exe").is_file() {
         return Err(t!("сначала установите topbar: без него после отключения Explorer не будет панели", "install topbar first: without it there will be no bar after Explorer is disabled", ja: "先に topbar をインストールしてください。ないとエクスプローラーを無効にした後にバーがなくなります", pt: "instale a topbar primeiro: sem ela não haverá barra depois que o Explorer for desativado", zh: "请先安装 topbar：否则禁用 Explorer 后将没有任务栏").into());
     }
     // An older installation may already have applied the tweaks without saving the originals.
-    let fresh = !rx_dir().join("rust-explorer.exe").is_file()
-        && trim_read((RX_STATE, "AutoRestartShell"))?.is_none();
+    let has_snapshot = AUTO_RESTART_SHELL.load(trim_read)?.is_some();
+    let setup_pending = trim_read(RX_SETUP_PENDING)? == Some(1);
+    let first_setup = setup_pending || (!rx_dir().join("rust-explorer.exe").is_file() && !has_snapshot);
     with_payload(&["rust-explorer.exe", "rs-shell.exe"], |d| {
         for n in ["rs-shell.exe", "rust-explorer.exe"] {
             let _ = run("taskkill", &["/f", "/im", n]); // an update: a running exe cannot be overwritten
         }
         fs::create_dir_all(rx_dir()).map_err(|e| e.to_string())?;
+        if first_setup && !setup_pending {
+            run("reg", &["add", RX_STATE, "/f"])?;
+            trim_write(RX_SETUP_PENDING, 1)?;
+        }
         let (fm, sh) = (rx_dir().join("rust-explorer.exe"), rx_dir().join("rs-shell.exe"));
         put(&d.join("rust-explorer.exe"), &fm)?;
         put(&d.join("rs-shell.exe"), &sh)?;
-        // what Windows had, saved once (an update must not overwrite it with our own 0)
-        if reg_dword(RX_STATE, "AutoRestartShell").is_none() {
-            let v = reg_dword(WINLOGON_KEY, "AutoRestartShell").unwrap_or(1);
-            run("reg", &["add", RX_STATE, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &v.to_string(), "/f"])?;
-        }
         // folders and drives opened by other programs, the desktop, Win+R: rust-explorer. DelegateExecute is emptied on purpose:
         // while it is set, Windows ignores the command and uses Explorer's built-in handler.
         // Another file manager's verbs (Directory Opus, Total Commander) are exported first, once, and imported back on uninstall.
@@ -350,6 +390,10 @@ pub(crate) fn rx_install() -> Result<(), String> {
                 let verb = k.strip_prefix("HKCU\\").expect("per-user folder binding");
                 folder_backup::retarget(&bytes, sid, verb).map_err(|e| format!("{}: {e}", bak.display()))?;
             }
+        }
+        // Save the baseline after staging the files, immediately before the first shell change.
+        if first_setup && !has_snapshot {
+            AUTO_RESTART_SHELL.capture(trim_read, trim_write)?;
         }
         for k in RX_FOLDERS {
             let key = i18n::reg::for_user(k, sid);
@@ -368,9 +412,14 @@ pub(crate) fn rx_install() -> Result<(), String> {
             run("reg", &["add", RUN_KEY, "/v", "rs-overlay", "/t", "REG_SZ", "/d", &format!("\"{}\" --overlay", sh.display()), "/f"])?;
         }
         run("reg", &["add", RX_SWITCH, "/v", "ReplaceExplorer", "/t", "REG_DWORD", "/d", "1", "/f"])?;
-        run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", "0", "/f"])?;
-        if fresh {
+        if first_setup || has_snapshot {
+            trim_write(AUTO_RESTART_SHELL.target, 0)?;
+        } else {
+            WARN.lock().unwrap().push(MISSING_AUTO_RESTART_BACKUP.get().into());
+        }
+        if first_setup {
             apply_service_trim();
+            remove_dword(RX_SETUP_PENDING)?;
         }
         // the bar's Start panel and the search list Start Menu shortcuts only: without one rust-explorer has no entry (and no icon) there
         soft(t!("ярлык «Rust Explorer» в меню Пуск не создан", "Start menu shortcut 'Rust Explorer' was not created", ja: "スタート メニューのショートカット「Rust Explorer」を作成できませんでした", pt: "O atalho 'Rust Explorer' do menu Iniciar não foi criado", zh: "开始菜单快捷方式「Rust Explorer」未创建"), shortcut(&start_lnk("Rust Explorer"), &fm, ""));
@@ -388,10 +437,25 @@ pub(crate) fn rx_install() -> Result<(), String> {
 }
 
 pub(crate) fn rx_uninstall() -> Result<(), String> {
+    let has_snapshot = AUTO_RESTART_SHELL.load(trim_read)?.is_some();
+    if !has_snapshot && trim_read(RX_SETUP_PENDING)? == Some(1) {
+        // The installer writes the shell associations only after it captures the baseline.
+        let dir = rx_dir();
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        }
+        return remove_dword(RX_SETUP_PENDING);
+    }
+    if !has_snapshot && !rx_dir().join("rust-explorer.exe").is_file() {
+        return Ok(());
+    }
     let service_restore = restore_service_trim();
     // Windows may restart its shell again; our hooks off; then the shell back, unelevated, only if none is running
-    let back = reg_dword(RX_STATE, "AutoRestartShell").unwrap_or(1);
-    let r = run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &back.to_string(), "/f"]);
+    if !AUTO_RESTART_SHELL.restore(trim_read, trim_write, remove_dword)? && rx_dir().join("rust-explorer.exe").is_file() {
+        WARN.lock().unwrap().push(MISSING_AUTO_RESTART_BACKUP.get().into());
+    }
     let _ = run("reg", &["delete", RUN_KEY, "/v", "rs-overlay", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "rs-overlay", "/f"]);
     let _ = run("reg", &["delete", RX_SWITCH, "/f"]);
@@ -406,9 +470,10 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
     // Complete the shell hand-off even if a service failed to return to its saved state.
     service_restore?;
     let _ = fs::remove_file(start_lnk("Rust Explorer"));
-    let _ = fs::remove_dir_all(rx_dir());
-    if r.is_ok() {
-        let _ = run("reg", &["delete", RX_STATE, "/f"]);
+    let remove_snapshot = run("reg", &["delete", RX_STATE, "/f"]);
+    if has_snapshot {
+        remove_snapshot?;
     }
-    r
+    let _ = fs::remove_dir_all(rx_dir());
+    Ok(())
 }
