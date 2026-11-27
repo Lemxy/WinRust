@@ -181,12 +181,15 @@ pub fn explorer_lent() -> bool {
 
 fn run(uri: &str) {
     kill_stale();
-    let mut started = false;
+    let mut restore_desktop = false;
     let mut lent = std::ptr::null_mut();
     if !explorer_shell() {
         lent = unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, w(LENT).as_ptr()) };
         // our desktop is a window of class Progman too: with it up Explorer thinks a shell exists and starts as a plain folder host
-        proc::pids("rust-explorer.exe").into_iter().filter(|&p| has_desktop(p)).for_each(proc::kill);
+        for pid in proc::pids("rust-explorer.exe").into_iter().filter(|&pid| has_desktop(pid)) {
+            restore_desktop = true;
+            proc::kill(pid);
+        }
         // a frame host left from an earlier Explorer stays tied to that dead shell: the Settings frame it hosts is cloaked for
         // good. Without a shell its windows are not on screen anyway; COM starts a fresh one for the new Explorer.
         proc::pids("ApplicationFrameHost.exe").into_iter().for_each(proc::kill);
@@ -196,7 +199,6 @@ fn run(uri: &str) {
         // the shell window appears before the immersive shell services behind it are up
         wait(150, explorer_tray);
         sleep(Duration::from_secs(1));
-        started = true;
     }
     // through explorer.exe: the page opens with the user's normal token even when this process is elevated
     for _ in 0..2 {
@@ -211,7 +213,8 @@ fn run(uri: &str) {
         }
         kill_hung();
     }
-    if started {
+    // Keep Explorer if we started it in a session that had no WinRust desktop.
+    if restore_desktop {
         // ends when Settings is closed, or when it hangs for good
         // the PIN / Windows Hello dialog is a process of its own hosted by Explorer's immersive shell, and Settings looks hung
         // while it waits on it: Explorer stays until both are gone (ending it under the dialog left it blank, #110)

@@ -12,8 +12,8 @@
 // shortcuts: Win+D only minimizes ordinary top-level windows (no per-monitor / virtual-desktop logic),
 // Run/Startup entries are started through `cmd /c start` (no RunOnce, no startup-delay rules, no disabled-list in
 // StartupApproved), topbar's "open" still shells out to explorer.exe for /select; upgrade when those matter.
-use std::{os::windows::process::CommandExt, path::PathBuf, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
-use windows_sys::{core::BOOL, Win32::{Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, RECT}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
+use std::{os::windows::{io::AsRawHandle, process::CommandExt}, path::PathBuf, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
+use windows_sys::{core::BOOL, Win32::{Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, RECT, WAIT_OBJECT_0}, System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
 
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
 const NO_WINDOW: u32 = 0x0800_0000;
@@ -288,11 +288,38 @@ fn replace_on() -> bool {
     winrust_common::reg::get_dword(r"HKCU\Software\rs-shell", "ReplaceExplorer") == Some(1)
 }
 
-/// Ends the Explorer that runs as the shell (started without arguments). Folder windows (started with a path) and the COM
-/// host (`/factory ... -Embedding`) are other explorer.exe processes and keep running.
-fn kill_shell_explorer() {
-    winrust_common::proc::kill_shell_explorers();
-    log("explorer shell stopped");
+/// Stop the process behind a window we have identified in this session. Wait on the
+/// same handle so another process cannot be mistaken for it after the stop.
+fn stop_window_process(window: HWND, pid: u32) -> bool {
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut owner = 0;
+        GetWindowThreadProcessId(window, &mut owner);
+        let stopped = owner == pid
+            && TerminateProcess(process, 1) != 0
+            && WaitForSingleObject(process, 1000) == WAIT_OBJECT_0;
+        CloseHandle(process);
+        stopped
+    }
+}
+
+fn belongs_to(window: HWND, name: &str) -> Option<u32> {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(window, &mut pid) };
+    winrust_common::proc::exe_name(pid).is_some_and(|exe| exe.eq_ignore_ascii_case(name)).then_some(pid)
+}
+
+/// Ends only the Explorer that owns the shell window in the current session.
+fn kill_shell_explorer() -> bool {
+    let shell = unsafe { GetShellWindow() };
+    if shell.is_null() {
+        return true;
+    }
+    belongs_to(shell, "explorer.exe").is_some_and(|pid| stop_window_process(shell, pid))
 }
 
 /// How long after the overlay starts Explorer may be ended even without the markers below: newer Windows builds (26300)
@@ -398,32 +425,37 @@ fn start_desktop(path: &std::path::Path, child: &mut Option<Child>) {
     }
 }
 
-fn stop_desktop(child: Option<Child>) {
-    if let Some(mut child) = child {
-        let _ = child.kill();
+fn stop_desktop(child: &mut Option<Child>) -> bool {
+    if let Some(process) = child.as_mut() {
+        if !matches!(process.try_wait(), Ok(Some(_))) {
+            let _ = process.kill();
+            if unsafe { WaitForSingleObject(process.as_raw_handle(), 1000) } != WAIT_OBJECT_0 {
+                return false;
+            }
+        }
+        *child = None;
     }
-    // Settings can have relaunched the desktop. Only stop the process behind our
-    // window when it is the file manager running in desktop mode.
+
+    // Settings can have relaunched the desktop. Only stop the file manager
+    // instance that's explicitly running as our desktop.
     let window = desktop_window();
     if window.is_null() {
+        return true;
+    }
+    belongs_to(window, "rust-explorer.exe").is_some_and(|pid| {
+        winrust_common::proc::cmdline(pid).is_some_and(|args| args.split_whitespace().last() == Some("--desktop"))
+            && stop_window_process(window, pid)
+    })
+}
+
+fn restart_desktop(path: &std::path::Path, child: &mut Option<Child>) {
+    let window = desktop_window();
+    if !window.is_null() && unsafe { IsHungAppWindow(window) } != 0 && !stop_desktop(child) {
+        log("overlay: could not stop the unresponsive desktop");
         return;
     }
-    let mut pid = 0;
-    unsafe { GetWindowThreadProcessId(window, &mut pid) };
-    if !winrust_common::proc::exe_name(pid).is_some_and(|name| name.eq_ignore_ascii_case("rust-explorer.exe"))
-        || !winrust_common::proc::cmdline(pid).is_some_and(|args| args.split_whitespace().last() == Some("--desktop"))
-    {
-        return;
-    }
-    winrust_common::proc::kill(pid);
-    // Explorer can open as a folder host instead of the shell while our Progman exists.
-    for _ in 0..20 {
-        if desktop_window().is_null() {
-            return;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    log("overlay: desktop window still present after stop");
+    // start_desktop still rejects a responsive window or a launch in progress.
+    start_desktop(path, child);
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -481,9 +513,9 @@ fn overlay(desktop_overlay: bool) {
 }
 
 /// Gives the system taskbar back and starts Explorer if there is no shell in this session.
-fn restore_overlay_shell(replace: bool, desktop: bool, child: Option<Child>) {
-    if desktop {
-        stop_desktop(child);
+fn restore_overlay_shell(replace: bool, desktop: bool, child: &mut Option<Child>) {
+    if desktop && !stop_desktop(child) {
+        log("overlay: could not confirm the WinRust desktop stopped");
     }
     let _ = quiet(find_exe("topbar.exe")).arg("--restore").creation_flags(NO_WINDOW).status();
     if replace && unsafe { GetShellWindow() }.is_null() && !winrust_common::settings::explorer_lent() {
@@ -516,10 +548,10 @@ fn overlay_watch(replace: bool, desktop: Option<PathBuf>) {
                 || (replaced && !unsafe { GetShellWindow() }.is_null()));
             match watch_desktop(&mut dmiss, ready, lent, replaced) {
                 DesktopAction::Wait => {}
-                DesktopAction::Restart => start_desktop(path, &mut child),
+                DesktopAction::Restart => restart_desktop(path, &mut child),
                 DesktopAction::RestoreExplorer => {
                     log("overlay: desktop did not recover, returning to the system shell");
-                    restore_overlay_shell(replace, true, child);
+                    restore_overlay_shell(replace, true, &mut child);
                     return;
                 }
             }
@@ -533,7 +565,11 @@ fn overlay_watch(replace: bool, desktop: Option<PathBuf>) {
                     && bar_up() && desktop_responds()
                 {
                     log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", startup_run(), began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
-                    kill_shell_explorer();
+                    if !kill_shell_explorer() {
+                        log("overlay: the Windows shell did not stop, cancelling the hand-off");
+                        restore_overlay_shell(replace, true, &mut child);
+                        return;
+                    }
                     replaced = true;
                     // Keep the watcher on the main thread so returning also ends the hotkey loop.
                     thread::spawn(hotkey_loop);
@@ -547,7 +583,7 @@ fn overlay_watch(replace: bool, desktop: Option<PathBuf>) {
         starts += 1;
         if starts > 3 || quiet(find_exe("topbar.exe")).spawn().is_err() {
             log("overlay: topbar keeps dying, returning to the system shell");
-            restore_overlay_shell(replace, desktop.is_some(), child);
+            restore_overlay_shell(replace, desktop.is_some(), &mut child);
             return;
         }
         misses = 0;
