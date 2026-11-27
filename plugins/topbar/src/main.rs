@@ -126,7 +126,6 @@ const BAR_H: i32 = 40;
 const NONE: i32 = -1;
 const SEARCH: i32 = -10;
 const TASKVIEW: i32 = -14; // Task View button (virtual desktops), right of search (#83)
-const LEAD: i32 = 2; // slots before Start: search, Task View
 const CLOCK: i32 = -4;
 const LANG: i32 = -6;
 const WIFI_I: i32 = -7;
@@ -1393,9 +1392,12 @@ unsafe fn paint_power(dc: HDC, l: &Layout, hot: i32, f_glyph: HFONT, cell: impl 
 }
 
 struct Layout {
-    x0: i32, // first slot: the search button; Start and the rest follow
+    x0: i32,
     bw: i32,
     gap: i32,
+    lead: i32,
+    search_x: Option<i32>,
+    taskview_x: Option<i32>,
     power: (i32, i32),
     apps: (i32, i32),
     sys: (i32, i32),
@@ -1409,14 +1411,21 @@ fn layout(w: i32) -> Layout {
     let sys = (power.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), power.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD; // + the search and Task View slots
-    let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
-    // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + 1).min(n);
+    let search_visible = search_button_visible();
+    let taskview_visible = taskview_button_visible();
+    let lead = i32::from(search_visible) + i32::from(taskview_visible);
+    let btns_len = BTNS.with_borrow(|b| b.len()) as i32;
+    let total_n = btns_len + lead; // + the visible optional buttons
+    let bw = (((w - 2 * margin + gap) / total_n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
+    // Keep Start and pinned apps centered; opening an unpinned window adds a button on the right.
+    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + lead + 1).min(total_n);
     // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
-    let right_limit = w - margin - (n * (bw + gap) - gap);
+    let right_limit = w - margin - (total_n * (bw + gap) - gap);
     let centered = (w - (fixed * (bw + gap) - gap)) / 2;
-    Layout { x0: if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, power, apps, sys, clock } // clear of the gear
+    let x0 = if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6));
+    let search_x = search_visible.then_some(x0);
+    let taskview_x = taskview_visible.then_some(x0 + i32::from(search_visible) * (bw + gap));
+    Layout { x0, bw, gap, lead, search_x, taskview_x, power, apps, sys, clock }
 }
 
 unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
@@ -1443,9 +1452,15 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
     }
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD;
+    if l.search_x.is_some_and(|sx| x >= sx && x < sx + l.bw) {
+        return SEARCH;
+    }
+    if l.taskview_x.is_some_and(|tx| x >= tx && x < tx + l.bw) {
+        return TASKVIEW;
+    }
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + l.lead;
     let (d, i) = (x - l.x0, (x - l.x0) / (l.bw + l.gap));
-    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD }
+    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else { i - l.lead }
 }
 
 // ---------- animation ----------
@@ -1819,16 +1834,20 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { dim }, DT_CENTER);
 
-    let sb = cell(l.x0, l.bw);
-    glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { dim }, DT_CENTER);
-    let tb = cell(l.x0 + l.bw + l.gap, l.bw);
-    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { dim }, DT_CENTER);
+    if let Some(x) = l.search_x {
+        let sb = cell(x, l.bw);
+        glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
+        text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { dim }, DT_CENTER);
+    }
+    if let Some(x) = l.taskview_x {
+        let tb = cell(x, l.bw);
+        glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
+        text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { dim }, DT_CENTER);
+    }
 
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let y = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let y = l.x0 + (i as i32 + l.lead) * (l.bw + l.gap);
             let r = cell(y, l.bw);
             let mid = y + l.bw / 2;
             let act = b.wins.contains(&fg);
@@ -2033,19 +2052,23 @@ unsafe fn paint(hwnd: HWND) {
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
 
-    // search button (left of Start)
-    let sb = RECT { left: l.x0, top, right: l.x0 + l.bw, bottom: bot };
-    glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
-    SelectObject(dc, f_glyph);
-    text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
-    let tb = RECT { left: l.x0 + l.bw + l.gap, top, right: l.x0 + 2 * l.bw + l.gap, bottom: bot };
-    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    if let Some(x) = l.search_x {
+        let sb = RECT { left: x, top, right: x + l.bw, bottom: bot };
+        glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
+        SelectObject(dc, f_glyph);
+        text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    }
+    if let Some(x) = l.taskview_x {
+        let tb = RECT { left: x, top, right: x + l.bw, bottom: bot };
+        glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
+        SelectObject(dc, f_glyph);
+        text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    }
 
     // Start, pinned apps, open windows (center)
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let x = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let x = l.x0 + (i as i32 + l.lead) * (l.bw + l.gap);
             let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
             let act = b.wins.contains(&fg);
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
@@ -2880,7 +2903,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     let exe = exe_of(w);
     let i = BTNS.with_borrow(|b| b.iter().position(|b| b.wins.contains(&w)).or_else(|| b.iter().position(|b| !exe.is_empty() && b.wins.first().is_some_and(|&x| exe_of(x) == exe))));
     let x = match i {
-        Some(i) => l.x0 + (i as i32 + LEAD) * (l.bw + l.gap),
+        Some(i) => l.x0 + (i as i32 + l.lead) * (l.bw + l.gap),
         None => (l.x0 + l.apps.0) / 2, // no button (yet): the middle of the bar
     };
     if vert() {
@@ -2897,8 +2920,8 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
     // along the bar: screen x for a bottom bar, screen y for a side bar
     (if vert() { 0 } else { bar_x_w().0 }) + match h {
         GEAR => sc(GEAR_X.0 + GEAR_X.1 / 2),
-        SEARCH => l.x0 + l.bw / 2,
-        TASKVIEW => l.x0 + (l.bw + l.gap) + l.bw / 2,
+        SEARCH => l.search_x.unwrap_or(l.x0) + l.bw / 2,
+        TASKVIEW => l.taskview_x.unwrap_or(l.x0) + l.bw / 2,
         CLOCK => (l.clock.0 + l.clock.1) / 2,
         SHOWDESK => l.clock.1 + sc(3),
         POW_R | POW_S => l.power.0 + POWER_KEYS.iter().position(|&k| k == h).unwrap_or(0) as i32 * sc(32) + sc(16),
@@ -2907,7 +2930,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
         VOL_I => l.sys.0 + sc(90),
         BAT_I => l.sys.0 + sc(130),
         t if (TAPP..TAPP + 100).contains(&t) => l.apps.0 + (t - TAPP) * sc(24) + sc(12),
-        i => l.x0 + (i + LEAD) * (l.bw + l.gap) + l.bw / 2,
+        i => l.x0 + (i + l.lead) * (l.bw + l.gap) + l.bw / 2,
     }
 }
 

@@ -1,5 +1,60 @@
 //! topbar: settings (split out of main.rs; shares its items through `super::*`).
 use super::*;
+use std::sync::atomic::AtomicU8;
+
+const SHOW_SEARCH_BUTTON: u8 = 1;
+const SHOW_TASKVIEW_BUTTON: u8 = 2;
+static BUTTON_OPTIONS: AtomicU8 = AtomicU8::new(0xFF);
+
+fn button_options() -> u8 {
+    if BUTTON_OPTIONS.load(Relaxed) == 0xFF {
+        let options = std::fs::read_to_string(appdata_file("topbar-buttons.txt"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u8>().ok())
+            .unwrap_or(0) & (SHOW_SEARCH_BUTTON | SHOW_TASKVIEW_BUTTON);
+        BUTTON_OPTIONS.store(options, Relaxed);
+    }
+    BUTTON_OPTIONS.load(Relaxed)
+}
+
+fn set_button_options(options: u8) -> Result<(), String> {
+    let previous = button_options();
+    let options = options & (SHOW_SEARCH_BUTTON | SHOW_TASKVIEW_BUTTON);
+    BUTTON_OPTIONS.store(options, Relaxed);
+    if let Err(e) = std::fs::write(appdata_file("topbar-buttons.txt"), options.to_string()) {
+        BUTTON_OPTIONS.store(previous, Relaxed);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+fn set_button_option(option: u8, show: bool) -> Result<(), String> {
+    let options = if show { button_options() | option } else { button_options() & !option };
+    set_button_options(options)
+}
+
+fn report_button_option_error(error: &str) {
+    let message = format!("{}: {error}", t!("Не удалось сохранить настройки кнопок", "Could not save button settings", ja: "ボタン設定を保存できませんでした", pt: "Não foi possível salvar as configurações dos botões", zh: "无法保存按钮设置"));
+    unsafe {
+        MessageBoxW(BAR.load(Relaxed) as HWND, wide(&message).as_ptr(), wide("Bar settings").as_ptr(), MB_ICONWARNING);
+    }
+}
+
+pub(crate) fn search_button_visible() -> bool {
+    button_options() & SHOW_SEARCH_BUTTON != 0
+}
+
+pub(crate) fn taskview_button_visible() -> bool {
+    button_options() & SHOW_TASKVIEW_BUTTON != 0
+}
+
+pub(crate) fn set_search_button_visible(show: bool) -> Result<(), String> {
+    set_button_option(SHOW_SEARCH_BUTTON, show)
+}
+
+pub(crate) fn set_taskview_button_visible(show: bool) -> Result<(), String> {
+    set_button_option(SHOW_TASKVIEW_BUTTON, show)
+}
 
 /// The gear's menu: a short main page that leads to pages for the theme, the colours, the templates and the bar itself
 /// (the look is saved for the other WinRust programs too). Picking on a page keeps it open, so choices can be tried in a row.
@@ -105,6 +160,9 @@ pub(crate) unsafe fn bar_page() {
         fly::MItem::new(t!("Маленькая", "Small", ja: "小", pt: "Pequeno", zh: "小")).on(st::bar_size() == 0),
         fly::MItem::new(t!("Обычная", "Normal", ja: "通常", pt: "Normal", zh: "正常")).on(st::bar_size() == 1),
         fly::MItem::new(t!("Большая", "Large", ja: "大", pt: "Grande", zh: "大")).on(st::bar_size() == 2),
+        fly::MItem::head(t!("Кнопки", "Buttons", ja: "ボタン", pt: "Botões", zh: "按钮")),
+        fly::MItem::new(t!("Показывать поиск", "Show Search button", ja: "検索ボタンを表示", pt: "Mostrar botão Pesquisar", zh: "显示搜索按钮")).on(search_button_visible()),
+        fly::MItem::new(t!("Показывать представление задач", "Show Task View button", ja: "タスク ビュー ボタンを表示", pt: "Mostrar botão Visão de Tarefas", zh: "显示任务视图按钮")).on(taskview_button_visible()),
         fly::MItem::head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为")),
         fly::MItem::new(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏")).on(st::autohide()),
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10")).on(st::align_left()),
@@ -115,13 +173,25 @@ pub(crate) unsafe fn bar_page() {
         match i {
             2..=4 => st::set_side(sides[i - 2]),
             6..=8 => st::set_bar_size((i - 6) as u8),
-            10 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
-            11 => st::set_align_left(!st::align_left()),
-            12 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
-            13 => crate::set_stick(!crate::stick()),
+            10 => {
+                if let Err(e) = set_search_button_visible(!search_button_visible()) {
+                    report_button_option_error(&e);
+                    return bar_page();
+                }
+            }
+            11 => {
+                if let Err(e) = set_taskview_button_visible(!taskview_button_visible()) {
+                    report_button_option_error(&e);
+                    return bar_page();
+                }
+            }
+            13 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
+            14 => st::set_align_left(!st::align_left()),
+            15 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            16 => crate::set_stick(!crate::stick()),
             _ => return style_menu(),
         }
-        relook(i != 12 && i != 13);
+        relook(i != 15 && i != 16);
         bar_page();
     });
 }
@@ -243,8 +313,31 @@ pub(crate) unsafe fn reset_page() {
     gear_page("\u{E777}", t!("Сбросить всё?", "Reset everything?", ja: "すべてをリセットしますか?", pt: "Restaurar tudo?", zh: "全部重置？"), t!("Тема, цвета, панель. Шаблоны останутся", "Theme, colors, bar. Templates stay", ja: "テーマ、色、バー。テンプレートは残ります", pt: "Tema, cores, barra. Os modelos permanecem", zh: "主题、颜色、任务栏。模板保留"), items, |i| {
         if i == 0 {
             i18n::style::reset_all();
+            if let Err(e) = set_button_options(0) { report_button_option_error(&e); }
             relook(true);
         }
         style_menu();
     });
+}
+
+#[cfg(test)]
+mod button_option_tests {
+    use super::*;
+
+    #[test]
+    fn optional_buttons_default_off_and_toggle_independently() {
+        let previous = BUTTON_OPTIONS.swap(0, Relaxed);
+        assert!(!search_button_visible());
+        assert!(!taskview_button_visible());
+
+        BUTTON_OPTIONS.store(SHOW_SEARCH_BUTTON, Relaxed);
+        assert!(search_button_visible());
+        assert!(!taskview_button_visible());
+
+        BUTTON_OPTIONS.store(SHOW_TASKVIEW_BUTTON, Relaxed);
+        assert!(!search_button_visible());
+        assert!(taskview_button_visible());
+
+        BUTTON_OPTIONS.store(previous, Relaxed);
+    }
 }
