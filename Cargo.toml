@@ -14,6 +14,10 @@ name = "install-selection"
 path = "src/selection.rs"
 
 [[test]]
+name = "install-preview"
+path = "src/cli/preview.rs"
+
+[[test]]
 name = "update-manifest"
 path = "src/update/manifest.rs"
 [[test]]
