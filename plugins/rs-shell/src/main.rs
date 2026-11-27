@@ -13,7 +13,7 @@
 // Run/Startup entries are started through `cmd /c start` (no RunOnce, no startup-delay rules, no disabled-list in
 // StartupApproved), topbar's "open" still shells out to explorer.exe for /select; upgrade when those matter.
 use std::{os::windows::{io::AsRawHandle, process::CommandExt}, path::PathBuf, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
-use windows_sys::{core::BOOL, Win32::{Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, RECT, WAIT_OBJECT_0}, System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
+use windows_sys::{core::BOOL, Win32::{Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, RECT, WAIT_FAILED, WAIT_OBJECT_0}, System::Threading::{CreateEventW, CreateMutexW, OpenProcess, PROCESS_TERMINATE, SetEvent, TerminateProcess, WaitForSingleObject}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
 
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
 const NO_WINDOW: u32 = 0x0800_0000;
@@ -283,11 +283,6 @@ fn supervise() {
     }
 }
 
-/// The rust-explorer plugin's "replace Explorer" switch (HKCU\Software\rs-shell\ReplaceExplorer = 1).
-fn replace_on() -> bool {
-    winrust_common::reg::get_dword(r"HKCU\Software\rs-shell", "ReplaceExplorer") == Some(1)
-}
-
 /// Stop the process behind a window we have identified in this session. Wait on the
 /// same handle so another process cannot be mistaken for it after the stop.
 fn stop_window_process(window: HWND, pid: u32) -> bool {
@@ -407,26 +402,33 @@ fn desktop_responds() -> bool {
     }
 }
 
-fn start_desktop(path: &std::path::Path, child: &mut Option<Child>) {
+const DESKTOP_START_GRACE: Duration = Duration::from_secs(12);
+
+struct DesktopChild {
+    process: Child,
+    launched: Instant,
+}
+
+fn start_desktop(path: &std::path::Path, child: &mut Option<DesktopChild>) {
     if !path.is_file() || !desktop_window().is_null() {
         return;
     }
-    if let Some(process) = child {
+    if let Some(DesktopChild { process, .. }) = child {
         if !matches!(process.try_wait(), Ok(Some(_))) {
             return; // a previous launch may still be starting or loading the desktop
         }
     }
     match quiet(path).arg("--desktop").spawn() {
         Ok(process) => {
-            *child = Some(process);
+            *child = Some(DesktopChild { process, launched: Instant::now() });
             log("desktop started");
         }
         Err(error) => log(&format!("desktop could not start: {error}")),
     }
 }
 
-fn stop_desktop(child: &mut Option<Child>) -> bool {
-    if let Some(process) = child.as_mut() {
+fn stop_desktop(child: &mut Option<DesktopChild>) -> bool {
+    if let Some(DesktopChild { process, .. }) = child.as_mut() {
         if !matches!(process.try_wait(), Ok(Some(_))) {
             let _ = process.kill();
             if unsafe { WaitForSingleObject(process.as_raw_handle(), 1000) } != WAIT_OBJECT_0 {
@@ -448,9 +450,15 @@ fn stop_desktop(child: &mut Option<Child>) -> bool {
     })
 }
 
-fn restart_desktop(path: &std::path::Path, child: &mut Option<Child>) {
+fn desktop_start_expired(ready: bool, age: Option<Duration>) -> bool {
+    !ready && age.is_some_and(|age| age >= DESKTOP_START_GRACE)
+}
+
+fn restart_desktop(path: &std::path::Path, child: &mut Option<DesktopChild>) {
     let window = desktop_window();
-    if !window.is_null() && unsafe { IsHungAppWindow(window) } != 0 && !stop_desktop(child) {
+    let hung = !window.is_null() && unsafe { IsHungAppWindow(window) } != 0;
+    let expired = desktop_start_expired(desktop_ready(window), child.as_ref().map(|child| child.launched.elapsed()));
+    if (hung || expired) && !stop_desktop(child) {
         log("overlay: could not stop the unresponsive desktop");
         return;
     }
@@ -490,16 +498,23 @@ fn watch_desktop(misses: &mut u8, ready: bool, lent: bool, replaced: bool) -> De
 
 fn overlay(desktop_overlay: bool) {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+    // Signal the existing watcher even if this copy is only forwarding an explicit opt-in.
+    let desktop_request = unsafe { CreateEventW(ptr::null(), 0, 0, wide("Local\\WinRust-rs-overlay-desktop").as_ptr()) };
+    if desktop_overlay && !desktop_request.is_null() {
+        unsafe { SetEvent(desktop_request) };
+    }
     // The logon task, the Run entry and a manual launch must share one watchdog.
     let instance = unsafe {
-        windows_sys::Win32::System::Threading::CreateMutexW(ptr::null(), 0, wide("Local\\WinRust-rs-overlay").as_ptr())
+        CreateMutexW(ptr::null(), 0, wide(winrust_common::settings::OVERLAY_MUTEX).as_ptr())
     };
     if instance.is_null() || unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         return; // Windows releases our handle when the process exits
     }
 
-    let replace = replace_on();
-    let desktop = wants_desktop(replace, desktop_overlay).then(|| dir().join("rust-explorer.exe"));
+    let replace = winrust_common::settings::replace_explorer_requested();
+    let requested = desktop_overlay || (!desktop_request.is_null()
+        && unsafe { WaitForSingleObject(desktop_request, 0) } == WAIT_OBJECT_0);
+    let desktop = wants_desktop(replace, requested).then(|| dir().join("rust-explorer.exe"));
     log(&format!("overlay start (replace explorer: {replace}, custom desktop: {})", desktop.is_some()));
     let wp = desktop.as_ref().map(|_| thread::spawn(wallpaper_bmp));
     if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
@@ -509,11 +524,11 @@ fn overlay(desktop_overlay: bool) {
     if let Some(wp) = wp {
         let _ = wp.join();
     }
-    overlay_watch(replace, desktop);
+    overlay_watch(replace, desktop, desktop_request);
 }
 
 /// Gives the system taskbar back and starts Explorer if there is no shell in this session.
-fn restore_overlay_shell(replace: bool, desktop: bool, child: &mut Option<Child>) {
+fn restore_overlay_shell(replace: bool, desktop: bool, child: &mut Option<DesktopChild>) {
     if desktop && !stop_desktop(child) {
         log("overlay: could not confirm the WinRust desktop stopped");
     }
@@ -524,7 +539,7 @@ fn restore_overlay_shell(replace: bool, desktop: bool, child: &mut Option<Child>
 }
 
 /// Watches the selected surfaces and only gives up Explorer once both replacements are ready.
-fn overlay_watch(replace: bool, desktop: Option<PathBuf>) {
+fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: HANDLE) {
     let (mut starts, mut misses, mut dmiss, mut stable, mut replaced) = (0, 0, 0, 0, false);
     let mut child = None;
     if let Some(path) = &desktop {
@@ -538,7 +553,23 @@ fn overlay_watch(replace: bool, desktop: Option<PathBuf>) {
     if replace { log(&format!("autostart to wait for: {} exe(s) {:?}, {} other entr(ies)", expected.len(), expected, untracked)); }
     let (mut kids, mut last) = (vec![], began);
     loop {
-        thread::sleep(Duration::from_secs(3));
+        if desktop.is_none() && !desktop_request.is_null() {
+            match unsafe { WaitForSingleObject(desktop_request, 3000) } {
+                WAIT_OBJECT_0 => {
+                    let path = dir().join("rust-explorer.exe");
+                    let _ = wallpaper_bmp();
+                    if !winrust_common::settings::explorer_lent() {
+                        start_desktop(&path, &mut child);
+                    }
+                    desktop = Some(path);
+                    continue;
+                }
+                WAIT_FAILED => thread::sleep(Duration::from_secs(3)),
+                _ => {}
+            }
+        } else {
+            thread::sleep(Duration::from_secs(3));
+        }
         let bar = bar_up();
         if let Some(path) = &desktop {
             let ready = desktop_ready(desktop_window());
@@ -561,14 +592,16 @@ fn overlay_watch(replace: bool, desktop: Option<PathBuf>) {
                 let missing = missing_autostart(&expected, &winrust_common::proc::list());
                 last = last_start(&mut kids, winrust_common::proc::children(&winrust_common::proc::shell_explorers()), last, Instant::now());
                 if stable >= 3 && may_end_explorer(startup_run(), began.elapsed(), missing.is_empty(), untracked, last.elapsed())
-                    && !winrust_common::settings::explorer_lent() && replace_on()
+                    && !winrust_common::settings::explorer_lent() && winrust_common::settings::replace_explorer_requested()
                     && bar_up() && desktop_responds()
                 {
                     log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", startup_run(), began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
                     if !kill_shell_explorer() {
-                        log("overlay: the Windows shell did not stop, cancelling the hand-off");
-                        restore_overlay_shell(replace, true, &mut child);
-                        return;
+                        // A stop can still be pending after the bounded wait. Keep both
+                        // replacement surfaces up until another tick can confirm the state.
+                        log("overlay: the Windows shell has not stopped yet");
+                        stable = 0;
+                        continue;
                     }
                     replaced = true;
                     // Keep the watcher on the main thread so returning also ends the hotkey loop.
@@ -688,6 +721,15 @@ mod tests {
         assert_eq!(watch_desktop(&mut misses, false, false, true), Wait);
         assert_eq!(watch_desktop(&mut misses, true, false, true), Wait);
         assert_eq!(misses, 0, "a recovered desktop clears the counter");
+    }
+
+    #[test]
+    fn a_desktop_child_has_time_to_start_but_cannot_block_recovery_forever() {
+        use super::{DESKTOP_START_GRACE, desktop_start_expired};
+        assert!(!desktop_start_expired(false, None));
+        assert!(!desktop_start_expired(false, Some(Duration::from_secs(1))));
+        assert!(!desktop_start_expired(true, Some(DESKTOP_START_GRACE)));
+        assert!(desktop_start_expired(false, Some(DESKTOP_START_GRACE)));
     }
 
     #[test]

@@ -165,13 +165,23 @@ fn has_desktop(p: u32) -> bool {
 }
 
 const LENT: &str = "Local\\WinRust-ExplorerLent";
+pub const OVERLAY_MUTEX: &str = "Local\\WinRust-rs-overlay";
+
+/// Whether the installer configured the user's overlay to replace Explorer.
+pub fn replace_explorer_requested() -> bool {
+    crate::reg::get_dword(r"HKCU\Software\rs-shell", "ReplaceExplorer") == Some(1)
+}
 
 /// True while a Settings page holds Explorer as the shell (rs-shell must not raise our desktop then: a desktop raised under it
 /// leaves Settings cloaked, and Explorer stays forever waiting for a window that never shows). A named object, set before our
 /// desktop is ended, so there is no moment where the desktop is gone and Explorer not yet visible as the shell.
 pub fn explorer_lent() -> bool {
+    mutex_exists(LENT)
+}
+
+fn mutex_exists(name: &str) -> bool {
     use windows_sys::Win32::{Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError}, System::Threading::OpenMutexW};
-    let h = unsafe { OpenMutexW(0x0010_0000 /* SYNCHRONIZE */, 0, w(LENT).as_ptr()) };
+    let h = unsafe { OpenMutexW(0x0010_0000 /* SYNCHRONIZE */, 0, w(name).as_ptr()) };
     if h.is_null() {
         return unsafe { GetLastError() } == ERROR_ACCESS_DENIED; // made by the elevated bar: exists, just not ours to open
     }
@@ -184,6 +194,9 @@ fn run(uri: &str) {
     let mut restore_desktop = false;
     let mut lent = std::ptr::null_mut();
     if !explorer_shell() {
+        // The desktop may be down when Settings opens. Keep the live overlay's
+        // chosen replacement mode while it borrows Explorer.
+        restore_desktop = replace_explorer_requested() && mutex_exists(OVERLAY_MUTEX);
         lent = unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, w(LENT).as_ptr()) };
         // our desktop is a window of class Progman too: with it up Explorer thinks a shell exists and starts as a plain folder host
         for pid in proc::pids("rust-explorer.exe").into_iter().filter(|&pid| has_desktop(pid)) {
