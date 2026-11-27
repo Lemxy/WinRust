@@ -537,18 +537,30 @@ unsafe fn show_tip(s: String, cx: i32) {
 
 // ---------- Alt+Tab switcher: a grid of the open windows with live previews, most recently used first (#92) ----------
 
+const SW_CLIP_TIMER: usize = 9;
+
 thread_local! {
     static SW_MON: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) }; // the monitor it is shown on
     static SW_CARDS: RefCell<(Vec<RECT>, Vec<isize>)> = const { RefCell::new((Vec::new(), Vec::new())) }; // card rects, DWM previews
     // where the pointer was when the switcher opened: a window appearing under a still pointer gets a WM_MOUSEMOVE,
     // which must not pick the card under it (#183, #116); None once the pointer really moved
     static SW_PT: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+    // a game's cursor clip when the switcher opened, and its window: put back on close when we return to it
+    static SW_CLIP: Cell<Option<(RECT, HWND)>> = const { Cell::new(None) };
 }
 
 unsafe fn cursor() -> (i32, i32) {
     let mut p: POINT = zeroed();
     GetCursorPos(&mut p);
     (p.x, p.y)
+}
+
+/// A clip smaller than the whole virtual desktop: a game (or another app) has confined the pointer.
+unsafe fn clipped(c: &RECT) -> bool {
+    c.left > GetSystemMetrics(SM_XVIRTUALSCREEN)
+        || c.top > GetSystemMetrics(SM_YVIRTUALSCREEN)
+        || c.right < GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        || c.bottom < GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN)
 }
 
 unsafe fn alt_tab(back: bool) {
@@ -578,7 +590,23 @@ unsafe fn alt_tab(back: bool) {
         SW.set((v, if n == 1 { 0 } else if back { n - 1 } else { 1 }));
         SW_MON.set(mon);
         SW_PT.set(Some(cursor()));
+        // a game in mouse-look clips the pointer to a pixel at its center and re-clips it while it keeps the focus, so the
+        // pointer snaps back the moment it leaves the cards. Take the focus (as the system switcher does) so the game lets
+        // the pointer go anywhere, and release the clip too in case it keeps it without the focus.
+        let mut c: RECT = zeroed();
+        let fg = GetForegroundWindow();
+        SW_CLIP.set(None);
+        if GetClipCursor(&mut c) != 0 && clipped(&c) {
+            SW_CLIP.set(Some((c, fg)));
+            ClipCursor(null());
+            SetTimer(sw, SW_CLIP_TIMER, 10, None);
+        }
         sw_layout(sw);
+        if SW_CLIP.get().is_some() {
+            let ex = GetWindowLongW(sw, GWL_EXSTYLE) as u32;
+            SetWindowLongW(sw, GWL_EXSTYLE, (ex & !WS_EX_NOACTIVATE) as i32);
+            force_fg(sw);
+        }
     } else {
         SW.with_borrow_mut(|(v, i)| *i = if back { (*i + v.len() - 1) % v.len() } else { (*i + 1) % v.len() });
     }
@@ -626,16 +654,31 @@ unsafe fn alt_close() {
 /// Alt released: switch to the selected window (restored if minimized). Esc: just close.
 unsafe fn alt_done(cancel: bool) {
     ShowWindow(SWWND.get(), SW_HIDE);
+    KillTimer(SWWND.get(), SW_CLIP_TIMER);
     SW_CARDS.with_borrow_mut(|(r, ids)| {
         thumbs::unregister(SWWND.get(), ids);
         r.clear();
     });
     let (v, i) = SW.take();
-    if let Some(&w) = v.get(i).filter(|_| !cancel) {
+    let target = v.get(i).copied().filter(|_| !cancel);
+    if let Some(w) = target {
         if IsIconic(w) != 0 {
             ShowWindow(w, SW_RESTORE);
         }
         force_fg(w);
+    }
+    // we took the focus and made the switcher activatable because a game was clipping the pointer: put the style back,
+    // return the focus to that game on Esc, and give it its mouse-look clip back when we stay on / return to it
+    if let Some((c, fg)) = SW_CLIP.take() {
+        let sw = SWWND.get();
+        let ex = GetWindowLongW(sw, GWL_EXSTYLE) as u32;
+        SetWindowLongW(sw, GWL_EXSTYLE, (ex | WS_EX_NOACTIVATE) as i32);
+        if cancel {
+            force_fg(fg);
+        }
+        if cancel || target == Some(fg) {
+            ClipCursor(&c);
+        }
     }
 }
 
@@ -672,6 +715,7 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
         }
         WM_MOUSEWHEEL => alt_tab((wp >> 16) as i16 > 0),
+        WM_TIMER if wp == SW_CLIP_TIMER => { ClipCursor(null()); }
         _ => return DefWindowProcW(hwnd, msg, wp, lp),
     }
     0
