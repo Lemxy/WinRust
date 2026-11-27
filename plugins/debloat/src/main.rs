@@ -14,7 +14,7 @@
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -558,41 +558,102 @@ fn restored(ok: bool) -> &'static str {
     }
 }
 
-fn undo(g: Group) -> Result<(), String> {
-    let path = undo_path(g);
-    let Ok(text) = fs::read_to_string(&path) else {
-        println!("{}", t!("отменять нечего (нет файла отмены)", "nothing to undo (no undo file)", ja: "元に戻すものはありません (元に戻すファイルがありません)", pt: "nada para desfazer (sem arquivo de desfazer)", zh: "没有可撤销的内容（没有撤销文件）"));
-        return Ok(());
+enum UndoEntry<'a> {
+    Service { name: &'a str, mode: &'a str },
+    Registry { key: &'a str, value: &'a str, previous: &'a str },
+    EnableTask(&'a str),
+    DeleteTask(&'a str),
+    DefenderExclusion { kind: &'static str, value: &'a str },
+    HostsBlock,
+}
+
+fn parse_undo_line(line: &str) -> Option<UndoEntry<'_>> {
+    if line.contains('\0') {
+        return None;
+    }
+    let fields: Vec<_> = line.split('|').collect();
+    let present = |field: &str| !field.trim().is_empty();
+    Some(match fields.as_slice() {
+        ["svc", name, mode @ ("auto" | "delayed-auto" | "demand" | "disabled")] if present(name) => {
+            UndoEntry::Service { name, mode }
+        }
+        ["reg", key, value, previous] if present(key) && present(value)
+            && (*previous == "-" || previous.parse::<u32>().is_ok()) =>
+        {
+            UndoEntry::Registry { key, value, previous }
+        }
+        ["task", name] if present(name) => UndoEntry::EnableTask(name),
+        ["newtask", name] if present(name) => UndoEntry::DeleteTask(name),
+        ["mpx", "path", value] if present(value) => UndoEntry::DefenderExclusion { kind: "Path", value },
+        ["mpx", "proc", value] if present(value) => UndoEntry::DefenderExclusion { kind: "Process", value },
+        ["hosts", "block"] => UndoEntry::HostsBlock,
+        _ => return None,
+    })
+}
+
+fn restore_entry(entry: UndoEntry<'_>) -> bool {
+    match entry {
+        UndoEntry::Service { name, mode } => run("sc.exe", &["config", name, "start=", mode]).0,
+        UndoEntry::Registry { key, value, previous: "-" } => {
+            run("reg.exe", &["delete", key, "/v", value, "/f"]).0 || reg_val(key, value) == Val::Missing
+        }
+        UndoEntry::Registry { key, value, previous } => {
+            run("reg.exe", &["add", key, "/v", value, "/t", "REG_DWORD", "/d", previous, "/f"]).0
+        }
+        UndoEntry::EnableTask(name) => {
+            run("schtasks.exe", &["/change", "/tn", name, "/enable"]).0 || task_enabled(name).is_none()
+        }
+        UndoEntry::DeleteTask(name) => {
+            run("schtasks.exe", &["/delete", "/tn", name, "/f"]).0 || task_enabled(name).is_none()
+        }
+        UndoEntry::DefenderExclusion { kind, value } => {
+            ps(&format!("Remove-MpPreference -ErrorAction Stop -Exclusion{kind} {}", psq(value))).0
+        }
+        UndoEntry::HostsBlock => {
+            let path = hosts_path();
+            let ok = fs::read_to_string(&path).is_ok_and(|text| fs::write(&path, strip_block(&text)).is_ok());
+            let _ = run("ipconfig.exe", &["/flushdns"]);
+            ok
+        }
+    }
+}
+
+fn undo_journal(path: &Path, read: io::Result<String>, mut restore: impl FnMut(UndoEntry<'_>) -> bool) -> Result<(), String> {
+    let text = match read {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            println!("{}", t!("отменять нечего (нет файла отмены)", "nothing to undo (no undo file)", ja: "元に戻すものはありません (元に戻すファイルがありません)", pt: "nada para desfazer (sem arquivo de desfazer)", zh: "没有可撤销的内容（没有撤销文件）"));
+            return Ok(());
+        }
+        Err(error) => return Err(tf!("Не удалось прочитать файл отмены {}: {error}", "Could not read undo file {}: {error}", ja: "元に戻すファイル {} を読み取れませんでした: {error}", pt: "Não foi possível ler o arquivo de desfazer {}: {error}", zh: "无法读取撤销文件 {}：{error}", path.display())),
     };
+    let invalid = |line| tf!("Неверная строка {line} в файле отмены {}; файл сохранён", "Invalid line {line} in undo file {}; the file was kept", ja: "元に戻すファイル {} の {line} 行目が無効です。ファイルは保持されました", pt: "Linha {line} inválida no arquivo de desfazer {}; o arquivo foi mantido", zh: "撤销文件 {} 的第 {line} 行无效，文件已保留", path.display());
+    let entries: Vec<_> = text.lines().enumerate().map(|(index, line)| {
+        parse_undo_line(line).map(|entry| (line, entry)).ok_or_else(|| invalid(index + 1))
+    }).collect::<Result<_, _>>()?;
+    // The writer terminates each record before applying its change. A torn final record can still look valid.
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(invalid(entries.len()));
+    }
+
     let mut failed = 0;
-    // the first line per item holds the ORIGINAL value (an earlier --apply may have logged the same item again)
-    for line in text.lines().rev() {
-        let f: Vec<&str> = line.splitn(4, '|').collect();
-        let ok = match f.as_slice() {
-            ["svc", name, mode] => run("sc.exe", &["config", name, "start=", mode]).0,
-            ["reg", key, value, "-"] => run("reg.exe", &["delete", key, "/v", value, "/f"]).0 || reg_val(key, value) == Val::Missing, // never written (the change itself failed): nothing to remove
-            ["reg", key, value, old] => run("reg.exe", &["add", key, "/v", value, "/t", "REG_DWORD", "/d", old, "/f"]).0,
-            ["task", name] => run("schtasks.exe", &["/change", "/tn", name, "/enable"]).0 || task_enabled(name).is_none(), // uninstalled with its app meanwhile
-            ["newtask", name] => run("schtasks.exe", &["/delete", "/tn", name, "/f"]).0 || task_enabled(name).is_none(),
-            ["mpx", "path", p] => ps(&format!("Remove-MpPreference -ErrorAction Stop -ExclusionPath {}", psq(p))).0,
-            ["mpx", "proc", p] => ps(&format!("Remove-MpPreference -ErrorAction Stop -ExclusionProcess {}", psq(p))).0,
-            ["hosts", "block"] => {
-                let p = hosts_path();
-                let ok = fs::read_to_string(&p).is_ok_and(|t| fs::write(&p, strip_block(&t)).is_ok());
-                let _ = run("ipconfig.exe", &["/flushdns"]);
-                ok
-            }
-            _ => continue,
-        };
+    // The first entry for each item holds the original value, so play later entries back first.
+    for (line, entry) in entries.into_iter().rev() {
+        let ok = restore(entry);
         failed += !ok as u32;
         println!("{}", tf!("{0}  {1}", "{0}  {1}", ja: "{0}  {1}", pt: "{0}  {1}", zh: "{0}  {1}", restored(ok), line));
     }
     if failed > 0 {
         return Err(tf!("{failed} элемент(ов) не восстановлено; файл отмены сохранён в {}", "{failed} item(s) not restored; the undo file is kept at {}", ja: "{failed} 件を元に戻せませんでした。元に戻すファイルは {} に残っています", pt: "{failed} item(ns) não restaurado(s); o arquivo de desfazer foi mantido em {}", zh: "{failed} 项未能恢复；撤销文件保留在 {}", path.display()));
     }
-    fs::remove_file(&path).map_err(|e| e.to_string())?;
+    fs::remove_file(path).map_err(|e| e.to_string())?;
     println!("{}", t!("\nВсё восстановлено (службы снова запустятся после перезагрузки или вручную).", "\nRestored (services start again after a reboot or by hand).", ja: "\n復元しました (サービスは再起動後、または手動で再び開始されます)。", pt: "\nRestaurado (os serviços voltam a iniciar após reiniciar ou manualmente).", zh: "\n已恢复（服务会在重启后或手动启动时重新运行）。"));
     Ok(())
+}
+
+fn undo(g: Group) -> Result<(), String> {
+    let path = undo_path(g);
+    undo_journal(&path, fs::read_to_string(&path), restore_entry)
 }
 
 fn main() {
@@ -630,6 +691,52 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_treats_only_a_missing_journal_as_success() {
+        let path = Path::new("undo.txt");
+        let absent = Err(io::ErrorKind::NotFound.into());
+        assert!(undo_journal(path, absent, |_| panic!("unexpected restore")).is_ok());
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::InvalidData] {
+            let error = Err(kind.into());
+            assert!(undo_journal(path, error, |_| panic!("unexpected restore")).is_err());
+        }
+    }
+
+    #[test]
+    fn undo_leaves_journal_intact_until_a_retry_succeeds() {
+        let dir = env::temp_dir().join(format!(
+            "winrust-debloat-undo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("undo.txt");
+        for invalid in [
+            "svc|DiagTrack|auto\nunknown|record\nhosts|block\n",
+            "svc|DiagTrack|auto\nreg|HKLM\\Example|Value|invalid\n",
+            "svc|DiagTrack|auto\nreg|HKLM\\Example|Value|1",
+        ] {
+            fs::write(&path, invalid).unwrap();
+            assert!(undo_journal(&path, fs::read_to_string(&path), |_| panic!("unexpected restore")).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+
+        let journal = "svc|DiagTrack|auto\r\nsvc|DiagTrack|demand\r\n";
+        fs::write(&path, journal).unwrap();
+        assert!(undo_journal(&path, fs::read_to_string(&path), |_| false).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), journal);
+
+        let mut modes = Vec::new();
+        undo_journal(&path, fs::read_to_string(&path), |entry| {
+            let UndoEntry::Service { mode, .. } = entry else { panic!("unexpected entry") };
+            modes.push(mode.to_owned());
+            true
+        }).unwrap();
+        assert_eq!(modes, ["demand", "auto"]);
+        assert!(!path.exists());
+        fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn reads_reg_query_output() {
