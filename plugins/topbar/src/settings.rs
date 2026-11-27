@@ -110,6 +110,7 @@ pub(crate) unsafe fn bar_page() {
         fly::MItem::head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为")),
         fly::MItem::new(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏")).on(st::autohide()),
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10")).on(st::align_left()),
+        fly::MItem::new(t!("Кнопка Пуск слева", "Start button on the left", ja: "スタートボタンを左に配置", pt: "Botão Iniciar à esquerda", zh: "开始按钮靠左")).on(st::start_left()),
         fly::MItem::new(t!("Alt+Tab: только этот монитор", "Alt+Tab: this monitor only", ja: "Alt+Tab: このモニターのみ", pt: "Alt+Tab: somente este monitor", zh: "Alt+Tab：仅限此显示器")).on(st::alttab_per_monitor()),
         fly::MItem::new(t!("Окна прилипают к краям и друг к другу", "Windows stick to edges and each other", ja: "ウィンドウを端やほかのウィンドウに吸着", pt: "Janelas grudam nas bordas e umas nas outras", zh: "窗口吸附到屏幕边缘和其他窗口")).on(crate::stick()),
         fly::MItem::new(t!("Панель на всех мониторах", "Bar on every monitor", ja: "すべてのモニターにバーを表示", pt: "Barra em todos os monitores", zh: "在所有显示器上显示任务栏")).on(second::enabled()),
@@ -121,12 +122,13 @@ pub(crate) unsafe fn bar_page() {
             10 => return icon_size_page(),
             12 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
             13 => st::set_align_left(!st::align_left()),
-            14 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
-            15 => crate::set_stick(!crate::stick()),
-            16 => second::set_enabled(!second::enabled()),
+            14 => st::set_start_left(!st::start_left()),
+            15 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            16 => crate::set_stick(!crate::stick()),
+            17 => second::set_enabled(!second::enabled()),
             _ => return style_menu(),
         }
-        relook(i != 14 && i != 15);
+        relook(i != 15 && i != 16);
         bar_page();
     });
 }
