@@ -794,7 +794,7 @@ mod tests {
     #[test]
     fn defender_undo_can_retry_after_only_one_exclusion_was_removed() {
         let mut present = [true, true];
-        let mut restore = |index: usize, interrupted| {
+        let mut restore = |index: usize, interrupted: bool| {
             let (kind, value) = [("Path", r"C:\Build"), ("Process", "build.exe")][index];
             restore_defender_exclusion(kind, value, |script| {
                 if script.starts_with("Remove-MpPreference") {
