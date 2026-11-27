@@ -862,8 +862,13 @@ pub fn nav_init(h: HWND) {
             v.push(NavItem { title: format!("{base} ({letter}:)"), path: PathBuf::from(root), glyph: "\u{EDA2}", cap });
         }
     }
+    if !crate::sh::portable_devices().is_empty() {
+        v.push(NavItem { title: crate::sh::PORTABLE.into(), path: PathBuf::from(crate::sh::PORTABLE), glyph: "\u{E8EA}", cap: None }); // cell phone glyph
+    }
     NAV.with_borrow_mut(|n| *n = v);
 }
+
+pub fn nav_wnd() -> HWND { NAVWND.get() as HWND }
 
 pub fn nav_path(i: usize) -> Option<PathBuf> {
     NAV.with_borrow(|n| n.get(i).map(|x| x.path.clone()).filter(|p| !p.as_os_str().is_empty()))
@@ -977,6 +982,9 @@ pub unsafe extern "system" fn nav_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) 
             if NAVHOT.replace(k) != k { InvalidateRect(h, ptr::null(), 0); }
         }
         WM_MOUSELEAVE => { NAVHOT.set(-1); InvalidateRect(h, ptr::null(), 0); }
+        WM_RBUTTONUP => {
+            if let Some(i) = nav_hit(y) { PostMessageW(GetParent(h), WM_UI, 22, i as isize); }
+        }
         WM_LBUTTONDOWN => {
             if let Some(i) = nav_hit(y) {
                 PRESS.set((5000 + i as i32, now()));
