@@ -591,6 +591,24 @@ fn parse_undo_line(line: &str) -> Option<UndoEntry<'_>> {
     })
 }
 
+fn restore_defender_exclusion(
+    kind: &str,
+    value: &str,
+    mut powershell: impl FnMut(&str) -> (bool, String),
+) -> bool {
+    let value = psq(value);
+    if powershell(&format!("Remove-MpPreference -ErrorAction Stop -Exclusion{kind} {value}")).0 {
+        return true;
+    }
+
+    // A previous attempt can have removed this exclusion before a later record failed.
+    let (ok, result) = powershell(&format!(
+        "$p=Get-MpPreference -ErrorAction Stop; \
+         if ($null -ne $p -and $p.Exclusion{kind} -notcontains {value}) {{ 'absent' }}"
+    ));
+    ok && result.trim() == "absent"
+}
+
 fn restore_entry(entry: UndoEntry<'_>) -> bool {
     match entry {
         UndoEntry::Service { name, mode } => run("sc.exe", &["config", name, "start=", mode]).0,
@@ -606,9 +624,7 @@ fn restore_entry(entry: UndoEntry<'_>) -> bool {
         UndoEntry::DeleteTask(name) => {
             run("schtasks.exe", &["/delete", "/tn", name, "/f"]).0 || task_enabled(name).is_none()
         }
-        UndoEntry::DefenderExclusion { kind, value } => {
-            ps(&format!("Remove-MpPreference -ErrorAction Stop -Exclusion{kind} {}", psq(value))).0
-        }
+        UndoEntry::DefenderExclusion { kind, value } => restore_defender_exclusion(kind, value, ps),
         UndoEntry::HostsBlock => {
             let path = hosts_path();
             let ok = fs::read_to_string(&path).is_ok_and(|text| fs::write(&path, strip_block(&text)).is_ok());
@@ -736,6 +752,41 @@ mod tests {
         assert_eq!(modes, ["demand", "auto"]);
         assert!(!path.exists());
         fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn defender_undo_can_retry_after_only_one_exclusion_was_removed() {
+        let mut present = [true, true];
+        let mut restore = |index: usize, interrupted| {
+            let (kind, value) = [("Path", r"C:\Build"), ("Process", "build.exe")][index];
+            restore_defender_exclusion(kind, value, |script| {
+                if script.starts_with("Remove-MpPreference") {
+                    let removed = present[index] && !interrupted;
+                    if removed {
+                        present[index] = false;
+                    }
+                    (removed, String::new())
+                } else {
+                    assert!(script.starts_with("$p=Get-MpPreference -ErrorAction Stop;"));
+                    assert!(script.contains(&format!(".Exclusion{kind} -notcontains {}", psq(value))));
+                    (true, if present[index] { "" } else { "absent\r\n" }.into())
+                }
+            })
+        };
+
+        assert!(restore(0, false));
+        assert!(!restore(1, true));
+        assert!(restore(0, false));
+        assert!(restore(1, false));
+        assert_eq!(present, [false, false]);
+    }
+
+    #[test]
+    fn defender_undo_does_not_accept_absence_from_a_failed_query() {
+        assert!(!restore_defender_exclusion("Path", r"C:\Build", |script| {
+            let output = if script.starts_with("Remove-MpPreference") { "" } else { "absent\r\n" };
+            (false, output.into())
+        }));
     }
 
     #[test]
