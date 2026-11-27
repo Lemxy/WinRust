@@ -3,7 +3,8 @@
 // rs-shell --enable     make it THIS user's shell (HKCU Winlogon\Shell; other users and the system are untouched)
 // rs-shell --disable    back to the normal shell (deletes that one value)
 // rs-shell --dry-run    print what it would start, change nothing
-// rs-shell --overlay    run NEXT TO explorer.exe (it stays the shell): topbar + desktop + keep the bar alive. Started at logon by the "rs-overlay" scheduled task (HKCU Run as the fallback).
+// rs-shell --overlay    start topbar next to Explorer; replace Explorer only when the installer's switch is enabled.
+// rs-shell --overlay --desktop    opt into the additional desktop even while Explorer remains the shell.
 // Put it next to topbar.exe. Recovery from a black screen: Ctrl+Alt+Del -> Task Manager -> run explorer.exe,
 // then `rs-shell --disable`; or sign in as another admin and run `reg delete` on the key printed by --enable.
 // Also: starts `rust-explorer.exe --desktop` (desktop icons), Win+D = show desktop / bring the windows back (winrust-common),
@@ -11,8 +12,8 @@
 // shortcuts: Win+D only minimizes ordinary top-level windows (no per-monitor / virtual-desktop logic),
 // Run/Startup entries are started through `cmd /c start` (no RunOnce, no startup-delay rules, no disabled-list in
 // StartupApproved), topbar's "open" still shells out to explorer.exe for /select; upgrade when those matter.
-use std::{os::windows::process::CommandExt, path::PathBuf, process::Command, ptr, thread, time::{Duration, Instant}};
-use windows_sys::{core::BOOL, Win32::{Foundation::{HWND, LPARAM, RECT}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
+use std::{os::windows::process::CommandExt, path::PathBuf, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
+use windows_sys::{core::BOOL, Win32::{Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, RECT}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
 
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
 const NO_WINDOW: u32 = 0x0800_0000;
@@ -282,9 +283,6 @@ fn supervise() {
     }
 }
 
-/// `rs-shell --overlay`: runs next to explorer.exe, which stays the real shell (Win+D / Win+E / wallpaper / Run keys are
-/// its job). Starts topbar and the rust-explorer desktop on top of it and keeps the bar alive. Started from the user's
-/// Run key, so it can live in a folder the user owns (Windows stopped starting our own shell at logon).
 /// The rust-explorer plugin's "replace Explorer" switch (HKCU\Software\rs-shell\ReplaceExplorer = 1).
 fn replace_on() -> bool {
     winrust_common::reg::get_dword(r"HKCU\Software\rs-shell", "ReplaceExplorer") == Some(1)
@@ -365,69 +363,191 @@ fn start_shell_explorer() {
     log(&format!("explorer shell started -> {:?}", r.map(|_| ())));
 }
 
-fn overlay() {
-    unsafe { windows_sys::Win32::System::Console::FreeConsole() };
-    let replace = replace_on();
-    log(&format!("overlay start (replace explorer: {replace})"));
-    let wp = thread::spawn(wallpaper_bmp); // the BMP the desktop window paints; the system wallpaper stays Explorer's
-    if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
-    // Win+I / Win+E / Win+D live in reshell: its Run entry may be missing (another account's HKCU), and without it Explorer's own Win+I
-    // fails once the shell is gone. A second copy exits at once (one hook per session).
-    let hk = find_exe("reshell.exe");
-    if hk.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hk).spawn().map(|_| ()))); }
-    let _ = wp.join(); // the BMP conversion (only on a fresh install or a new wallpaper) finishes before the desktop paints it
-    let desktop = dir().join("rust-explorer.exe");
-    let up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
-    if desktop.exists() && !up() { log(&format!("desktop spawn -> {:?}", quiet(&desktop).arg("--desktop").spawn().map(|_| ()))); }
-    if replace {
-        // Explorer is being replaced: this thread watches, the main one owns Win+D / Win+E
-        thread::spawn(move || overlay_watch(replace, desktop, up));
-        hotkey_loop();
-    } else {
-        overlay_watch(replace, desktop, up);
+fn desktop_window() -> HWND {
+    unsafe { FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()) }
+}
+
+fn desktop_ready(window: HWND) -> bool {
+    // A named window can exist before it is visible or while its UI thread is hung.
+    unsafe { !window.is_null() && IsWindowVisible(window) != 0 && IsHungAppWindow(window) == 0 }
+}
+
+fn desktop_responds() -> bool {
+    let window = desktop_window();
+    // Probe the message loop at the hand-off only, not on every watchdog tick.
+    desktop_ready(window) && unsafe {
+        SendMessageTimeoutW(window, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 100, ptr::null_mut()) != 0
     }
 }
 
-/// Keeps topbar and the desktop alive. With `replace` it also ends the shell Explorer once both are up, and gives it back
-/// (so the user is never left without a shell) if the bar will not stay up.
-fn overlay_watch(replace: bool, desktop: PathBuf, up: impl Fn() -> bool) {
-    let (mut starts, mut misses, mut dmiss, mut stable, mut killed) = (0, 0, 0, 0, false);
+fn start_desktop(path: &std::path::Path, child: &mut Option<Child>) {
+    if !path.is_file() || !desktop_window().is_null() {
+        return;
+    }
+    if let Some(process) = child {
+        if !matches!(process.try_wait(), Ok(Some(_))) {
+            return; // a previous launch may still be starting or loading the desktop
+        }
+    }
+    match quiet(path).arg("--desktop").spawn() {
+        Ok(process) => {
+            *child = Some(process);
+            log("desktop started");
+        }
+        Err(error) => log(&format!("desktop could not start: {error}")),
+    }
+}
+
+fn stop_desktop(child: Option<Child>) {
+    if let Some(mut child) = child {
+        let _ = child.kill();
+    }
+    // Settings can have relaunched the desktop. Only stop the process behind our
+    // window when it is the file manager running in desktop mode.
+    let window = desktop_window();
+    if window.is_null() {
+        return;
+    }
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(window, &mut pid) };
+    if !winrust_common::proc::exe_name(pid).is_some_and(|name| name.eq_ignore_ascii_case("rust-explorer.exe"))
+        || !winrust_common::proc::cmdline(pid).is_some_and(|args| args.split_whitespace().last() == Some("--desktop"))
+    {
+        return;
+    }
+    winrust_common::proc::kill(pid);
+    // Explorer can open as a folder host instead of the shell while our Progman exists.
+    for _ in 0..20 {
+        if desktop_window().is_null() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    log("overlay: desktop window still present after stop");
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DesktopAction {
+    Wait,
+    Restart,
+    RestoreExplorer,
+}
+
+fn wants_desktop(replace: bool, desktop_overlay: bool) -> bool {
+    replace || desktop_overlay
+}
+
+fn watch_desktop(misses: &mut u8, ready: bool, lent: bool, replaced: bool) -> DesktopAction {
+    if ready || lent {
+        *misses = 0;
+        return DesktopAction::Wait;
+    }
+    *misses += 1;
+    if replaced && *misses >= 4 {
+        return DesktopAction::RestoreExplorer;
+    }
+    if *misses == 2 {
+        if !replaced {
+            *misses = 0;
+        }
+        DesktopAction::Restart
+    } else {
+        DesktopAction::Wait
+    }
+}
+
+fn overlay(desktop_overlay: bool) {
+    unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+    // The logon task, the Run entry and a manual launch must share one watchdog.
+    let instance = unsafe {
+        windows_sys::Win32::System::Threading::CreateMutexW(ptr::null(), 0, wide("Local\\WinRust-rs-overlay").as_ptr())
+    };
+    if instance.is_null() || unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        return; // Windows releases our handle when the process exits
+    }
+
+    let replace = replace_on();
+    let desktop = wants_desktop(replace, desktop_overlay).then(|| dir().join("rust-explorer.exe"));
+    log(&format!("overlay start (replace explorer: {replace}, custom desktop: {})", desktop.is_some()));
+    let wp = desktop.as_ref().map(|_| thread::spawn(wallpaper_bmp));
+    if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
+    // Win+I / Win+E / Win+D live in reshell: its Run entry may be missing (another account's HKCU).
+    let hk = find_exe("reshell.exe");
+    if hk.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hk).spawn().map(|_| ()))); }
+    if let Some(wp) = wp {
+        let _ = wp.join();
+    }
+    overlay_watch(replace, desktop);
+}
+
+/// Gives the system taskbar back and starts Explorer if there is no shell in this session.
+fn restore_overlay_shell(replace: bool, desktop: bool, child: Option<Child>) {
+    if desktop {
+        stop_desktop(child);
+    }
+    let _ = quiet(find_exe("topbar.exe")).arg("--restore").creation_flags(NO_WINDOW).status();
+    if replace && unsafe { GetShellWindow() }.is_null() && !winrust_common::settings::explorer_lent() {
+        start_shell_explorer();
+    }
+}
+
+/// Watches the selected surfaces and only gives up Explorer once both replacements are ready.
+fn overlay_watch(replace: bool, desktop: Option<PathBuf>) {
+    let (mut starts, mut misses, mut dmiss, mut stable, mut replaced) = (0, 0, 0, 0, false);
+    let mut child = None;
+    if let Some(path) = &desktop {
+        if !winrust_common::settings::explorer_lent() {
+            start_desktop(path, &mut child);
+        }
+    }
+
     let began = Instant::now();
-    // newer builds write no markers: watch for the autostart programs themselves instead of always waiting the full grace
     let (expected, untracked) = if replace { expected_autostart(&autostart()) } else { (vec![], 0) };
     if replace { log(&format!("autostart to wait for: {} exe(s) {:?}, {} other entr(ies)", expected.len(), expected, untracked)); }
-    // what the shell Explorer has started so far, and when it last started something (Startup folder shortcuts and Store
-    // apps' startup tasks are its children too, even though we cannot name them in advance)
     let (mut kids, mut last) = (vec![], began);
     loop {
         thread::sleep(Duration::from_secs(3));
-        if replace && !killed {
-            // both our surfaces must be on screen before the system's one goes away
-            stable = if bar_up() && up() { stable + 1 } else { 0 };
-            let missing = missing_autostart(&expected, &winrust_common::proc::list());
-            last = last_start(&mut kids, winrust_common::proc::children(&winrust_common::proc::shell_explorers()), last, Instant::now());
-            if stable >= 3 && may_end_explorer(startup_run(), began.elapsed(), missing.is_empty(), untracked, last.elapsed()) {
-                log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", startup_run(), began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
-                kill_shell_explorer();
-                killed = true;
+        let bar = bar_up();
+        if let Some(path) = &desktop {
+            let ready = desktop_ready(desktop_window());
+            // Settings borrows Explorer temporarily. An Explorer started outside
+            // the watcher also takes priority over a desktop restart.
+            let lent = !ready && (winrust_common::settings::explorer_lent()
+                || (replaced && !unsafe { GetShellWindow() }.is_null()));
+            match watch_desktop(&mut dmiss, ready, lent, replaced) {
+                DesktopAction::Wait => {}
+                DesktopAction::Restart => start_desktop(path, &mut child),
+                DesktopAction::RestoreExplorer => {
+                    log("overlay: desktop did not recover, returning to the system shell");
+                    restore_overlay_shell(replace, true, child);
+                    return;
+                }
+            }
+
+            if replace && !replaced {
+                stable = if bar && ready { stable + 1 } else { 0 };
+                let missing = missing_autostart(&expected, &winrust_common::proc::list());
+                last = last_start(&mut kids, winrust_common::proc::children(&winrust_common::proc::shell_explorers()), last, Instant::now());
+                if stable >= 3 && may_end_explorer(startup_run(), began.elapsed(), missing.is_empty(), untracked, last.elapsed())
+                    && !winrust_common::settings::explorer_lent() && replace_on()
+                    && bar_up() && desktop_responds()
+                {
+                    log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", startup_run(), began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
+                    kill_shell_explorer();
+                    replaced = true;
+                    // Keep the watcher on the main thread so returning also ends the hotkey loop.
+                    thread::spawn(hotkey_loop);
+                }
             }
         }
-        // after we ended Explorer, a shell Explorer is back only because Settings needs it (common/src/settings.rs ends our
-        // desktop for that and brings it back when Settings closes): a desktop raised under it leaves Store apps cloaked
-        // asked only when the desktop is missing: a process snapshot plus a PEB read per explorer.exe every 3 s was for nothing
-        // the marker first: Settings sets it before it ends our desktop, so the gap until Explorer shows up is covered too
-        let lent = || winrust_common::settings::explorer_lent() || (replace && killed && !winrust_common::proc::shell_explorers().is_empty());
-        dmiss = if desktop.exists() && !up() && !lent() { dmiss + 1 } else { 0 };
-        if dmiss >= 2 { log(&format!("desktop respawn -> {:?}", quiet(&desktop).arg("--desktop").spawn().map(|_| ()))); dmiss = 0; }
-        if bar_up() { misses = 0; continue; }
+
+        if bar { misses = 0; continue; }
         misses += 1;
-        if misses < 2 { continue; }
+        if misses < 2 || (replace && winrust_common::settings::explorer_lent()) { continue; }
         starts += 1;
         if starts > 3 || quiet(find_exe("topbar.exe")).spawn().is_err() {
-            // the bar will not stay up: give the system's taskbar (and, if we ended it, Explorer) back and stop
-            let _ = quiet(find_exe("topbar.exe")).arg("--restore").creation_flags(NO_WINDOW).status();
-            if replace { start_shell_explorer(); }
-            log("overlay: topbar keeps dying, system shell restored");
+            log("overlay: topbar keeps dying, returning to the system shell");
+            restore_overlay_shell(replace, desktop.is_some(), child);
             return;
         }
         misses = 0;
@@ -465,7 +585,8 @@ fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let code = match a.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => { if !bootstrap() { run_shell(); } 0 }
-        ["--overlay"] => { overlay(); 0 }
+        ["--overlay"] => { overlay(false); 0 }
+        ["--overlay", "--desktop"] => { overlay(true); 0 }
         ["--dry-run"] => {
             println!("wallpaper: {:?}", reg(&["query", r"HKCU\Control Panel\Desktop", "/v", "WallPaper"]).map(|o| parse_run(&o)));
             autostart().iter().for_each(|c| println!("autostart: {c}"));
@@ -489,7 +610,7 @@ fn main() {
             println!("done: normal shell at the next sign-in");
             0
         }
-        _ => { eprintln!("usage: rs-shell [--enable | --disable | --dry-run]"); 2 }
+        _ => { eprintln!("usage: rs-shell [--enable | --disable | --dry-run | --overlay [--desktop]]"); 2 }
     };
     std::process::exit(code);
 }
@@ -510,6 +631,39 @@ mod tests {
         assert_eq!(&std::fs::read(&dst).unwrap()[..2], b"BM");
         let _ = std::fs::remove_file(dst);
     }
+    #[test]
+    fn custom_desktop_requires_replacement_or_explicit_overlay() {
+        assert!(!super::wants_desktop(false, false));
+        assert!(super::wants_desktop(true, false));
+        assert!(super::wants_desktop(false, true));
+        assert!(super::wants_desktop(true, true));
+    }
+
+    #[test]
+    fn desktop_failure_restarts_then_returns_to_explorer_after_handoff() {
+        use super::{DesktopAction::*, watch_desktop};
+        let mut misses = 0;
+        let expected = [Wait, Restart, Wait, RestoreExplorer];
+        for action in expected {
+            assert_eq!(watch_desktop(&mut misses, false, false, true), action);
+        }
+        assert_eq!(watch_desktop(&mut misses, false, true, true), Wait);
+        assert_eq!(misses, 0, "Settings owns Explorer temporarily");
+        assert_eq!(watch_desktop(&mut misses, false, false, true), Wait);
+        assert_eq!(watch_desktop(&mut misses, true, false, true), Wait);
+        assert_eq!(misses, 0, "a recovered desktop clears the counter");
+    }
+
+    #[test]
+    fn a_desktop_failure_before_handoff_keeps_explorer() {
+        use super::{DesktopAction::*, watch_desktop};
+        let mut misses = 0;
+        let expected = [Wait, Restart, Wait, Restart];
+        for action in expected {
+            assert_eq!(watch_desktop(&mut misses, false, false, false), action);
+        }
+    }
+
     #[test]
     fn ends_explorer_on_markers_or_after_grace() {
         let (s, q) = (Duration::from_secs, Duration::from_secs(8)); // q: Explorer has started nothing new for 8 s
