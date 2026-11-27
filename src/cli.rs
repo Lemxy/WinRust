@@ -1,6 +1,50 @@
 //! Command line: list / install / update / uninstall / rollback (see README).
 use crate::*;
 
+mod preview;
+
+const PREVIEW_USAGE: &str = "Usage: plugin-launcher install <plugin>...|all --dry-run --json";
+
+fn plugin_index(name: &str) -> Option<usize> {
+    PLUGINS.iter().position(|p| p.name == name)
+}
+
+fn install_indices<'a>(names: &[&'a str]) -> Result<Vec<usize>, &'a str> {
+    install_order(names, || ready().filter(|&i| selected_by_default(PLUGINS[i].name, false)), plugin_index)
+}
+
+fn unknown_plugin(n: &str) -> String {
+    tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}")
+}
+
+fn install_preview(args: Result<Vec<&str>, ()>) -> i32 {
+    let Ok(names) = args else {
+        eprintln!("{PREVIEW_USAGE}");
+        return 2;
+    };
+    let indices = match install_indices(&names) {
+        Ok(indices) => indices,
+        Err(name) => {
+            eprintln!("{}", unknown_plugin(name));
+            return 2;
+        }
+    };
+
+    let document = preview::json(indices.into_iter().map(|i| {
+        let plugin = &PLUGINS[i];
+        let warning = if plugin.actions.is_some() { plugin.warn.get() } else { plugin.desc.get() };
+        (plugin.name, warning)
+    }));
+    let mut stdout = std::io::stdout().lock();
+    match writeln!(stdout, "{document}").and_then(|_| stdout.flush()) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("Could not write the install preview: {error}");
+            1
+        }
+    }
+}
+
 // ---------- command line ----------
 //
 //   plugin-launcher list
@@ -14,7 +58,20 @@ use crate::*;
 pub(crate) fn cli(args: &[String]) -> i32 {
     // A windows-subsystem exe has no console of its own: use stdout if the caller redirected it (pipe, file),
     // else attach to the parent's console and write to it directly.
-    let redirected = unsafe { !GetStdHandle(STD_OUTPUT_HANDLE).is_null() && GetStdHandle(STD_OUTPUT_HANDLE) != INVALID_HANDLE_VALUE };
+    let stdout_available = || {
+        let output = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        !output.is_null() && output != INVALID_HANDLE_VALUE
+    };
+    let redirected = stdout_available();
+    if let Some(args) = preview::install_args(args) {
+        if !redirected {
+            unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+            if !stdout_available() {
+                return 1;
+            }
+        }
+        return install_preview(args);
+    }
     let mut out: Box<dyn Write> = if redirected {
         Box::new(std::io::stdout())
     } else {
@@ -46,7 +103,6 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             words.push(a);
         }
     }
-    let find = |n: &str| PLUGINS.iter().position(|p| p.name == n);
     if let Some(code) = &lang_arg {
         let l = i18n::Lang::parse(code);
         i18n::set_lang(l);
@@ -61,19 +117,10 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             return 0;
         }
         ["install", names @ ..] if !names.is_empty() => {
-            // Order of the table, so topbar comes before rust-explorer if both are requested.
-            let mut idx = Vec::new();
-            for n in names {
-                match *n {
-                    "all" => idx.extend(ready().filter(|&i| selected_by_default(PLUGINS[i].name, false))),
-                    n => match find(n) {
-                        Some(i) => idx.push(i),
-                        None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}")); 2 },
-                    },
-                }
-            }
-            idx.sort_unstable();
-            idx.dedup();
+            let idx = match install_indices(names) {
+                Ok(indices) => indices,
+                Err(name) => return { say(&unknown_plugin(name)); 2 },
+            };
             if !yes {
                 for &i in &idx {
                     say(&format!("{}: {}", PLUGINS[i].name, PLUGINS[i].warn.get()));
@@ -111,12 +158,12 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             }
             return if failed { 1 } else { 0 };
         }
-        ["update", n] => match find(n) {
+        ["update", n] => match plugin_index(n) {
             None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}")); 2 },
             Some(i) if !(PLUGINS[i].installed)() => return { say(&tf!("{n} не установлен (используйте install)", "{n} is not installed (use install)", ja: "{n} はインストールされていません (install を使用してください)", pt: "{n} não está instalado (use install)", zh: "{n} 未安装（请使用 install）")); 2 },
             Some(i) => install_plugin(i),
         },
-        ["uninstall", n] => match find(n) {
+        ["uninstall", n] => match plugin_index(n) {
             None => return { say(&tf!("неизвестный плагин: {n}", "unknown plugin: {n}", ja: "不明なプラグイン: {n}", pt: "plugin desconhecido: {n}", zh: "未知插件：{n}")); 2 },
             Some(i) if !(PLUGINS[i].installed)() => return { say(&tf!("{n} не установлен", "{n} is not installed", ja: "{n} はインストールされていません", pt: "{n} não está instalado", zh: "{n} 未安装")); 0 },
             Some(i) => uninstall_plugin(i),
@@ -124,7 +171,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         ["autoupdate"] => autoupdate(),
         ["rollback"] if yes => rollback(),
         ["rollback"] => return { say(t!("Удаляет все установленные плагины. Повторите с --yes.", "Removes every installed plugin. Repeat with --yes.", ja: "インストール済みのプラグインをすべて削除します。--yes を付けてやり直してください。", pt: "Remove todos os plugins instalados. Repita com --yes.", zh: "会移除所有已安装的插件。请加上 --yes 重新执行。")); 2 },
-        _ => return { say(usage); 2 },
+        _ => return { say(usage); say(PREVIEW_USAGE); 2 },
     };
     match result {
         Ok(m) => { say(&m); 0 }

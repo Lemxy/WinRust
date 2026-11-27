@@ -178,11 +178,14 @@ From a terminal **with administrator rights**:
 ```
 plugin-launcher list
 plugin-launcher install <plugin>... --yes (one or more names, or `all` for the default components; without --yes it only prints warnings)
+plugin-launcher install <plugin>...|all --dry-run --json
 plugin-launcher update <plugin>|all        (reinstall from payload\ next to the exe)
 plugin-launcher uninstall <plugin>
 plugin-launcher rollback --yes           (remove everything)
 plugin-launcher autoupdate               (one update check now: what the WinRust-update task runs)
 ```
+
+Before installing, run `plugin-launcher install rust-explorer topbar --dry-run --json`. It prints one JSON object to stdout with a `components` array. Each entry has a one-based `order`, a `name` and a `warning`. For example, `topbar` is listed before `rust-explorer` even if you name it second. This is the order in which `install` considers the selected components. An actual install skips components that are already installed. The preview leaves settings and files alone, including the installer language. Use both flags without `--yes` or `--lang`.
 
 To include `rust-explorer` in a fresh bulk install, run `plugin-launcher install all rust-explorer --yes`. If `topbar` is already installed, you can install `rust-explorer` on its own.
 Several plugins in one command are installed in the table's order (topbar before rust-explorer); one that fails does not stop the rest. Exit codes: 0 success, 1 error (at least one plugin failed), 2 bad arguments or no `--yes`. With no arguments the window opens. Install log: `%ProgramData%\plugin-launcher\install.log`.

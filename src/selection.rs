@@ -6,6 +6,25 @@ pub(crate) fn selected_by_default(name: &str, installed: bool) -> bool {
     name != RUST_EXPLORER || installed
 }
 
+/// Resolve explicit names and "all" in installer table order, regardless of the argument order.
+pub(crate) fn install_order<'a, I: Iterator<Item = usize>>(
+    names: &[&'a str],
+    defaults: impl Fn() -> I,
+    find: impl Fn(&str) -> Option<usize>,
+) -> Result<Vec<usize>, &'a str> {
+    let mut indices = Vec::new();
+    for &name in names {
+        if name == "all" {
+            indices.extend(defaults());
+        } else {
+            indices.push(find(name).ok_or(name)?);
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Ok(indices)
+}
+
 /// The "Express" choice of the window: the recommended components (not the Explorer replacement, never the extras), and
 /// everything already installed stays (express never removes anything).
 pub(crate) fn express_pick(name: &str, bulk: bool, installed: bool) -> bool {
@@ -32,6 +51,15 @@ pub(crate) fn linked(name: &str, on: bool) -> Option<(&'static str, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_order_expands_defaults_and_deduplicates_in_table_order() {
+        let plugins = ["rust-search", "topbar", RUST_EXPLORER, "purge"];
+        let defaults = || [0, 1].into_iter();
+        let find = |name: &str| plugins.iter().position(|&plugin| plugin == name);
+        assert_eq!(install_order(&[RUST_EXPLORER, "all", "topbar"], defaults, find), Ok(vec![0, 1, 2]));
+        assert_eq!(install_order(&["purge", "unknown"], defaults, find), Err("unknown"));
+    }
 
     #[test]
     fn plan_touches_only_the_difference() {
