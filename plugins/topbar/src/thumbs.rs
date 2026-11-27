@@ -12,6 +12,15 @@ pub(crate) const CARD_H: i32 = 160;
 pub(crate) const GAP: i32 = 10;
 const TITLE: i32 = 28;
 
+/// Unscaled Alt+Tab card dimensions for `size` (0 small, 1 normal/default, 2 large).
+pub(crate) fn alttab_card_size(size: u8) -> (i32, i32) {
+    match size {
+        0 => (CARD_W, CARD_H),
+        2 => (380, 276),
+        _ => (300, 218),
+    }
+}
+
 /// `n` cards of `cw` x `ch` in rows that fit `aw` x `ah`: the rows are balanced, a short last row is centered, and the
 /// cards shrink (down to a third) when there are too many. Returns the card rects from (0,0) and the total width / height.
 pub(crate) fn grid(n: usize, aw: i32, ah: i32, cw: i32, ch: i32, gap: i32) -> (Vec<RECT>, i32, i32) {
@@ -304,5 +313,14 @@ mod tests {
     #[test]
     fn grid_of_nothing_is_empty() {
         assert_eq!(grid(0, 100, 100, 10, 10, 1).0.len(), 0);
+    }
+
+    #[test]
+    fn alttab_card_sizes_grow_from_small_to_large() {
+        let s = super::alttab_card_size(0);
+        let n = super::alttab_card_size(1);
+        let l = super::alttab_card_size(2);
+        assert!(s.0 < n.0 && n.0 < l.0);
+        assert!(s.1 < n.1 && n.1 < l.1);
     }
 }

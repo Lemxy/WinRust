@@ -445,6 +445,7 @@ pub fn reset_all() {
     set_autohide(false);
     set_align_left(false);
     set_alttab_per_monitor(false);
+    set_alttab_size(1);
     Theme { name: String::new(), style: Style::Normal, colors: [u32::MAX; 7], opacity: 100 }.apply();
 }
 
@@ -666,5 +667,31 @@ pub fn set_alttab_per_monitor(on: bool) {
     if let Some(f) = mon_file() {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, if on { "1" } else { "0" });
+    }
+}
+
+fn alttab_size_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("alttab-size.txt"))
+}
+
+static ALTTAB_SIZE: AtomicU8 = AtomicU8::new(1);
+static ALTTAB_SIZE_AT: AtomicU64 = AtomicU64::new(0);
+
+/// Size class of the Alt+Tab switcher cards: 0 small, 1 normal (default), 2 large. Re-read once a second.
+pub fn alttab_size() -> u8 {
+    if now_ms().saturating_sub(ALTTAB_SIZE_AT.load(Relaxed)) > 1000 {
+        let v = alttab_size_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| s.trim().parse::<u8>().ok()).filter(|v| *v <= 2).unwrap_or(1);
+        ALTTAB_SIZE.store(v, Relaxed);
+        ALTTAB_SIZE_AT.store(now_ms(), Relaxed);
+    }
+    ALTTAB_SIZE.load(Relaxed)
+}
+
+pub fn set_alttab_size(v: u8) {
+    ALTTAB_SIZE.store(v.min(2), Relaxed);
+    ALTTAB_SIZE_AT.store(now_ms(), Relaxed);
+    if let Some(f) = alttab_size_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, v.min(2).to_string());
     }
 }

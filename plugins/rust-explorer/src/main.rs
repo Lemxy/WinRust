@@ -437,11 +437,12 @@ fn set_icons_hidden(hide: bool) {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn bg_menu(h: HWND) {
     let m = CreatePopupMenu();
-    menu::item(m, 1, "\u{E8F4}", t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), false);
-    menu::item(m, 2, "\u{E8A5}", t!("Новый текстовый файл", "New text file", ja: "新しいテキスト ドキュメント", pt: "Novo arquivo de texto", zh: "新建文本文件"), false);
-    menu::item(m, 3, "\u{E77F}", t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴"), false);
-    menu::sep(m);
+    let disk = tool("wiztree");
     if !desk() {
+        menu::item(m, 1, "\u{E8F4}", t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), false);
+        menu::item(m, 2, "\u{E8A5}", t!("Новый текстовый файл", "New text file", ja: "新しいテキスト ドキュメント", pt: "Novo arquivo de texto", zh: "新建文本文件"), false);
+        menu::item(m, 3, "\u{E77F}", t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴"), false);
+        menu::sep(m);
         let sort = CreatePopupMenu();
         let (col, asc) = (SORT_COL.load(Relaxed), SORT_ASC.load(Relaxed));
         // columns of sort_rows: 0 name, 1 modified, 2 type, 3 size
@@ -459,21 +460,41 @@ unsafe fn bg_menu(h: HWND) {
         menu::item(sort, 14, "\u{E8B7}", t!("Папки сверху", "Folders first", ja: "フォルダーを先頭に表示", pt: "Pastas primeiro", zh: "文件夹优先"), !mixed_marker().exists());
         menu::submenu(m, "\u{E8CB}", t!("Сортировка", "Sort by", ja: "並べ替え", pt: "Classificar por", zh: "排序方式"), sort);
         menu::item(m, 13, "\u{E81C}", t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组"), group_on());
+        menu::sep(m);
+        menu::item(m, 4, "\u{E72C}", t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新"), false);
+        if disk.is_some() { menu::item(m, 6, "\u{EDA2}", t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）"), false); }
+        menu::item(m, 5, "\u{E946}", t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性"), false);
     } else {
-        menu::item(m, 8, "\u{E8D2}", t!("Упорядочить значки по имени", "Sort icons by name", ja: "名前順にアイコンを並べ替え", pt: "Classificar ícones por nome", zh: "按名称排列图标"), false);
-        menu::item(m, 9, "\u{E787}", t!("Упорядочить значки по дате", "Sort icons by date", ja: "日付順にアイコンを並べ替え", pt: "Classificar ícones por data", zh: "按日期排列图标"), false);
-        menu::item(m, 10, "\u{E9D9}", t!("Упорядочить значки по размеру", "Sort icons by size", ja: "サイズ順にアイコンを並べ替え", pt: "Classificar ícones por tamanho", zh: "按大小排列图标"), false);
-        menu::item(m, 11, "\u{E80A}", t!("Выровнять значки", "Arrange icons", ja: "アイコンの整列", pt: "Alinhar ícones", zh: "排列图标"), false);
-        let lbl = if small_marker().exists() { t!("Крупные значки", "Large icons", ja: "大きいアイコン", pt: "Ícones grandes", zh: "大图标") } else { t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标") };
-        menu::item(m, 12, "\u{E8A9}", lbl, false);
-        let lbl = if icons_hidden() { t!("Показать значки рабочего стола", "Show desktop icons", ja: "デスクトップ アイコンを表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标") } else { t!("Скрыть значки рабочего стола", "Hide desktop icons", ja: "デスクトップ アイコンを非表示", pt: "Ocultar ícones da área de trabalho", zh: "隐藏桌面图标") };
-        menu::item(m, 7, "\u{E7B3}", lbl, false);
+        // Classic Windows desktop context menu layout, rendered purely by WinRust (no Windows shell).
+        let view = CreatePopupMenu();
+        let small = small_marker().exists();
+        menu::item(view, 15, "\u{E8A9}", t!("Крупные значки", "Large icons", ja: "大きいアイコン", pt: "Ícones grandes", zh: "大图标"), !small);
+        menu::item(view, 16, "\u{E8A9}", t!("Мелкие значки", "Small icons", ja: "小さいアイコン", pt: "Ícones pequenos", zh: "小图标"), small);
+        menu::sep(view);
+        menu::item(view, 11, "\u{E80A}", t!("Выровнять значки", "Align icons to grid", ja: "アイコンを等間隔に整列", pt: "Alinhar ícones à grade", zh: "将图标与网格对齐"), false);
+        menu::item(view, 7, "\u{E7B3}", t!("Отображать значки рабочего стола", "Show desktop icons", ja: "デスクトップ アイコンの表示", pt: "Mostrar ícones da área de trabalho", zh: "显示桌面图标"), !icons_hidden());
+        menu::submenu(m, "\u{E8A9}", t!("Вид", "View", ja: "表示", pt: "Exibir", zh: "查看"), view);
+
+        let sort = CreatePopupMenu();
+        let col = SORT_COL.load(Relaxed);
+        menu::item(sort, 8, "\u{E8D2}", t!("Имя", "Name", ja: "名前", pt: "Nome", zh: "名称"), col == 0);
+        menu::item(sort, 9, "\u{E787}", t!("Дата изменения", "Date modified", ja: "更新日時", pt: "Data de modificação", zh: "修改日期"), col == 1);
+        menu::item(sort, 10, "\u{E9D9}", t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小"), col == 3);
+        menu::submenu(m, "\u{E8CB}", t!("Сортировка", "Sort by", ja: "並べ替え", pt: "Classificar por", zh: "排序方式"), sort);
+
+        menu::item(m, 4, "\u{E72C}", t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新"), false);
+        menu::sep(m);
+        menu::item(m, 3, "\u{E77F}", t!("Вставить", "Paste", ja: "貼り付け", pt: "Colar", zh: "粘贴"), false);
+        let new_m = CreatePopupMenu();
+        menu::item(new_m, 1, "\u{E8F4}", t!("Папку", "Folder", ja: "フォルダー", pt: "Pasta", zh: "文件夹"), false);
+        menu::item(new_m, 2, "\u{E8A5}", t!("Текстовый документ", "Text Document", ja: "テキスト ドキュメント", pt: "Documento de Texto", zh: "文本文档"), false);
+        menu::submenu(m, "\u{E710}", t!("Создать", "New", ja: "新規作成", pt: "Novo", zh: "新建"), new_m);
+        menu::sep(m);
+        menu::item(m, 17, "\u{E7F4}", t!("Параметры экрана", "Display settings", ja: "ディスプレイ設定", pt: "Configurações de exibição", zh: "显示设置"), false);
+        menu::item(m, 18, "\u{E771}", t!("Персонализация", "Personalize", ja: "個人用設定", pt: "Personalizar", zh: "个性化"), false);
+        if disk.is_some() { menu::item(m, 6, "\u{EDA2}", t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）"), false); }
+        menu::item(m, 5, "\u{E946}", t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性"), false);
     }
-    menu::sep(m);
-    menu::item(m, 4, "\u{E72C}", t!("Обновить", "Refresh", ja: "最新の情報に更新", pt: "Atualizar", zh: "刷新"), false);
-    let disk = tool("wiztree");
-    if disk.is_some() { menu::item(m, 6, "\u{EDA2}", t!("Занятое место (WinRust Disk)", "Disk usage (WinRust Disk)", ja: "ディスク使用量 (WinRust Disk)", pt: "Uso do disco (WinRust Disk)", zh: "磁盘占用（WinRust Disk）"), false); }
-    menu::item(m, 5, "\u{E946}", t!("Свойства", "Properties", ja: "プロパティ", pt: "Propriedades", zh: "属性"), false);
     let id = menu::track(h, m);
     let dir = cur_dir();
     match id {
@@ -488,9 +509,10 @@ unsafe fn bg_menu(h: HWND) {
             let k = mixed_marker();
             if k.exists() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
         }
-        12 => { // the grid changes with the size: icons are laid out again
+        15 | 16 => { // large (15) / small (16): the grid changes with the size, so icons are laid out again
             let k = small_marker();
-            if k.exists() { let _ = fs::remove_file(&k); } else { let _ = fs::write(&k, "1"); }
+            let want_small = id == 16;
+            if want_small { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); } else { let _ = fs::remove_file(&k); }
             apply_icon_size(ST.with_borrow(|st| st.list));
             let _ = fs::remove_file(desk::pos_file());
         }
@@ -498,6 +520,8 @@ unsafe fn bg_menu(h: HWND) {
             if id != 11 { SORT_COL.store([0, 1, 3][id as usize - 8], Relaxed); SORT_ASC.store(true, Relaxed); }
             let _ = fs::remove_file(desk::pos_file());
         }
+        17 => { let _ = ShellExecuteW(h, ptr::null(), w("ms-settings:display").as_ptr(), ptr::null(), ptr::null(), SW_SHOW); }
+        18 => { let _ = ShellExecuteW(h, ptr::null(), w("ms-settings:personalization").as_ptr(), ptr::null(), ptr::null(), SW_SHOW); }
         6 => { // wiztree takes the drive letter and asks for admin rights itself
             let drive: String = dir.to_string_lossy().chars().take(2).collect();
             if let Some(exe) = disk { let _ = std::process::Command::new(exe).arg(drive).spawn(); }
