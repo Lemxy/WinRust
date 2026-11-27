@@ -11,7 +11,10 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Graphics::Gdi::*,
+    Graphics::{
+        Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
+        Gdi::*,
+    },
     System::LibraryLoader::GetModuleHandleW,
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
@@ -23,8 +26,11 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 struct St {
     orig: HBITMAP,
     dim: HBITMAP,
+    buf: HBITMAP,
     w: i32,
     h: i32,
+    wins: Vec<RECT>,
+    hovered: Option<RECT>,
     from: Option<(i32, i32)>,
     to: (i32, i32),
 }
@@ -38,8 +44,62 @@ fn rect(a: (i32, i32), b: (i32, i32)) -> RECT {
     RECT { left: a.0.min(b.0), top: a.1.min(b.1), right: a.0.max(b.0), bottom: a.1.max(b.1) }
 }
 
+fn win_at(wins: &[RECT], pt: (i32, i32)) -> Option<RECT> {
+    wins.iter().find(|r| pt.0 >= r.left && pt.0 < r.right && pt.1 >= r.top && pt.1 < r.bottom).copied()
+}
+
+fn sel_of(from: Option<(i32, i32)>, to: (i32, i32), hovered: Option<RECT>) -> Option<RECT> {
+    match from {
+        Some(f) if (f.0 - to.0).abs() >= 3 || (f.1 - to.1).abs() >= 3 => Some(rect(f, to)),
+        _ => hovered,
+    }
+}
+
 fn sel() -> Option<RECT> {
-    ST.with_borrow(|s| s.as_ref().and_then(|s| s.from.map(|f| rect(f, s.to))))
+    ST.with_borrow(|s| s.as_ref().and_then(|s| sel_of(s.from, s.to, s.hovered)))
+}
+
+unsafe fn collect_wins(vx: i32, vy: i32, vw: i32, vh: i32) -> Vec<RECT> {
+    struct Ctx {
+        vx: i32,
+        vy: i32,
+        vw: i32,
+        vh: i32,
+        out: Vec<RECT>,
+    }
+    unsafe extern "system" fn cb(w: HWND, lp: LPARAM) -> i32 {
+        let ctx = unsafe { &mut *(lp as *mut Ctx) };
+        if unsafe { IsWindowVisible(w) == 0 || IsIconic(w) != 0 } {
+            return 1;
+        }
+        let ex = unsafe { GetWindowLongW(w, GWL_EXSTYLE) } as u32;
+        if ex & WS_EX_TOOLWINDOW != 0 {
+            return 1;
+        }
+        let mut cloaked = 0u32;
+        if unsafe { DwmGetWindowAttribute(w, DWMWA_CLOAKED as u32, &mut cloaked as *mut u32 as _, size_of::<u32>() as u32) } == 0 && cloaked != 0 {
+            return 1;
+        }
+        let mut r: RECT = unsafe { std::mem::zeroed() };
+        if unsafe { DwmGetWindowAttribute(w, DWMWA_EXTENDED_FRAME_BOUNDS as u32, &mut r as *mut RECT as _, size_of::<RECT>() as u32) } != 0
+            && unsafe { GetWindowRect(w, &mut r) } == 0
+        {
+            return 1;
+        }
+        let r = RECT {
+            left: (r.left - ctx.vx).clamp(0, ctx.vw),
+            top: (r.top - ctx.vy).clamp(0, ctx.vh),
+            right: (r.right - ctx.vx).clamp(0, ctx.vw),
+            bottom: (r.bottom - ctx.vy).clamp(0, ctx.vh),
+        };
+        if r.right - r.left >= 3 && r.bottom - r.top >= 3 {
+            ctx.out.push(r);
+        }
+        1
+    }
+    let mut ctx = Ctx { vx, vy, vw, vh, out: Vec::new() };
+    EnumWindows(Some(cb), &mut ctx as *mut Ctx as LPARAM);
+    ctx.out
 }
 
 pub fn start() {
@@ -61,7 +121,7 @@ unsafe fn run() {
     }
     let scr = GetDC(null_mut());
     let (mem, dd, one) = (CreateCompatibleDC(scr), CreateCompatibleDC(scr), CreateCompatibleDC(scr));
-    let (orig, dim, black) = (CreateCompatibleBitmap(scr, w, h), CreateCompatibleBitmap(scr, w, h), CreateCompatibleBitmap(scr, 1, 1));
+    let (orig, dim, buf, black) = (CreateCompatibleBitmap(scr, w, h), CreateCompatibleBitmap(scr, w, h), CreateCompatibleBitmap(scr, w, h), CreateCompatibleBitmap(scr, 1, 1));
     let (o1, o2, o3) = (SelectObject(mem, orig), SelectObject(dd, dim), SelectObject(one, black));
     BitBlt(mem, 0, 0, w, h, scr, vx, vy, SRCCOPY | 0x4000_0000); // CAPTUREBLT: layered windows too
     BitBlt(dd, 0, 0, w, h, mem, 0, 0, SRCCOPY);
@@ -75,7 +135,11 @@ unsafe fn run() {
     }
     DeleteObject(black);
     ReleaseDC(null_mut(), scr);
-    ST.set(Some(St { orig, dim, w, h, from: None, to: (0, 0) }));
+    let wins = collect_wins(vx, vy, w, h);
+    let mut cur_pt: POINT = std::mem::zeroed();
+    GetCursorPos(&mut cur_pt);
+    let hovered = win_at(&wins, (cur_pt.x - vx, cur_pt.y - vy));
+    ST.set(Some(St { orig, dim, buf, w, h, wins, hovered, from: None, to: (0, 0) }));
 
     let (cls, hi) = (super::wide("WinRustClip"), GetModuleHandleW(null()));
     let mut wc: WNDCLASSW = std::mem::zeroed();
@@ -95,6 +159,7 @@ unsafe fn run() {
     }
     DeleteObject(orig);
     DeleteObject(dim);
+    DeleteObject(buf);
     ST.set(None);
 }
 
@@ -102,21 +167,25 @@ unsafe fn paint(hw: HWND) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let hdc = BeginPaint(hw, &mut ps);
     let p = ps.rcPaint;
-    let mem = CreateCompatibleDC(hdc);
-    let (dim, orig) = ST.with_borrow(|s| s.as_ref().map(|s| (s.dim, s.orig))).unwrap_or((null_mut(), null_mut()));
-    let old = SelectObject(mem, dim);
-    BitBlt(hdc, p.left, p.top, p.right - p.left, p.bottom - p.top, mem, p.left, p.top, SRCCOPY);
+    let (pw, ph) = (p.right - p.left, p.bottom - p.top);
+    let (dim, orig, buf) = ST.with_borrow(|s| s.as_ref().map(|s| (s.dim, s.orig, s.buf))).unwrap_or((null_mut(), null_mut(), null_mut()));
+    let (src_dc, buf_dc) = (CreateCompatibleDC(hdc), CreateCompatibleDC(hdc));
+    let (old_src, old_buf) = (SelectObject(src_dc, dim), SelectObject(buf_dc, buf));
+    BitBlt(buf_dc, p.left, p.top, pw, ph, src_dc, p.left, p.top, SRCCOPY);
     if let Some(r) = sel() {
         // the bright part: the selection within the dirty area
         let (l, t, rr, b) = (r.left.max(p.left), r.top.max(p.top), r.right.min(p.right), r.bottom.min(p.bottom));
-        SelectObject(mem, orig);
+        SelectObject(src_dc, orig);
         if rr > l && b > t {
-            BitBlt(hdc, l, t, rr - l, b - t, mem, l, t, SRCCOPY);
+            BitBlt(buf_dc, l, t, rr - l, b - t, src_dc, l, t, SRCCOPY);
         }
-        FrameRect(hdc, &RECT { left: r.left - 1, top: r.top - 1, right: r.right + 1, bottom: r.bottom + 1 }, GetStockObject(WHITE_BRUSH) as HBRUSH);
+        FrameRect(buf_dc, &RECT { left: r.left - 1, top: r.top - 1, right: r.right + 1, bottom: r.bottom + 1 }, GetStockObject(WHITE_BRUSH) as HBRUSH);
     }
-    SelectObject(mem, old);
-    DeleteDC(mem);
+    BitBlt(hdc, p.left, p.top, pw, ph, buf_dc, p.left, p.top, SRCCOPY);
+    SelectObject(src_dc, old_src);
+    SelectObject(buf_dc, old_buf);
+    DeleteDC(src_dc);
+    DeleteDC(buf_dc);
     EndPaint(hw, &ps);
 }
 
@@ -184,13 +253,20 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             0
         }
         WM_MOUSEMOVE => {
-            if wp & 1 != 0 && sel().is_some() { // MK_LBUTTON
-                let before = sel();
-                ST.with_borrow_mut(|s| {
-                    if let Some(s) = s {
-                        s.to = (pt.0.clamp(0, s.w), pt.1.clamp(0, s.h));
+            let before = sel();
+            let dragging = wp & 1 != 0 && ST.with_borrow(|s| s.as_ref().is_some_and(|s| s.from.is_some()));
+            ST.with_borrow_mut(|s| {
+                if let Some(s) = s {
+                    let clamped = (pt.0.clamp(0, s.w), pt.1.clamp(0, s.h));
+                    if dragging {
+                        s.to = clamped;
+                    } else {
+                        s.hovered = win_at(&s.wins, clamped);
                     }
-                });
+                }
+            });
+            let key = |r: Option<RECT>| r.map(|r| (r.left, r.top, r.right, r.bottom));
+            if key(sel()) != key(before) {
                 dirty(hw, before);
             }
             0
@@ -213,5 +289,25 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             0
         }
         _ => DefWindowProcW(hw, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn win_at_picks_topmost_window_and_sel_prefers_drag() {
+        let wins = [
+            RECT { left: 100, top: 100, right: 300, bottom: 300 },
+            RECT { left: 0, top: 0, right: 500, bottom: 500 },
+        ];
+        assert_eq!(win_at(&wins, (150, 150)).map(|r| r.right), Some(300));
+        assert_eq!(win_at(&wins, (50, 50)).map(|r| r.right), Some(500));
+        assert!(win_at(&wins, (600, 600)).is_none());
+
+        let hov = Some(wins[0]);
+        assert_eq!(sel_of(Some((150, 150)), (151, 151), hov).map(|r| r.right), Some(300)); // click picks hovered window
+        assert_eq!(sel_of(Some((10, 10)), (80, 90), hov).map(|r| (r.left, r.right)), Some((10, 80))); // drag overrides
     }
 }
