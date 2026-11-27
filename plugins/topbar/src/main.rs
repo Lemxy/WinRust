@@ -41,7 +41,7 @@ use windows::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Globalization::{GetDateFormatW, GetLocaleInfoW, GetTimeFormatW},
+    Globalization::{GetDateFormatW, GetTimeFormatW},
     Graphics::{
         Dwm::DwmGetWindowAttribute,
         Gdi::*,
@@ -126,18 +126,12 @@ const BAR_H: i32 = 40;
 const NONE: i32 = -1;
 const SEARCH: i32 = -10;
 const TASKVIEW: i32 = -14; // Task View button (virtual desktops), right of search (#83)
-const LEAD: i32 = 2; // slots before Start: search, Task View
 const CLOCK: i32 = -4;
-const LANG: i32 = -6;
 const WIFI_I: i32 = -7;
 const VOL_I: i32 = -8;
 const BAT_I: i32 = -9;
 const TAPP: i32 = -1000;
 const SHOWDESK: i32 = -13; // the thin strip right of the clock: show desktop (#87)
-const GEAR: i32 = -12; // the gear at the left end: the Style menu
-const GEAR_X: (i32, i32) = (6, 36); // its left edge and width, before scaling (sc() is applied where used)
-const POW_R: i32 = -15; // Restart button next to the clock (#173)
-const POW_S: i32 = -16; // Shut down button
 const SYS_GRP: i32 = -11; // hover key of the one pill around wifi + volume + battery (they open the same panel)
 const WIN_START: u32 = WM_APP + 10; // posted by the keyboard hook: Win key pressed alone
 const ALT_TAB: u32 = WM_APP + 11; // posted by the keyboard hook: Alt+Tab (wp 1 = Shift held: backwards)
@@ -445,11 +439,8 @@ unsafe fn tip_text(h: i32) -> String {
     match h {
         SEARCH => "Search".into(),
         TASKVIEW => t!("Представление задач", "Task View", ja: "タスク ビュー", pt: "Visão de Tarefas").into(),
-        POW_R => t!("Перезагрузка", "Restart", ja: "再起動", pt: "Reiniciar", zh: "重启").into(),
-        POW_S => t!("Завершение работы", "Shut down", ja: "シャットダウン", pt: "Desligar", zh: "关机").into(),
         0 => "Start".into(),
         TAPP => "Hidden icons".into(),
-        GEAR => t!("Стиль", "Style", ja: "スタイル", pt: "Estilo", zh: "样式").into(),
         SHOWDESK => t!("Показать рабочий стол", "Show desktop", ja: "デスクトップを表示", pt: "Mostrar a área de trabalho", zh: "显示桌面").into(),
         CLOCK => {
             let mut t: SYSTEMTIME = zeroed();
@@ -458,7 +449,6 @@ unsafe fn tip_text(h: i32) -> String {
             let n = GetDateFormatW(0x0400, 2, &t, null(), b.as_mut_ptr(), 80).max(1) as usize - 1; // DATE_LONGDATE
             String::from_utf16_lossy(&b[..n])
         }
-        LANG => tf!("Язык ввода: {}", "Input language: {}", ja: "入力言語: {}", pt: "Idioma de entrada: {}", zh: "输入语言：{}", layout_names(layouts().1).0),
         WIFI_I => match net() {
             Link::Wifi(q) => tf!("Wi‑Fi · сигнал {q}%", "Wi‑Fi · signal {q}%", ja: "Wi‑Fi · 信号 {q}%", pt: "Wi‑Fi · sinal {q}%", zh: "Wi‑Fi · 信号 {q}%"),
             Link::NoInternet(_) => t!("Wi‑Fi подключён, но интернета нет", "Wi‑Fi connected, no internet", ja: "Wi‑Fi 接続済み、インターネットなし", pt: "Wi‑Fi conectado, sem internet", zh: "Wi‑Fi 已连接，无 Internet").into(),
@@ -1366,37 +1356,13 @@ fn refresh_status() {
 
 // ---------- Restart and Shut down on the bar (#173): one pill between the system group and the clock ----------
 
-const POWER_KEYS: [i32; 2] = [POW_R, POW_S];
-
-/// Restart or shut down after a confirmation, so a stray click does not end the session.
-unsafe fn power_click(key: i32) {
-    let (q, arg) = if key == POW_R {
-        (t!("Перезагрузить компьютер?", "Restart the computer?", ja: "コンピューターを再起動しますか?", pt: "Reiniciar o computador?", zh: "要重启计算机吗？"), "/r")
-    } else {
-        (t!("Выключить компьютер?", "Shut down the computer?", ja: "コンピューターをシャットダウンしますか?", pt: "Desligar o computador?", zh: "要关闭计算机吗？"), "/s")
-    };
-    if MessageBoxW(BAR.load(Relaxed) as HWND, wide(q).as_ptr(), wide("WinRust").as_ptr(), MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND) == IDYES {
-        let _ = Command::new("shutdown.exe").args([arg, "/t", "0"]).creation_flags(NO_WINDOW).spawn();
-    }
-}
-
-/// Draws the power buttons; `cell(start, len)` is the button's rectangle along the bar.
-unsafe fn paint_power(dc: HDC, l: &Layout, hot: i32, f_glyph: HFONT, cell: impl Fn(i32, i32) -> RECT) {
-    let pill = cell(l.power.0, l.power.1 - l.power.0);
-    fill(dc, pill, mix(pal().bg, pal().hover, 0.6), sc(8));
-    SelectObject(dc, f_glyph);
-    for (i, k) in POWER_KEYS.into_iter().enumerate() {
-        let rc = cell(l.power.0 + i as i32 * sc(32), sc(32));
-        glow(dc, k, hot == k, rc, mix(pal().bg, pal().hover, 0.6), mix(pal().hover, pal().accent, 0.35), sc(8));
-        text(dc, if k == POW_R { "\u{E777}" } else { "\u{E7E8}" }, rc, pal().text, DT_CENTER);
-    }
-}
-
 struct Layout {
-    x0: i32, // first slot: the search button; Start and the rest follow
+    x0: i32,
     bw: i32,
     gap: i32,
-    power: (i32, i32),
+    lead: i32,
+    search_x: Option<i32>,
+    taskview_x: Option<i32>,
     apps: (i32, i32),
     sys: (i32, i32),
     clock: (i32, i32),
@@ -1405,18 +1371,24 @@ struct Layout {
 fn layout(w: i32) -> Layout {
     let gap = sc(4);
     let clock = (w - sc(96), w - sc(6));
-    let power = (clock.0 - sc(4) - sc(32) * POWER_KEYS.len() as i32, clock.0 - sc(4));
-    let sys = (power.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), power.0 - sc(4));
+    let sys = (clock.0 - sc(4) - sc(72 + if BAT.get().0 >= 0 { 74 } else { 0 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD; // + the search and Task View slots
-    let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
-    // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + 1).min(n);
+    let search_visible = search_button_visible();
+    let taskview_visible = taskview_button_visible();
+    let lead = i32::from(search_visible) + i32::from(taskview_visible);
+    let btns_len = BTNS.with_borrow(|b| b.len()) as i32;
+    let total_n = btns_len + lead; // + the visible optional buttons
+    let bw = (((w - 2 * margin + gap) / total_n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
+    // Keep Start and pinned apps centered; opening an unpinned window adds a button on the right.
+    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + lead + 1).min(total_n);
     // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
-    let right_limit = w - margin - (n * (bw + gap) - gap);
+    let right_limit = w - margin - (total_n * (bw + gap) - gap);
     let centered = (w - (fixed * (bw + gap) - gap)) / 2;
-    Layout { x0: if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, power, apps, sys, clock } // clear of the gear
+    let x0 = if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(6));
+    let search_x = search_visible.then_some(x0);
+    let taskview_x = taskview_visible.then_some(x0 + i32::from(search_visible) * (bw + gap));
+    Layout { x0, bw, gap, lead, search_x, taskview_x, apps, sys, clock }
 }
 
 unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
@@ -1424,28 +1396,28 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     GetClientRect(hwnd, &mut r);
     // a side bar runs the same layout along its height
     let (x, l) = if vert() { (y, layout(r.bottom)) } else { (x, layout(r.right)) };
-    if x < sc(GEAR_X.0 + GEAR_X.1) {
-        return GEAR;
-    }
     if x >= l.clock.1 {
         return SHOWDESK;
     }
     if x >= l.clock.0 {
         return CLOCK;
     }
-    if x >= l.power.0 {
-        return POWER_KEYS.get(((x - l.power.0) / sc(32)) as usize).copied().unwrap_or(NONE);
-    }
     if x >= l.sys.0 {
         let d = x - l.sys.0;
-        return if d < sc(42) { LANG } else if d < sc(74) { WIFI_I } else if d < sc(106) { VOL_I } else { BAT_I };
+        return if d < sc(36) { WIFI_I } else if d < sc(68) || BAT.get().0 < 0 { VOL_I } else { BAT_I };
     }
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
     }
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD;
+    if l.search_x.is_some_and(|sx| x >= sx && x < sx + l.bw) {
+        return SEARCH;
+    }
+    if l.taskview_x.is_some_and(|tx| x >= tx && x < tx + l.bw) {
+        return TASKVIEW;
+    }
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + l.lead;
     let (d, i) = (x - l.x0, (x - l.x0) / (l.bw + l.gap));
-    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD }
+    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else { i - l.lead }
 }
 
 // ---------- animation ----------
@@ -1786,7 +1758,7 @@ unsafe fn view_sig() -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     BTNS.with_borrow(|b| b.iter().for_each(|b| (b.pin, b.icon as usize, b.wins.iter().map(|&w| (w as usize, IsIconic(w))).collect::<Vec<_>>()).hash(&mut h)));
-    (GetForegroundWindow() as usize, BAT.get(), VOL.get(), WIFI.get(), INET.get(), EXPLORER_UP.load(Relaxed), clock_texts(), lang_name()).hash(&mut h);
+    (GetForegroundWindow() as usize, BAT.get(), VOL.get(), WIFI.get(), INET.get(), EXPLORER_UP.load(Relaxed), clock_texts()).hash(&mut h);
     TAPPS.with_borrow(|t| t.iter().for_each(|x| (x.hwnd as usize, x.uid, x.icon as usize, x.hidden, &x.tip).hash(&mut h)));
     h.finish()
 }
@@ -1813,22 +1785,22 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let active_bg = mix(pal().active, pal().accent, 0.12);
     let cell = |y: i32, len: i32| RECT { left: lft, top: y, right: rgt, bottom: y + len };
     let dim = mix(pal().dim, pal().text, 0.5);
-
-    let gr = cell(sc(GEAR_X.0), sc(GEAR_X.1));
-    glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
-    text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { dim }, DT_CENTER);
 
-    let sb = cell(l.x0, l.bw);
-    glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { dim }, DT_CENTER);
-    let tb = cell(l.x0 + l.bw + l.gap, l.bw);
-    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { dim }, DT_CENTER);
+    if let Some(x) = l.search_x {
+        let sb = cell(x, l.bw);
+        glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
+        text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { dim }, DT_CENTER);
+    }
+    if let Some(x) = l.taskview_x {
+        let tb = cell(x, l.bw);
+        glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
+        text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { dim }, DT_CENTER);
+    }
 
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let y = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let y = l.x0 + (i as i32 + l.lead) * (l.bw + l.gap);
             let r = cell(y, l.bw);
             let mid = y + l.bw / 2;
             let act = b.wins.contains(&fg);
@@ -1889,31 +1861,28 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
         }
     });
 
-    paint_power(dc, &l, hot, f_glyph, cell);
-    glow(dc, LANG, hot == LANG, cell(l.sys.0, sc(42)), pal().bg, pal().hover, sc(8));
-    let grp = cell(l.sys.0 + sc(44), l.sys.1 - l.sys.0 - sc(44));
+    let grp = cell(l.sys.0, l.sys.1 - l.sys.0);
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
         fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
     }
-    text(dc, &lang_name(), cell(l.sys.0, sc(42)), pal().text, DT_CENTER);
-    net_icon(dc, cx, l.sys.0 + sc(58), sc(17), f_glyph);
+    net_icon(dc, cx, l.sys.0 + sc(16), sc(17), f_glyph);
     SelectObject(dc, f_glyph);
     let (vol, muted) = VOL.get();
     let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
-    text(dc, vg, cell(l.sys.0 + sc(79), sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
+    text(dc, vg, cell(l.sys.0 + sc(37), sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
     let (pct, ac) = BAT.get();
     if pct >= 0 {
         let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
         let (bw, bh) = (sc(22), sc(11));
-        let (bx, by) = (cx - bw / 2 - sc(1), l.sys.0 + sc(111));
+        let (bx, by) = (cx - bw / 2 - sc(1), l.sys.0 + sc(69));
         fill(dc, RECT { left: bx, top: by, right: bx + bw, bottom: by + bh }, col, sc(4));
         fill(dc, RECT { left: bx + sc(1), top: by + sc(1), right: bx + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
         let fw = ((bw - sc(4)) * pct / 100).max(sc(1));
         fill(dc, RECT { left: bx + sc(2), top: by + sc(2), right: bx + sc(2) + fw, bottom: by + bh - sc(2) }, col, sc(2));
         fill(dc, RECT { left: bx + bw + sc(1), top: by + sc(3), right: bx + bw + sc(3), bottom: by + bh - sc(3) }, col, sc(1));
         SelectObject(dc, f_small);
-        text(dc, &format!("{pct}%"), cell(l.sys.0 + sc(126), sc(18)), pal().text, DT_CENTER);
+        text(dc, &format!("{pct}%"), cell(l.sys.0 + sc(84), sc(18)), pal().text, DT_CENTER);
     }
 
     let cb = cell(l.clock.0, l.clock.1 - l.clock.0);
@@ -2027,25 +1996,23 @@ unsafe fn paint(hwnd: HWND) {
     let hot = HOT.get();
     let active_bg = mix(pal().active, pal().accent, 0.12); // the focused app's button: a hint of the accent, not plain grey
 
-    // the gear at the left end: the Style menu
-    let gr = RECT { left: sc(GEAR_X.0), top, right: sc(GEAR_X.0 + GEAR_X.1), bottom: bot };
-    glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
-    SelectObject(dc, f_glyph);
-    text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
-
-    // search button (left of Start)
-    let sb = RECT { left: l.x0, top, right: l.x0 + l.bw, bottom: bot };
-    glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
-    SelectObject(dc, f_glyph);
-    text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
-    let tb = RECT { left: l.x0 + l.bw + l.gap, top, right: l.x0 + 2 * l.bw + l.gap, bottom: bot };
-    glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
-    text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    if let Some(x) = l.search_x {
+        let sb = RECT { left: x, top, right: x + l.bw, bottom: bot };
+        glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
+        SelectObject(dc, f_glyph);
+        text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    }
+    if let Some(x) = l.taskview_x {
+        let tb = RECT { left: x, top, right: x + l.bw, bottom: bot };
+        glow(dc, TASKVIEW, hot == TASKVIEW, tb, pal().bg, pal().hover, sc(8));
+        SelectObject(dc, f_glyph);
+        text(dc, "\u{E7C4}", tb, if hot == TASKVIEW { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    }
 
     // Start, pinned apps, open windows (center)
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let x = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let x = l.x0 + (i as i32 + l.lead) * (l.bw + l.gap);
             let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
             let act = b.wins.contains(&fg);
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
@@ -2115,18 +2082,13 @@ unsafe fn paint(hwnd: HWND) {
         }
     });
 
-    // system group: language on its own, then one pill for wifi + volume + battery (like Windows 11: they open one panel)
-    paint_power(dc, &l, hot, f_glyph, |s, len| RECT { left: s, top, right: s + len, bottom: bot });
-    let tb = RECT { left: l.sys.0, top, right: l.sys.1, bottom: bot };
-    glow(dc, LANG, hot == LANG, RECT { left: tb.left, top, right: tb.left + sc(42), bottom: bot }, pal().bg, pal().hover, sc(8));
-    let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
+    // system group: one pill for wifi + volume + battery (like Windows 11: they open one panel)
+    let grp = RECT { left: l.sys.0, top, right: l.sys.1, bottom: bot };
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
         fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
     }
-    let mut x = tb.left + sc(10);
-    text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
-    x += sc(42);
+    let mut x = grp.left + sc(8);
     net_icon(dc, x + sc(9), mid, sc(17), f_glyph);
     x += sc(32);
     SelectObject(dc, f_glyph);
@@ -2796,9 +2758,6 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
                 alt_tab(false);
             }
         }
-        // left: the language picker; right: straight to the next one (Win+Space is explorer's, gone under rs-shell)
-        LANG if left => lang_menu(BAR.load(Relaxed) as HWND),
-        LANG => next_lang(BAR.load(Relaxed) as HWND, false),
         WIFI_I => fly::toggle_click(if left { fly::Kind::Quick } else { fly::Kind::Wifi }), // right click: the network list
         VOL_I | BAT_I => fly::toggle_click(fly::Kind::Quick),
         CLOCK if left => fly::toggle_click(fly::Kind::Cal),
@@ -2818,8 +2777,6 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
             });
         }
         SHOWDESK if left => winrust_common::desktop::toggle(),
-        POW_R | POW_S if left => power_click(h),
-        GEAR => style_menu(),
         TAPP..=-900 => {
             let slot = (h - TAPP) as usize;
             if slot == 0 {
@@ -2880,7 +2837,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     let exe = exe_of(w);
     let i = BTNS.with_borrow(|b| b.iter().position(|b| b.wins.contains(&w)).or_else(|| b.iter().position(|b| !exe.is_empty() && b.wins.first().is_some_and(|&x| exe_of(x) == exe))));
     let x = match i {
-        Some(i) => l.x0 + (i as i32 + LEAD) * (l.bw + l.gap),
+        Some(i) => l.x0 + (i as i32 + l.lead) * (l.bw + l.gap),
         None => (l.x0 + l.apps.0) / 2, // no button (yet): the middle of the bar
     };
     if vert() {
@@ -2896,18 +2853,15 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
 unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
     // along the bar: screen x for a bottom bar, screen y for a side bar
     (if vert() { 0 } else { bar_x_w().0 }) + match h {
-        GEAR => sc(GEAR_X.0 + GEAR_X.1 / 2),
-        SEARCH => l.x0 + l.bw / 2,
-        TASKVIEW => l.x0 + (l.bw + l.gap) + l.bw / 2,
+        SEARCH => l.search_x.unwrap_or(l.x0) + l.bw / 2,
+        TASKVIEW => l.taskview_x.unwrap_or(l.x0) + l.bw / 2,
         CLOCK => (l.clock.0 + l.clock.1) / 2,
         SHOWDESK => l.clock.1 + sc(3),
-        POW_R | POW_S => l.power.0 + POWER_KEYS.iter().position(|&k| k == h).unwrap_or(0) as i32 * sc(32) + sc(16),
-        LANG => l.sys.0 + sc(21),
-        WIFI_I => l.sys.0 + sc(58),
-        VOL_I => l.sys.0 + sc(90),
-        BAT_I => l.sys.0 + sc(130),
+        WIFI_I => l.sys.0 + sc(17),
+        VOL_I => l.sys.0 + sc(51),
+        BAT_I => l.sys.0 + sc(104),
         t if (TAPP..TAPP + 100).contains(&t) => l.apps.0 + (t - TAPP) * sc(24) + sc(12),
-        i => l.x0 + (i + LEAD) * (l.bw + l.gap) + l.bw / 2,
+        i => l.x0 + (i + l.lead) * (l.bw + l.gap) + l.bw / 2,
     }
 }
 
