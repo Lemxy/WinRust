@@ -1,4 +1,4 @@
-// topbar: replaces the Windows taskbar with a panel at the bottom of the screen (the name stayed from when it sat on top),
+// topbar: replaces the Windows taskbar with a panel on the chosen screen edge,
 // drawn in the Windows 11 taskbar palette: Start, pinned apps and open windows in the center; tray apps, language, wifi,
 // volume, battery and date/time on the right. `--restore` brings the normal taskbar back (used by uninstall).
 #![windows_subsystem = "windows"]
@@ -68,17 +68,17 @@ use windows_sys::Win32::{
 fn rr(v: i32) -> i32 {
     if style().square() { 0 } else { sc(v) }
 }
-/// The bar sits at the top of the screen (tiling) instead of the bottom.
+/// The bar sits at the top of the screen (by position setting or tiling theme).
 fn at_top() -> bool {
-    style() == Style::Tiling && !vert()
+    !vert() && (i18n::style::side() == i18n::style::Side::Top || style() == Style::Tiling)
 }
 /// The bar stands on the left or right edge of the screen (its "width" is bar_h(), it spans the screen height).
 fn vert() -> bool {
-    i18n::style::side() != i18n::style::Side::Bottom
+    matches!(i18n::style::side(), i18n::style::Side::Left | i18n::style::Side::Right)
 }
-/// The floating dock (a pill in the middle of the bottom edge); a side bar is never a dock.
+/// The floating dock (a pill in the middle of the bottom edge).
 fn dock() -> bool {
-    style() == Style::Dock && !vert()
+    style() == Style::Dock && i18n::style::side() == i18n::style::Side::Bottom
 }
 /// Screen x of a side bar's current left edge, slid away by the show/hide animation.
 unsafe fn bar_x() -> i32 {
@@ -153,6 +153,7 @@ static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook t
 const WIN_NUM: u32 = WM_APP + 15; // posted by the keyboard hook: Win+1..9 (wp 0..8) = the n-th button of the bar
 const WIN_X: u32 = WM_APP + 17; // posted by the keyboard hook: Win+X = our power-user menu (start_menu)
 const NEXT_LANG: u32 = WM_APP + 16; // posted by the keyboard hook: Win+Space with no explorer (wp 1 = Shift held: previous layout)
+const TILE_WINDOWS: u32 = WM_APP + 19; // posted by the keyboard hook: Ctrl+Alt+T
 const VOLKEY: u32 = WM_APP + 14; // posted by the keyboard hook: a volume key (wp 0 up, 1 down, 2 mute)
 const WIN_V: u32 = WM_APP + 18; // posted by the keyboard hook: Win+V with no explorer (our clipboard history, #171)
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
@@ -258,6 +259,7 @@ thread_local! {
     static FLASH: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // windows asking for attention (FlashWindowEx) until activated (#129)
     static APP_FG: Cell<HWND> = const { Cell::new(null_mut()) }; // last foreground window that is not ours: the language button acts on it
     static LANG_TRY: Cell<(u32, usize, usize)> = const { Cell::new((0, 0, 0)) }; // (thread, layout before, layout asked for) of the last switch, checked by timer 7
+    static BAR_WORK: Cell<(i32, i32, i32, i32)> = const { Cell::new((-1, -1, -1, -1)) }; // last work area reserved by place()
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -266,11 +268,15 @@ fn wide(s: &str) -> Vec<u16> {
 fn sc(v: i32) -> i32 {
     (v as f32 * SCALE.get()) as i32
 }
+/// Taskbar symbols use the chosen size; slots and hit targets stay unchanged.
+fn icon_sc(v: i32) -> i32 {
+    sc((v as f32 * i18n::style::icon_size() as f32 / 100.0).round() as i32).max(1)
+}
 fn bar_h() -> i32 {
     let d = [-6, 0, 8][i18n::style::bar_size() as usize % 3]; // small / normal / large
     if vert() { sc(60 + d) } else { sc(BAR_H + d) }
 }
-/// Screen y of the bar's top edge when it is in place (bottom of the primary monitor, or its top in the tiling style).
+/// Screen y of the bar's top edge when it is in place.
 unsafe fn bar_top() -> i32 {
     if at_top() { 0 } else { GetSystemMetrics(SM_CYSCREEN) - bar_h() - dock_gap() }
 }
@@ -787,7 +793,7 @@ unsafe fn hide_taskbar_if_shown() {
     }
 }
 
-/// Reserves the bottom strip of the primary monitor (maximized windows stay above it).
+/// Reserves a strip on the bar's screen edge so maximized windows stay clear of it.
 unsafe fn place(hwnd: HWND) {
     apply_opacity(hwnd);
     let (cx, cy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
@@ -821,9 +827,9 @@ unsafe fn place(hwnd: HWND) {
     // No explorer (rs-shell / rust-explorer): nobody handles appbars, so set the work area ourselves. Without it maximized
     // windows slide under the bar and, covering the whole monitor, count as "fullscreen" and hide the bar.
     // Also with Explorer: it does not always honour the appbar when its own taskbar is hidden (#89).
-    {
-        set_work_area(if vert() { if ab.uEdge == ABE_LEFT { RECT { left: ab.rc.right, top: 0, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: ab.rc.left, bottom: cy } } } else if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } });
-    }
+    let work = if vert() { if ab.uEdge == ABE_LEFT { RECT { left: ab.rc.right, top: 0, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: ab.rc.left, bottom: cy } } } else if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } };
+    BAR_WORK.set((work.left, work.top, work.right, work.bottom));
+    set_work_area(work);
     let (x, w) = bar_x_w();
     // the dock is a pill; the other styles a plain strip
     SetWindowRgn(hwnd, if dock() { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
@@ -856,6 +862,15 @@ unsafe fn set_work_area(mut want: RECT) {
         PostMessageW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETWORKAREA as usize, 0);
         EnumWindows(Some(fit_maximized), &want as *const RECT as isize);
     }
+}
+
+/// Explorer and display changes can reset the work area after the bar has already claimed its edge.
+unsafe fn work_area_drifted() -> bool {
+    let want = BAR_WORK.get();
+    if want.0 < 0 { return false; }
+    let mut current: RECT = zeroed();
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut current as *mut _ as *mut _, 0) != 0
+        && (current.left, current.top, current.right, current.bottom) != want
 }
 
 /// A window that was already maximized keeps its old height when the work area shrinks: trim it (size only, no restore).
@@ -987,10 +1002,10 @@ unsafe fn lnk_icon(lnk: &[u16], target: &str) -> HICON {
     icon
 }
 
-/// Size app icons are drawn at (24 logical px, like the Windows 11 taskbar). Icons are loaded at exactly this size:
+/// Size app icons are drawn at. Icons are loaded at exactly this size:
 /// a 32 px icon stretched by DrawIconEx comes out jagged.
 fn icon_px() -> i32 {
-    sc(24)
+    icon_sc(24)
 }
 
 /// Icon of a file, shortcut (its target's icon, no arrow) or shell item ("shell:AppsFolder\<app id>") rendered by the
@@ -1014,6 +1029,24 @@ unsafe fn item_icon(path: &str, px: i32) -> HICON {
 
 thread_local! {
     static EXE_ICONS: RefCell<HashMap<String, HICON>> = RefCell::new(HashMap::new()); // crisp icons of running apps, by exe
+}
+
+/// Recreate cached app icons after the size changes so they remain crisp.
+unsafe fn reload_icons() {
+    PINS.with_borrow_mut(|pins| {
+        for pin in pins.iter_mut() {
+            let icon = lnk_icon(&pin.lnk, &pin.target);
+            if !pin.icon.is_null() { DestroyIcon(pin.icon); }
+            pin.icon = icon;
+        }
+    });
+    EXE_ICONS.with_borrow_mut(|icons| {
+        for icon in icons.values() {
+            if !icon.is_null() { DestroyIcon(*icon); }
+        }
+        icons.clear();
+    });
+    refresh_buttons();
 }
 
 /// Icon of a running window for its bar button: its exe's icon at the exact size (cached), else what the window reports.
@@ -1981,7 +2014,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
                 fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
             }
             if i == 0 {
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
                 let g = sc(1).max(1);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
@@ -2015,7 +2048,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
 
     glow(dc, TAPP, hot == TAPP, cell(l.apps.0, sc(24)), pal().bg, pal().hover, sc(8));
     let turn = ease(hv(TF_KEY, IsWindowVisible(TRAYFLY.get()) != 0));
-    chevron(dc, cx, l.apps.0 + sc(12), sc(5), if left { 90.0 } else { 270.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
+    chevron(dc, cx, l.apps.0 + sc(12), icon_sc(5), if left { 90.0 } else { 270.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
     SelectObject(dc, f_txt);
     let bar = bar_idx();
     TAPPS.with_borrow(|t| {
@@ -2024,7 +2057,8 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
             let y = l.apps.0 + i as i32 * sc(24);
             glow(dc, TAPP + i as i32, hot == TAPP + i as i32, cell(y, sc(24)), pal().bg, pal().hover, sc(8));
             if !ti.icon.is_null() {
-                DrawIconEx(dc, cx - sc(8), y + sc(4), ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                let size = icon_sc(16);
+                DrawIconEx(dc, cx - size / 2, y + (sc(24) - size) / 2, ti.icon, size, size, 0, null_mut(), DI_NORMAL);
             }
         }
     });
@@ -2037,7 +2071,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
         fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
     }
     text(dc, &lang_name(), cell(l.sys.0, sc(42)), pal().text, DT_CENTER);
-    net_icon(dc, cx, l.sys.0 + sc(58), sc(17), f_glyph);
+    net_icon(dc, cx, l.sys.0 + sc(58), icon_sc(17), f_glyph);
     SelectObject(dc, f_glyph);
     let (vol, muted) = VOL.get();
     let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
@@ -2045,7 +2079,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let (pct, ac) = BAT.get();
     if pct >= 0 {
         let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
-        let (bw, bh) = (sc(22), sc(11));
+        let (bw, bh) = (icon_sc(22), icon_sc(11));
         let (bx, by) = (cx - bw / 2 - sc(1), l.sys.0 + sc(111));
         fill(dc, RECT { left: bx, top: by, right: bx + bw, bottom: by + bh }, col, sc(4));
         fill(dc, RECT { left: bx + sc(1), top: by + sc(1), right: bx + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
@@ -2133,7 +2167,8 @@ unsafe fn bar_fonts() -> [HFONT; 4] {
     });
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
     let font = |f: &[u16], px: i32, wt: i32| CreateFontW(-sc(px), 0, 0, 0, wt, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr());
-    let fonts = [font(&face, 13, 400), font(&face, 12, 400), font(&gface, 16, 400), font(&face, 13, 600)];
+    let icon_px = (16.0 * i18n::style::icon_size() as f32 / 100.0).round() as i32;
+    let fonts = [font(&face, 13, 400), font(&face, 12, 400), font(&gface, icon_px, 400), font(&face, 13, 600)];
     FONTS.set((fonts, key));
     fonts
 }
@@ -2198,7 +2233,7 @@ unsafe fn paint(hwnd: HWND) {
             }
             if i == 0 {
                 // Windows logo in four tiles, lit from the top left; grows a little on hover, squeezes on click
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
                 let (g, cx) = (sc(1).max(1), (r.left + r.right) / 2);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
@@ -2241,7 +2276,7 @@ unsafe fn paint(hwnd: HWND) {
     let open_tf = IsWindowVisible(TRAYFLY.get()) != 0;
     let turn = ease(hv(TF_KEY, open_tf)); // the chevron turns over as the flyout opens, and back
     let cc = cell(l.apps.0, sc(24));
-    chevron(dc, (cc.left + cc.right) / 2, mid, sc(5), if at_top() { 180.0 } else { 0.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
+    chevron(dc, (cc.left + cc.right) / 2, mid, icon_sc(5), if at_top() { 180.0 } else { 0.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
     SelectObject(dc, f_txt);
     let bar = bar_idx();
     TAPPS.with_borrow(|t| {
@@ -2250,7 +2285,8 @@ unsafe fn paint(hwnd: HWND) {
             let x = l.apps.0 + i as i32 * sc(24);
             glow(dc, TAPP + i as i32, hot == TAPP + i as i32, cell(x, sc(24)), pal().bg, pal().hover, sc(8));
             if !ti.icon.is_null() {
-                DrawIconEx(dc, x + sc(4), mid - sc(8), ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                let size = icon_sc(16);
+                DrawIconEx(dc, x + (sc(24) - size) / 2, mid - size / 2, ti.icon, size, size, 0, null_mut(), DI_NORMAL);
             }
         }
     });
@@ -2267,7 +2303,7 @@ unsafe fn paint(hwnd: HWND) {
     let mut x = tb.left + sc(10);
     text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
     x += sc(42);
-    net_icon(dc, x + sc(9), mid, sc(17), f_glyph);
+    net_icon(dc, x + sc(9), mid, icon_sc(17), f_glyph);
     x += sc(32);
     SelectObject(dc, f_glyph);
     let (vol, muted) = VOL.get();
@@ -2277,7 +2313,8 @@ unsafe fn paint(hwnd: HWND) {
     let (pct, ac) = BAT.get();
     if pct >= 0 {
         let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
-        let (bw, bh, by) = (sc(22), sc(11), mid - sc(5));
+        let (bw, bh) = (icon_sc(22), icon_sc(11));
+        let by = mid - bh / 2;
         fill(dc, RECT { left: x, top: by, right: x + bw, bottom: by + bh }, col, sc(4)); // outline
         fill(dc, RECT { left: x + sc(1), top: by + sc(1), right: x + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
         let fw = ((bw - sc(4)) * pct / 100).max(sc(1));
@@ -3127,6 +3164,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         0x031D => hist::on_update(hwnd), // WM_CLIPBOARDUPDATE
         NEXT_LANG => next_lang(hwnd, wp == 1),
+        TILE_WINDOWS => tile_windows(),
         ALT_UP if wp == 2 => alt_close(),
         ALT_UP => alt_done(wp == 1),
         SNIP if wp == 1 => screenshot_notice(hwnd),
@@ -3150,6 +3188,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_TIMER => {
             hide_taskbar_if_shown();
+            if work_area_drifted() { place(hwnd); }
             refresh_status();
             if TICK.get() % 5 == 0 {
                 refresh_windows(); // safety net for a window event the hook did not report
@@ -3210,6 +3249,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
         }
         WM_DISPLAYCHANGE => place(hwnd),
+        WM_SETTINGCHANGE if wp == SPI_SETWORKAREA as usize => {
+            if work_area_drifted() { place(hwnd); }
+        }
         WM_DESTROY => {
             let mut ab: APPBARDATA = zeroed();
             ab.cbSize = size_of::<APPBARDATA>() as u32;

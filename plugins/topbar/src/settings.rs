@@ -12,7 +12,7 @@ pub(crate) unsafe fn style_menu() {
         fly::MItem::new(t!("Язык", "Language", ja: "言語", pt: "Idioma", zh: "语言")).hint(i18n::lang().name()),
         fly::MItem::head(t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏")).sep(),
         fly::MItem::new(t!("Положение, размер, поведение", "Position, size, behavior", ja: "位置、サイズ、動作", pt: "Posição, tamanho, comportamento", zh: "位置、大小、行为")).hint("›"),
-        fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows", ja: "ウィンドウを並べて表示", pt: "Lado a lado", zh: "平铺窗口")),
+        fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows", ja: "ウィンドウを並べて表示", pt: "Lado a lado", zh: "平铺窗口")).hint("Ctrl+Alt+T"),
         fly::MItem::new(t!("Сбросить всё по умолчанию…", "Reset everything to defaults…", ja: "すべて初期設定に戻す…", pt: "Restaurar tudo ao padrão…", zh: "将所有设置恢复默认…")).danger().sep(),
     ];
     gear_page("\u{E713}", t!("Настройки панели", "Bar settings", ja: "バーの設定", pt: "Configurações da barra", zh: "任务栏设置"), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs", ja: "バーと WinRust プログラムの外観", pt: "Aparência da barra e dos programas da WinRust", zh: "任务栏与 WinRust 程序的外观"), items, |i| match i {
@@ -94,17 +94,19 @@ pub(crate) unsafe fn theme_page() {
 
 pub(crate) unsafe fn bar_page() {
     use i18n::style::{self as st, Side};
-    let sides = [Side::Bottom, Side::Left, Side::Right];
+    let sides = [Side::Bottom, Side::Top, Side::Left, Side::Right];
     let items = vec![
         back(),
         fly::MItem::head(t!("Положение", "Position", ja: "位置", pt: "Posição", zh: "位置")).sep(),
         fly::MItem::new(t!("Снизу", "Bottom", ja: "下", pt: "Embaixo", zh: "底部")).on(st::side() == Side::Bottom),
+        fly::MItem::new(t!("Сверху", "Top", ja: "上", pt: "Em cima", zh: "顶部")).on(st::side() == Side::Top),
         fly::MItem::new(t!("Слева", "Left", ja: "左", pt: "Esquerda", zh: "左侧")).on(st::side() == Side::Left),
         fly::MItem::new(t!("Справа", "Right", ja: "右", pt: "Direita", zh: "右侧")).on(st::side() == Side::Right),
         fly::MItem::head(t!("Размер", "Size", ja: "サイズ", pt: "Tamanho", zh: "大小")),
         fly::MItem::new(t!("Маленькая", "Small", ja: "小", pt: "Pequeno", zh: "小")).on(st::bar_size() == 0),
         fly::MItem::new(t!("Обычная", "Normal", ja: "通常", pt: "Normal", zh: "正常")).on(st::bar_size() == 1),
         fly::MItem::new(t!("Большая", "Large", ja: "大", pt: "Grande", zh: "大")).on(st::bar_size() == 2),
+        fly::MItem::new(format!("{} ({} %)", t!("Размер значков", "Icon size", ja: "アイコンのサイズ", pt: "Tamanho dos ícones", zh: "图标大小"), st::icon_size())).hint("›"),
         fly::MItem::head(t!("Поведение", "Behavior", ja: "動作", pt: "Comportamento", zh: "行为")),
         fly::MItem::new(t!("Скрывать автоматически", "Hide automatically", ja: "自動的に隠す", pt: "Ocultar automaticamente", zh: "自动隐藏")).on(st::autohide()),
         fly::MItem::new(t!("Кнопки слева, как в Windows 10", "Buttons on the left, like Windows 10", ja: "ボタンを左に配置 (Windows 10 風)", pt: "Botões à esquerda, como no Windows 10", zh: "按钮靠左，如同 Windows 10")).on(st::align_left()),
@@ -114,17 +116,32 @@ pub(crate) unsafe fn bar_page() {
     ];
     gear_page("\u{E8A1}", t!("Панель", "Bar", ja: "バー", pt: "Barra", zh: "任务栏"), t!("Где она, какого размера и как себя ведёт", "Where it sits, its size and behavior", ja: "配置場所、サイズ、動作", pt: "Onde fica, seu tamanho e comportamento", zh: "其位置、大小和行为"), items, move |i| {
         match i {
-            2..=4 => st::set_side(sides[i - 2]),
-            6..=8 => st::set_bar_size((i - 6) as u8),
-            10 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
-            11 => st::set_align_left(!st::align_left()),
-            12 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
-            13 => crate::set_stick(!crate::stick()),
-            14 => second::set_enabled(!second::enabled()),
+            2..=5 => st::set_side(sides[i - 2]),
+            7..=9 => st::set_bar_size((i - 7) as u8),
+            10 => return icon_size_page(),
+            12 => st::set_autohide(!st::autohide()), // the reserved strip comes or goes with it
+            13 => st::set_align_left(!st::align_left()),
+            14 => st::set_alttab_per_monitor(!st::alttab_per_monitor()),
+            15 => crate::set_stick(!crate::stick()),
+            16 => second::set_enabled(!second::enabled()),
             _ => return style_menu(),
         }
-        relook(i != 12 && i != 13);
+        relook(i != 14 && i != 15);
         bar_page();
+    });
+}
+
+pub(crate) unsafe fn icon_size_page() {
+    use i18n::style as st;
+    const SIZES: [u8; 6] = [50, 60, 70, 80, 90, 100];
+    let mut items = vec![back(), fly::MItem::head(t!("Размер значков", "Icon size", ja: "アイコンのサイズ", pt: "Tamanho dos ícones")).sep()];
+    items.extend(SIZES.iter().map(|&size| fly::MItem::new(format!("{size} %")).on(st::icon_size() == size)));
+    gear_page("\u{E8A1}", t!("Размер значков", "Icon size", ja: "アイコンのサイズ", pt: "Tamanho dos ícones"), t!("Размер значков на панели", "Size of icons on the bar", ja: "バーのアイコンサイズ", pt: "Tamanho dos ícones na barra"), items, move |i| {
+        let Some(&size) = i.checked_sub(2).and_then(|n| SIZES.get(n)) else { return bar_page() };
+        st::set_icon_size(size);
+        reload_icons();
+        relook(false);
+        icon_size_page();
     });
 }
 

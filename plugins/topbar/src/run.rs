@@ -1,6 +1,8 @@
 //! topbar: run (split out of main.rs; shares its items through `super::*`).
 use super::*;
 
+static TILE_KEY_DOWN: AtomicBool = AtomicBool::new(false);
+
 /// The Windows "Run" box. `rundll32 shell32.dll,#61` cannot do it: ordinal 61 is RunFileDlg(hwnd, icon, dir, title,
 /// prompt, flags) and rundll32 passes other arguments. Its own thread: the box runs a modal loop until closed.
 pub(crate) fn run_dialog() {
@@ -53,6 +55,17 @@ pub(crate) unsafe extern "system" fn kb_hook(n: i32, w: WPARAM, l: LPARAM) -> LR
             // Win+Shift+S is our own region clipper (also under Explorer); without explorer nobody opens the screen
             // capture either: PrtSc (when Windows is set to snip with it; otherwise it copies the screen by itself) does it here
             let held = |vk: u16| GetAsyncKeyState(vk as i32) < 0;
+            // Ctrl+Alt+T runs the same tiling action as the gear menu, once per key press.
+            if k.vkCode == b'T' as u32 {
+                if !down0 {
+                    if TILE_KEY_DOWN.swap(false, Relaxed) { return 1; }
+                } else if held(VK_CONTROL) && held(VK_MENU) && !held(VK_SHIFT) && !held(VK_LWIN) && !held(VK_RWIN) {
+                    if !TILE_KEY_DOWN.swap(true, Relaxed) {
+                        PostMessageW(BAR.load(Relaxed) as HWND, TILE_WINDOWS, 0, 0);
+                    }
+                    return 1;
+                }
+            }
             let snip_key = !EXPLORER_UP.load(Relaxed) && k.vkCode == VK_SNAPSHOT as u32;
             let win_shift_s = k.vkCode == b'S' as u32 && down0 && (held(VK_LWIN) || held(VK_RWIN)) && held(VK_SHIFT);
             if snip_key || win_shift_s {
