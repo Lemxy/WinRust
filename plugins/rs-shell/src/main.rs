@@ -12,7 +12,7 @@
 // shortcuts: Win+D only minimizes ordinary top-level windows (no per-monitor / virtual-desktop logic),
 // Run/Startup entries are started through `cmd /c start` (no RunOnce, no startup-delay rules, no disabled-list in
 // StartupApproved), topbar's "open" still shells out to explorer.exe for /select; upgrade when those matter.
-use std::{os::windows::{io::AsRawHandle, process::CommandExt}, path::PathBuf, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
+use std::{os::windows::{io::{AsRawHandle, FromRawHandle, OwnedHandle}, process::CommandExt}, path::PathBuf, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
 use windows_sys::{core::BOOL, Win32::{Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, RECT, WAIT_FAILED, WAIT_OBJECT_0}, System::Threading::{CreateEventW, CreateMutexW, OpenProcess, PROCESS_TERMINATE, SetEvent, TerminateProcess, WaitForSingleObject}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
 
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
@@ -218,6 +218,7 @@ fn log(msg: &str) {
 fn run_shell() {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
     log("start");
+    let _desktop_owner = claim_desktop();
     // without explorer a minimized window is drawn as a little caption stub on the desktop (apps started with
     // --minimized left grey rectangles over the icons): hide them, the bar lists the windows anyway
     let mut mm = MINIMIZEDMETRICS { cbSize: size_of::<MINIMIZEDMETRICS>() as u32, iWidth: 0, iHorzGap: 0, iVertGap: 0, iArrange: ARW_HIDE as i32 };
@@ -308,13 +309,31 @@ fn belongs_to(window: HWND, name: &str) -> Option<u32> {
     winrust_common::proc::exe_name(pid).is_some_and(|exe| exe.eq_ignore_ascii_case(name)).then_some(pid)
 }
 
-/// Ends only the Explorer that owns the shell window in the current session.
-fn kill_shell_explorer() -> bool {
-    let shell = unsafe { GetShellWindow() };
-    if shell.is_null() {
-        return true;
+fn shell_window() -> Option<(HWND, u32)> {
+    let window = unsafe { GetShellWindow() };
+    if window.is_null() {
+        return None;
     }
-    belongs_to(shell, "explorer.exe").is_some_and(|pid| stop_window_process(shell, pid))
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(window, &mut pid) };
+    Some((window, pid))
+}
+
+/// Ends only the Explorer described by the autostart checks in this session.
+fn kill_shell_explorer(observed: Option<(HWND, u32)>) -> bool {
+    if shell_window() != observed {
+        return false;
+    }
+    observed.is_none_or(|(window, pid)| {
+        belongs_to(window, "explorer.exe") == Some(pid) && stop_window_process(window, pid)
+    })
+}
+
+fn claim_desktop() -> Option<OwnedHandle> {
+    let marker = unsafe {
+        CreateMutexW(ptr::null(), 0, wide(winrust_common::settings::DESKTOP_OWNER_MUTEX).as_ptr())
+    };
+    (!marker.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(marker) })
 }
 
 /// How long after the overlay starts Explorer may be ended even without the markers below: newer Windows builds (26300)
@@ -477,13 +496,13 @@ fn wants_desktop(replace: bool, desktop_overlay: bool) -> bool {
     replace || desktop_overlay
 }
 
-fn watch_desktop(misses: &mut u8, ready: bool, lent: bool, replaced: bool) -> DesktopAction {
+fn watch_desktop(misses: &mut u8, ready: bool, lent: bool, replaced: bool, starting: bool) -> DesktopAction {
     if ready || lent {
         *misses = 0;
         return DesktopAction::Wait;
     }
-    *misses += 1;
-    if replaced && *misses >= 4 {
+    *misses = misses.saturating_add(1);
+    if replaced && *misses >= 4 && !starting {
         return DesktopAction::RestoreExplorer;
     }
     if *misses == 2 {
@@ -548,10 +567,13 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
         }
     }
 
-    let began = Instant::now();
+    let mut began = Instant::now();
     let (expected, untracked) = if replace { expected_autostart(&autostart()) } else { (vec![], 0) };
     if replace { log(&format!("autostart to wait for: {} exe(s) {:?}, {} other entr(ies)", expected.len(), expected, untracked)); }
     let (mut kids, mut last) = (vec![], began);
+    let mut observed_shell = if replace { shell_window() } else { None };
+    let mut use_startup_markers = true;
+    let mut desktop_owner = None;
     loop {
         if desktop.is_none() && !desktop_request.is_null() {
             match unsafe { WaitForSingleObject(desktop_request, 3000) } {
@@ -572,31 +594,50 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
         }
         let bar = bar_up();
         if let Some(path) = &desktop {
-            let ready = desktop_ready(desktop_window());
+            let window = desktop_window();
+            let ready = desktop_ready(window);
             // Settings borrows Explorer temporarily. An Explorer started outside
             // the watcher also takes priority over a desktop restart.
             let lent = !ready && (winrust_common::settings::explorer_lent()
                 || (replaced && !unsafe { GetShellWindow() }.is_null()));
-            match watch_desktop(&mut dmiss, ready, lent, replaced) {
+            let starting = replaced && !ready && !lent && child.as_mut().is_some_and(|child: &mut DesktopChild| {
+                child.launched.elapsed() < DESKTOP_START_GRACE
+                    && (window.is_null() || unsafe { IsHungAppWindow(window) } == 0)
+                    && matches!(child.process.try_wait(), Ok(None))
+            });
+            match watch_desktop(&mut dmiss, ready, lent, replaced, starting) {
                 DesktopAction::Wait => {}
                 DesktopAction::Restart => restart_desktop(path, &mut child),
                 DesktopAction::RestoreExplorer => {
                     log("overlay: desktop did not recover, returning to the system shell");
+                    drop(desktop_owner.take());
                     restore_overlay_shell(replace, true, &mut child);
                     return;
                 }
             }
 
             if replace && !replaced {
+                let now = Instant::now();
+                let shell = shell_window();
+                if observed_shell != shell {
+                    observed_shell = shell;
+                    use_startup_markers = false; // the previous Explorer may have written these
+                    kids.clear();
+                    began = now;
+                    last = now;
+                    stable = 0;
+                }
                 stable = if bar && ready { stable + 1 } else { 0 };
                 let missing = missing_autostart(&expected, &winrust_common::proc::list());
-                last = last_start(&mut kids, winrust_common::proc::children(&winrust_common::proc::shell_explorers()), last, Instant::now());
-                if stable >= 3 && may_end_explorer(startup_run(), began.elapsed(), missing.is_empty(), untracked, last.elapsed())
+                let children = observed_shell.map_or_else(Vec::new, |(_, pid)| winrust_common::proc::children(&[pid]));
+                last = last_start(&mut kids, children, last, now);
+                let markers = stable >= 3 && use_startup_markers && startup_run();
+                if stable >= 3 && may_end_explorer(markers, began.elapsed(), missing.is_empty(), untracked, last.elapsed())
                     && !winrust_common::settings::explorer_lent() && winrust_common::settings::replace_explorer_requested()
                     && bar_up() && desktop_responds()
                 {
-                    log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", startup_run(), began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
-                    if !kill_shell_explorer() {
+                    log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", markers, began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
+                    if !kill_shell_explorer(observed_shell) {
                         // A stop can still be pending after the bounded wait. Keep both
                         // replacement surfaces up until another tick can confirm the state.
                         log("overlay: the Windows shell has not stopped yet");
@@ -604,6 +645,7 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
                         continue;
                     }
                     replaced = true;
+                    desktop_owner = claim_desktop();
                     // Keep the watcher on the main thread so returning also ends the hotkey loop.
                     thread::spawn(hotkey_loop);
                 }
@@ -616,6 +658,7 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
         starts += 1;
         if starts > 3 || quiet(find_exe("topbar.exe")).spawn().is_err() {
             log("overlay: topbar keeps dying, returning to the system shell");
+            drop(desktop_owner.take());
             restore_overlay_shell(replace, desktop.is_some(), &mut child);
             return;
         }
@@ -714,13 +757,22 @@ mod tests {
         let mut misses = 0;
         let expected = [Wait, Restart, Wait, RestoreExplorer];
         for action in expected {
-            assert_eq!(watch_desktop(&mut misses, false, false, true), action);
+            assert_eq!(watch_desktop(&mut misses, false, false, true, false), action);
         }
-        assert_eq!(watch_desktop(&mut misses, false, true, true), Wait);
+        assert_eq!(watch_desktop(&mut misses, false, true, true, false), Wait);
         assert_eq!(misses, 0, "Settings owns Explorer temporarily");
-        assert_eq!(watch_desktop(&mut misses, false, false, true), Wait);
-        assert_eq!(watch_desktop(&mut misses, true, false, true), Wait);
+        assert_eq!(watch_desktop(&mut misses, false, false, true, false), Wait);
+        assert_eq!(watch_desktop(&mut misses, true, false, true, false), Wait);
         assert_eq!(misses, 0, "a recovered desktop clears the counter");
+    }
+
+    #[test]
+    fn a_recovery_launch_gets_its_full_startup_grace() {
+        use super::{DesktopAction::*, watch_desktop};
+        let mut misses = 3;
+        assert_eq!(watch_desktop(&mut misses, false, false, true, true), Wait);
+        assert_eq!(watch_desktop(&mut misses, false, false, true, true), Wait);
+        assert_eq!(watch_desktop(&mut misses, false, false, true, false), RestoreExplorer);
     }
 
     #[test]
@@ -738,7 +790,7 @@ mod tests {
         let mut misses = 0;
         let expected = [Wait, Restart, Wait, Restart];
         for action in expected {
-            assert_eq!(watch_desktop(&mut misses, false, false, false), action);
+            assert_eq!(watch_desktop(&mut misses, false, false, false, false), action);
         }
     }
 

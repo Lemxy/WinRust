@@ -166,6 +166,7 @@ fn has_desktop(p: u32) -> bool {
 
 const LENT: &str = "Local\\WinRust-ExplorerLent";
 pub const OVERLAY_MUTEX: &str = "Local\\WinRust-rs-overlay";
+pub const DESKTOP_OWNER_MUTEX: &str = "Local\\WinRust-DesktopOwner";
 
 /// Whether the installer configured the user's overlay to replace Explorer.
 pub fn replace_explorer_requested() -> bool {
@@ -194,13 +195,12 @@ fn run(uri: &str) {
     let mut restore_desktop = false;
     let mut lent = std::ptr::null_mut();
     if !explorer_shell() {
-        // The desktop may be down when Settings opens. Keep the live overlay's
-        // chosen replacement mode while it borrows Explorer.
-        restore_desktop = replace_explorer_requested() && mutex_exists(OVERLAY_MUTEX);
+        // A standalone shell or a completed overlay handoff owns the desktop,
+        // even if its window happens to be down at the start of the loan.
+        restore_desktop = mutex_exists(DESKTOP_OWNER_MUTEX);
         lent = unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, w(LENT).as_ptr()) };
         // our desktop is a window of class Progman too: with it up Explorer thinks a shell exists and starts as a plain folder host
         for pid in proc::pids("rust-explorer.exe").into_iter().filter(|&pid| has_desktop(pid)) {
-            restore_desktop = true;
             proc::kill(pid);
         }
         // a frame host left from an earlier Explorer stays tied to that dead shell: the Settings frame it hosts is cloaked for
@@ -246,11 +246,15 @@ fn run(uri: &str) {
             shown |= on_screen;
             bad = if !enrolling && (any_hung() || (shown && !on_screen)) { bad + 1 } else { 0 };
         }
-        kill_stale();
-        proc::kill_shell_explorers();
         let rx = std::path::PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_default()).join(r"rust-explorer\rust-explorer.exe");
-        if rx.is_file() && !proc::pids("rust-explorer.exe").into_iter().any(has_desktop) {
-            let _ = Command::new(rx).arg("--desktop").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        if mutex_exists(DESKTOP_OWNER_MUTEX) && rx.is_file() {
+            kill_stale();
+            proc::kill_shell_explorers();
+            if !proc::pids("rust-explorer.exe").into_iter().any(has_desktop)
+                && Command::new(rx).arg("--desktop").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_err()
+            {
+                let _ = proc::start_shell_explorer();
+            }
         }
     }
     if !lent.is_null() {
