@@ -34,6 +34,7 @@ enum Act {
     CalToday,
     App(usize), // index into the filtered list
     Power(u8),  // 0 lock, 1 sleep, 2 restart, 3 shut down
+    Media(u8),  // quick settings' player: 0 previous, 1 play / pause, 2 next
     Keyboard,   // the on-screen keyboard button in the Start search field
 }
 
@@ -623,7 +624,8 @@ unsafe fn wifi_join(n: &Net, pass: &str) {
 
 fn size(k: Kind) -> (i32, i32) {
     match k {
-        Kind::Quick => (360, QT_CARD + 2 * QT_CARD_PAD + 44 * sliders() + QT_FOOT),
+        // the grid, the sliders on their card, the player card and the footer
+        Kind::Quick => (360, SL_TOP + MEDIA_H + 64 + 44 * sliders()),
         Kind::Cal => (330, 340),
         Kind::Wifi => (360, wifi_rows().2),
         Kind::Start => (560, 640),
@@ -653,13 +655,22 @@ fn wifi_rows() -> (Vec<(i32, i32)>, Option<i32>, i32) {
     })
 }
 
-/// Quick settings: how many slider rows (volume, plus brightness on a laptop).
+/// Quick settings: how many tiles and slider rows (volume, plus brightness on a laptop).
+const TILES: u8 = 9; // a 3 x 3 grid
+const MEDIA_H: i32 = 68; // the player card (and its gap) under the sliders
+
+/// The player card: under the sliders, above the footer.
+fn media_card(w: i32) -> RECT {
+    let t = SL_TOP + 44 * sliders() + 12;
+    r(16, t, w - 16, t + MEDIA_H - 8)
+}
+
 fn sliders() -> i32 {
     if BRIGHT.load(Relaxed) >= 0 { 2 } else { 1 }
 }
 
 // ---------- quick settings ----------
-// A 3 x 2 grid of tiles: 16 px of air round the grid, 8 between the tiles. Inside a tile the badge sits 12 px in from
+// A 3 x 3 grid of tiles: 16 px of air round the grid, 8 between the tiles. Inside a tile the badge sits 12 px in from
 // the top and the left and the two text lines follow it; the tile then ends with the same air under the text as the
 // badge has above it (the state line used to stop 1.5 px above the edge, which read as a mistake).
 const QT_W: i32 = 104;
@@ -673,9 +684,8 @@ const QT_PAD: i32 = 12;
 const QT_BADGE: i32 = 32;
 const QT_LABEL: (i32, i32) = (46, 62); // the title line, from the tile's top edge
 const QT_STATE: (i32, i32) = (61, 75); // the state line under it
-const QT_CARD_PAD: i32 = 4;
-const QT_CARD: i32 = QT_Y0 + QT_ROW + QT_H + QT_GAP; // the slider card under the grid
-const QT_FOOT: i32 = 60; // the battery pill and the settings gear under the card
+/// The sliders' first row: under the grid of tiles.
+const SL_TOP: i32 = QT_Y0 + QT_ROW * 3 + 4;
 
 /// Top-left of tile `i` of the grid.
 fn qt_at(i: i32) -> (i32, i32) {
@@ -735,15 +745,20 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
     let (w, h) = size(k);
     match k {
         Kind::Quick => {
-            // a 3x2 grid of tiles; the Wi-Fi tile has a round "more" button in its corner (found first: act_at searches backwards)
+            // a 3 x 3 grid of tiles; the Wi-Fi tile has a round "more" button in its corner (found first: act_at searches backwards)
             let mut v = vec![];
-            for i in 0..6u8 {
+            for i in 0..TILES {
                 v.push((qt_tile(i as i32), Act::Tile(i)));
                 if i == 0 {
                     v.push((qt_more(0), Act::WifiMore));
                 }
             }
-            let mut y = QT_CARD + QT_CARD_PAD;
+            let mc = media_card(w);
+            for j in 0..3u8 {
+                let x = mc.right - sc(16 + 40 * (3 - j as i32));
+                v.push((RECT { left: x, top: mc.top + sc(10), right: x + sc(36), bottom: mc.bottom - sc(10) }, Act::Media(j)));
+            }
+            let mut y = SL_TOP;
             if BRIGHT.load(Relaxed) >= 0 {
                 v.push((r(64, y, w - 24, y + 40), Act::BrightSlide));
                 y += 44;
@@ -1164,8 +1179,32 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
                     _ => crate::quick::set_keys(true, !filter),
                 });
             }
-            _ => crate::quick::set_energy_saver(!crate::quick::energy_saver()),
+            4 => crate::quick::set_energy_saver(!crate::quick::energy_saver()),
+            6 => match crate::quick::hotspot() {
+                Some(on) => crate::quick::set_hotspot(!on),
+                None => {
+                    NOTE.set(t!("Нет подключения к интернету для раздачи, открываю параметры", "No internet connection to share, opening Settings", ja: "共有できるインターネット接続がありません。設定を開きます", pt: "Sem conexão com a internet para compartilhar, abrindo as Configurações", zh: "没有可共享的互联网连接，正在打开设置").into());
+                    open(&wide("ms-settings:network-mobilehotspot"));
+                    close();
+                }
+            },
+            7 => {
+                if !crate::quick::set_night_light(!crate::quick::night_light().unwrap_or(false)) {
+                    open(&wide("ms-settings:nightlight")); // no state of its own yet (never set up) or an unknown layout
+                    close();
+                }
+            }
+            8 => {
+                close();
+                let _ = std::process::Command::new("DisplaySwitch.exe").spawn(); // Win+P's own panel; it needs no Explorer
+            }
+            _ => {}
         },
+        Act::Media(j) => {
+            if crate::quick::MEDIA.lock().unwrap().is_some() {
+                crate::quick::media(j);
+            }
+        }
         Act::Mute => toggle_mute(),
         Act::Menu(i) => {
             close();
@@ -1346,7 +1385,8 @@ unsafe fn draw(dc: HDC, k: Kind) {
                 Some(false) => t!("Выкл.", "Off", ja: "オフ", pt: "Desligado", zh: "关").to_string(),
                 None => t!("Нет", "None", ja: "なし", pt: "Nenhum", zh: "无").to_string(),
             };
-            let states = [q >= 0, bt == Some(true), air == Some(true), acc, eco, false];
+            let (hot, night) = (crate::quick::hotspot(), crate::quick::night_light());
+            let states = [q >= 0, bt == Some(true), air == Some(true), acc, eco, false, hot == Some(true), night == Some(true), false];
             let tiles = [
                 ("\u{E701}", "Wi‑Fi".to_string(), wsub),
                 ("\u{E702}", t!("Bluetooth", "Bluetooth", ja: "Bluetooth", pt: "Bluetooth", zh: "蓝牙").to_string(), onoff(bt)),
@@ -1354,6 +1394,9 @@ unsafe fn draw(dc: HDC, k: Kind) {
                 ("\u{E776}", t!("Спец. возможности", "Accessibility", ja: "アクセシビリティ", pt: "Acessibilidade", zh: "辅助功能").to_string(), onoff(Some(acc))),
                 ("\u{E945}", t!("Экономия энергии", "Energy saver", ja: "省エネ", pt: "Economia de energia", zh: "节能模式").to_string(), onoff(Some(eco))),
                 ("\u{E7F0}", t!("Субтитры", "Live captions", ja: "ライブ キャプション", pt: "Legendas ao vivo", zh: "实时字幕").to_string(), String::new()),
+                ("\u{E704}", t!("Точка доступа", "Mobile hotspot", ja: "モバイル ホットスポット", pt: "Hotspot móvel", zh: "移动热点").to_string(), onoff(hot)),
+                ("\u{E708}", t!("Ночной свет", "Night light", ja: "夜間モード", pt: "Luz noturna", zh: "夜间模式").to_string(), onoff(night)),
+                ("\u{E7F4}", t!("Проецировать", "Project", ja: "表示", pt: "Projetar", zh: "投影").to_string(), String::new()),
             ];
             for (i, (glyph, label, sub)) in tiles.iter().enumerate() {
                 let full = qt_tile(i as i32); // the badge and the two text lines come from qt_badge / qt_label / qt_state
@@ -1385,8 +1428,8 @@ unsafe fn draw(dc: HDC, k: Kind) {
             }
             // sliders sit together on one card
             let n = sliders();
-            surface(dc, r(QT_X0, QT_CARD, w - QT_X0, QT_CARD + 2 * QT_CARD_PAD + 44 * n), card, sc(18));
-            let mut y = QT_CARD + QT_CARD_PAD;
+            surface(dc, r(QT_X0, SL_TOP - 4, w - QT_X0, SL_TOP + 4 + 44 * n), card, sc(18));
+            let mut y = SL_TOP;
             let b = BRIGHT.load(Relaxed);
             if b >= 0 {
                 SelectObject(dc, f_glyph);
@@ -1398,6 +1441,29 @@ unsafe fn draw(dc: HDC, k: Kind) {
             SelectObject(dc, f_glyph);
             text(dc, if muted || vol == 0 { "\u{E74F}" } else { "\u{E767}" }, r(24, y, 60, y + 40), if muted { BAD } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
             track(dc, rs.iter().find(|(_, a)| *a == Act::VolSlide).unwrap().0, if muted { 0.0 } else { vol.max(0) as f32 / 100.0 });
+            // the player: what plays now, previous / play-pause / next
+            let mc = media_card(w);
+            surface(dc, mc, card, sc(18));
+            let m = crate::quick::MEDIA.lock().unwrap().clone();
+            let tr = RECT { left: mc.left + sc(14), top: mc.top + sc(9), right: mc.right - sc(16 + 40 * 3 + 4), bottom: mc.top + sc(29) };
+            SelectObject(dc, f_semi);
+            match &m {
+                Some(m) => {
+                    text(dc, if m.title.is_empty() { t!("Без названия", "Untitled", ja: "タイトルなし", pt: "Sem título", zh: "无标题") } else { m.title.as_str() }, tr, pal().text, DT_LEFT | DT_END_ELLIPSIS);
+                    SelectObject(dc, f_small);
+                    text(dc, &m.artist, RECT { top: tr.bottom, bottom: tr.bottom + sc(18), ..tr }, pal().dim, DT_LEFT | DT_END_ELLIPSIS);
+                }
+                None => text(dc, t!("Ничего не воспроизводится", "Nothing playing", ja: "再生中のメディアはありません", pt: "Nada em reprodução", zh: "没有正在播放的内容"), RECT { bottom: mc.bottom - sc(9), ..tr }, pal().dim, DT_LEFT | DT_VCENTER | DT_SINGLELINE),
+            }
+            SelectObject(dc, f_glyph);
+            for (rc, a) in rs.iter().filter(|(_, a)| matches!(a, Act::Media(_))) {
+                let Act::Media(j) = *a else { continue };
+                if m.is_some() {
+                    g(*a, *rc, card, mix(card, pal().text, 0.08), sc(36));
+                }
+                let glyph = match j { 0 => "\u{E892}", 2 => "\u{E893}", _ if m.as_ref().is_some_and(|m| m.playing) => "\u{E769}", _ => "\u{E768}" };
+                text(dc, glyph, *rc, if m.is_some() { pal().text } else { pal().dim }, DT_CENTER);
+            }
             // footer: the battery in a pill, the settings gear in a circle
             let (pct, ac) = BAT.get();
             if pct >= 0 {
@@ -2095,12 +2161,13 @@ mod quick_tiles {
     /// text keeps about the same air under it as the badge has above it, at every scale the bar is drawn at.
     #[test]
     fn quick_tiles_keep_air_under_the_text() {
+        // the tiles that carry a state line: the live-captions and project tiles have only their title
+        const STATEFUL: [i32; 7] = [0, 1, 2, 3, 4, 6, 7];
         for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.5] {
             unsafe {
                 let (dc, bmp, w, h) = panel(scale);
                 let px = pixels(dc, bmp, w, h);
-                for i in 0..5 {
-                    // tiles 0..4 carry a state line ("Off", "On", ...); the captions tile has none
+                for i in STATEFUL {
                     let air = air_under(&px, w, qt_state(i), qt_tile(i));
                     assert!(air >= sc(8) && air <= sc(14), "{scale}x: tile {i}'s state line ends {} px above the tile's edge, the badge sits {} px below the top", air as f32 / SCALE.get(), QT_PAD);
                 }
