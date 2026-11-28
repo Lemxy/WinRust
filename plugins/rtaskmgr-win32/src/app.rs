@@ -1152,6 +1152,9 @@ impl App {
         if on && id == crate::boost::Id::Defender && !self.confirm(t!("Defender перестанет проверять кэши сборки и библиотеки игр (cargo, npm, pip, Steam, Epic…). Вредоносный файл в этих папках не будет найден при открытии. Включить?", "Defender will stop scanning build caches and game libraries (cargo, npm, pip, Steam, Epic…). A malicious file in those folders will not be caught when opened. Enable?", ja: "Defender はビルド キャッシュとゲーム ライブラリ (cargo、npm、pip、Steam、Epic…) のスキャンを停止します。これらのフォルダー内の悪意のあるファイルは、開いても検出されません。有効にしますか?", pt: "O Defender vai deixar de verificar caches de compilação e bibliotecas de jogos (cargo, npm, pip, Steam, Epic…). Um arquivo malicioso nessas pastas não será detectado ao ser aberto. Ativar?", zh: "Defender 将不再扫描编译缓存和游戏库（cargo、npm、pip、Steam、Epic…）。这些文件夹中的恶意文件在被打开时不会被拦截。要启用吗？")) {
             return;
         }
+        if on && id == crate::boost::Id::Vbs && !self.confirm(t!("Безопасность на основе виртуализации и целостность памяти выключатся после перезагрузки: вредоносному драйверу будет проще попасть в ядро. Включить?", "Virtualization-based security and memory integrity turn off after a reboot: a malicious driver gets into the kernel more easily. Turn on?", ja: "再起動後に仮想化ベースのセキュリティとメモリ整合性がオフになり、悪意のあるドライバーがカーネルに入り込みやすくなります。有効にしますか?", pt: "A segurança baseada em virtualização e a integridade de memória serão desligadas após reiniciar: um driver malicioso entra no kernel com mais facilidade. Ativar?", zh: "重启后将关闭基于虚拟化的安全性和内存完整性：恶意驱动更容易进入内核。要开启吗？")) {
+            return;
+        }
         // донор токена для программ, которые профиль запустит обратно: sihost.exe работает в каждом сеансе без повышения
         let donors: Vec<u32> = self.data.borrow().procs.iter().filter(|p| p.name.eq_ignore_ascii_case("sihost.exe")).map(|p| p.pid).collect();
         match crate::boost::start(id, on, donors) {

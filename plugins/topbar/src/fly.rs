@@ -32,6 +32,8 @@ enum Act {
     CalPrev,
     CalNext,
     CalToday,
+    Note(u32), // dismiss this notification
+    NoteClear,
     App(usize), // index into the filtered list
     Power(u8),  // 0 lock, 1 sleep, 2 restart, 3 shut down
     Media(u8),  // quick settings' player: 0 previous, 1 play / pause, 2 next
@@ -441,8 +443,7 @@ fn read_brightness() {
         };
         let v = lcd_io(0x23_0498, None).map(|b| if ac { b[1] } else { b[2] } as i32).filter(|v| *v <= 100).or_else(|| {
             // no answer from the driver: WMI (some panels only show up there)
-            let o = Command::new("powershell").args(["-NoProfile", "-Command", "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction SilentlyContinue).CurrentBrightness"]).creation_flags(NO_WINDOW).output();
-            o.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            crate::wmi::int(r"root\WMI", "SELECT CurrentBrightness FROM WmiMonitorBrightness", "CurrentBrightness")
         });
         BRIGHT.store(v.unwrap_or(-1), Relaxed);
     });
@@ -452,8 +453,7 @@ fn set_brightness(v: i32) {
     std::thread::spawn(move || {
         let b = v.clamp(0, 100) as u8;
         if lcd_io(0x23_049C, Some([3, b, b])).is_none() {
-            let c = format!("Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1;Brightness={v}}}");
-            let _ = Command::new("powershell").args(["-NoProfile", "-Command", &c]).creation_flags(NO_WINDOW).output();
+            crate::wmi::set_brightness(b);
         }
     });
 }
@@ -622,11 +622,18 @@ unsafe fn wifi_join(n: &Net, pass: &str) {
 
 // ---------- geometry ----------
 
+const CAL_H: i32 = 340; // the month
+const NOTES_H: i32 = 40 + 56 * crate::notif::ROWS as i32 + 8; // the notifications below it (#126)
+
+/// The dismiss button of notification row `i`.
+fn note_x(w: i32, i: i32) -> RECT {
+    r(w - 48, CAL_H + 48 + 56 * i, w - 20, CAL_H + 76 + 56 * i)
+}
+
 fn size(k: Kind) -> (i32, i32) {
     match k {
-        // the grid, the sliders on their card, the player card and the footer
-        Kind::Quick => (360, SL_TOP + MEDIA_H + 64 + 44 * sliders()),
-        Kind::Cal => (330, 340),
+        Kind::Quick => (360, SL_TOP + 64 + MEDIA_H + 44 * sliders()),
+        Kind::Cal => (330, CAL_H + NOTES_H),
         Kind::Wifi => (360, wifi_rows().2),
         Kind::Start => (560, 640),
         Kind::Menu => (MW, menu_rows().1),
@@ -655,8 +662,125 @@ fn wifi_rows() -> (Vec<(i32, i32)>, Option<i32>, i32) {
     })
 }
 
-/// Quick settings: how many tiles and slider rows (volume, plus brightness on a laptop).
-const TILES: u8 = 9; // a 3 x 3 grid
+/// Quick settings: how many slider rows (volume, plus brightness on a laptop).
+const TILES: u8 = 9; // a 3x3 grid
+
+// the tiles can be dragged into another order (#166)
+thread_local! {
+    static ORDER: Cell<Option<[u8; TILES as usize]>> = const { Cell::new(None) }; // tile ids by place, read on first use
+    // the tile the button went down on, where it went down and where the pointer is now (client px)
+    static TILE_GRAB: Cell<Option<(u8, (i32, i32), (i32, i32))>> = const { Cell::new(None) };
+    static TILE_POS: Cell<[(f32, f32); TILES as usize]> = const { Cell::new([(0.0, 0.0); TILES as usize]) }; // where each is drawn, unscaled
+    static TILE_T: Cell<u64> = const { Cell::new(0) }; // when they were last drawn
+}
+
+fn order_file() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join(r"WinRust\tiles.txt")
+}
+
+/// The saved order; unknown and repeated ids are skipped and tiles it does not name follow in their usual order.
+fn parse_order(s: &str) -> [u8; TILES as usize] {
+    let mut v: Vec<u8> = vec![];
+    for id in s.split_whitespace().filter_map(|w| w.parse().ok()).chain(0..TILES) {
+        if id < TILES && !v.contains(&id) {
+            v.push(id);
+        }
+    }
+    std::array::from_fn(|i| v[i])
+}
+
+/// The dragged tile takes the target's place; the ones in between move up.
+fn moved(mut o: [u8; TILES as usize], tile: u8, onto: u8) -> [u8; TILES as usize] {
+    let at = |id: u8| o.iter().position(|&x| x == id);
+    if let (Some(a), Some(b)) = (at(tile), at(onto)) {
+        if a < b { o[a..=b].rotate_left(1) } else { o[b..=a].rotate_right(1) }
+    }
+    o
+}
+
+fn order() -> [u8; TILES as usize] {
+    ORDER.get().unwrap_or_else(|| {
+        let o = parse_order(&std::fs::read_to_string(order_file()).unwrap_or_default());
+        ORDER.set(Some(o));
+        o
+    })
+}
+
+fn set_order(o: [u8; TILES as usize]) {
+    ORDER.set(Some(o));
+    let f = order_file();
+    let _ = f.parent().map(std::fs::create_dir_all);
+    let _ = std::fs::write(f, o.map(|i| i.to_string()).join(" "));
+}
+
+/// Top left of grid place `p`, in unscaled pixels.
+fn slot(p: usize) -> (i32, i32) {
+    (16 + 112 * (p % 3) as i32, 16 + 92 * (p / 3) as i32)
+}
+
+/// Top left of a tile, in unscaled pixels.
+fn tile_at(id: u8) -> (i32, i32) {
+    slot(order().iter().position(|&x| x == id).unwrap_or(0))
+}
+
+/// The tile whose place is under client point `x, y`.
+fn tile_under(x: i32, y: i32) -> Option<u8> {
+    (0..TILES).find(|&i| {
+        let (l, t) = tile_at(i);
+        let rc = r(l, t, l + 104, t + 84);
+        x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
+    })
+}
+
+/// The pointer went far enough from where the button went down for a drag, not a click.
+fn dragging(g: (u8, (i32, i32), (i32, i32))) -> bool {
+    let (_, (dx, dy), (x, y)) = g;
+    (x - dx).abs().max((y - dy).abs()) > sc(4)
+}
+
+/// One step of a glide toward `to`: frame-rate independent, about 90% of the way in 160 ms.
+fn glide(from: f32, to: f32, dt: f32) -> f32 {
+    if dt > 100.0 { to } else { to + (from - to) * (-dt / 70.0).exp() }
+}
+
+/// Where each tile is drawn this frame, unscaled: the dragged one under the pointer, the others gliding to the places
+/// they would take if it were dropped now; after the drop it glides into its new place.
+unsafe fn tiles_drawn() -> [(i32, i32); TILES as usize] {
+    let now = now_ms();
+    let dt = now.saturating_sub(TILE_T.replace(now)) as f32; // a long gap (the panel just opened) snaps them in place
+    let grab = TILE_GRAB.get().filter(|&g| dragging(g));
+    let o = match grab {
+        Some((t, _, (x, y))) => tile_under(x, y).map_or(order(), |u| moved(order(), t, u)),
+        None => order(),
+    };
+    let mut pos = TILE_POS.get();
+    for (id, p) in pos.iter_mut().enumerate() {
+        let to = match grab {
+            Some((t, (dx, dy), (x, y))) if t as usize == id => {
+                let (l, tp) = tile_at(t);
+                let s = sc(100) as f32 / 100.0;
+                (l as f32 + (x - dx) as f32 / s, tp as f32 + (y - dy) as f32 / s)
+            }
+            _ => {
+                let (l, tp) = slot(o.iter().position(|&x| x as usize == id).unwrap_or(0));
+                (l as f32, tp as f32)
+            }
+        };
+        if grab.is_some_and(|g| g.0 as usize == id) {
+            *p = to;
+        } else {
+            *p = (glide(p.0, to.0, dt), glide(p.1, to.1, dt));
+            if (p.0 - to.0).abs() > 0.3 || (p.1 - to.1).abs() > 0.3 {
+                BUSY.set(true);
+            } else {
+                *p = to;
+            }
+        }
+    }
+    TILE_POS.set(pos);
+    pos.map(|(x, y)| (x.round() as i32, y.round() as i32))
+}
+const SL_TOP: i32 = 16 + 92 * 3 + 4; // the sliders' first row, under the tiles
 const MEDIA_H: i32 = 68; // the player card (and its gap) under the sliders
 
 /// The player card: under the sliders, above the footer.
@@ -667,51 +791,6 @@ fn media_card(w: i32) -> RECT {
 
 fn sliders() -> i32 {
     if BRIGHT.load(Relaxed) >= 0 { 2 } else { 1 }
-}
-
-// ---------- quick settings ----------
-// A 3 x 3 grid of tiles: 16 px of air round the grid, 8 between the tiles. Inside a tile the badge sits 12 px in from
-// the top and the left and the two text lines follow it; the tile then ends with the same air under the text as the
-// badge has above it (the state line used to stop 1.5 px above the edge, which read as a mistake).
-const QT_W: i32 = 104;
-const QT_H: i32 = 84;
-const QT_COL: i32 = 112;
-const QT_ROW: i32 = 92;
-const QT_X0: i32 = 16;
-const QT_Y0: i32 = 16;
-const QT_GAP: i32 = 8;
-const QT_PAD: i32 = 12;
-const QT_BADGE: i32 = 32;
-const QT_LABEL: (i32, i32) = (46, 62); // the title line, from the tile's top edge
-const QT_STATE: (i32, i32) = (61, 75); // the state line under it
-/// The sliders' first row: under the grid of tiles.
-const SL_TOP: i32 = QT_Y0 + QT_ROW * 3 + 4;
-
-/// Top-left of tile `i` of the grid.
-fn qt_at(i: i32) -> (i32, i32) {
-    (QT_X0 + QT_COL * (i % 3), QT_Y0 + QT_ROW * (i / 3))
-}
-/// Tile `i`, and the parts `paint` draws in it: the round icon badge, the title line and the state line under it.
-fn qt_tile(i: i32) -> RECT {
-    let (x, y) = qt_at(i);
-    r(x, y, x + QT_W, y + QT_H)
-}
-fn qt_badge(i: i32) -> RECT {
-    let (x, y) = qt_at(i);
-    r(x + QT_PAD, y + QT_PAD, x + QT_PAD + QT_BADGE, y + QT_PAD + QT_BADGE)
-}
-fn qt_label(i: i32) -> RECT {
-    let (x, y) = qt_at(i);
-    r(x + QT_PAD, y + QT_LABEL.0, x + QT_W - 2, y + QT_LABEL.1)
-}
-fn qt_state(i: i32) -> RECT {
-    let (x, y) = qt_at(i);
-    r(x + QT_PAD, y + QT_STATE.0, x + QT_W - 4, y + QT_STATE.1)
-}
-/// The Wi-Fi tile's round "more" button in its top right corner.
-fn qt_more(i: i32) -> RECT {
-    let t = qt_tile(i);
-    RECT { left: t.left + sc(66), top: t.top + sc(QT_GAP), right: t.left + sc(96), bottom: t.top + sc(38) }
 }
 
 const CTX_W: i32 = 196; // right-click menu width, logical px
@@ -741,16 +820,27 @@ fn r(l: i32, t: i32, rr: i32, b: i32) -> RECT {
     RECT { left: sc(l), top: sc(t), right: sc(rr), bottom: sc(b) }
 }
 
+/// The tile's corner button: Wi-Fi's network list, the settings pages of Bluetooth and the hotspot.
+fn more(tile: u8) -> Option<Act> {
+    match tile {
+        0 => Some(Act::WifiMore),
+        1 => Some(Act::Settings("ms-settings:bluetooth")),
+        6 => Some(Act::Settings("ms-settings:network-mobilehotspot")),
+        _ => None,
+    }
+}
+
 fn rects(k: Kind) -> Vec<(RECT, Act)> {
     let (w, h) = size(k);
     match k {
         Kind::Quick => {
-            // a 3 x 3 grid of tiles; the Wi-Fi tile has a round "more" button in its corner (found first: act_at searches backwards)
+            // a 3x3 grid of tiles; Wi-Fi, Bluetooth and the hotspot have a round "more" button in the corner (found first: act_at searches backwards)
             let mut v = vec![];
             for i in 0..TILES {
-                v.push((qt_tile(i as i32), Act::Tile(i)));
-                if i == 0 {
-                    v.push((qt_more(0), Act::WifiMore));
+                let (tl, tt) = tile_at(i);
+                v.push((r(tl, tt, tl + 104, tt + 84), Act::Tile(i)));
+                if let Some(a) = more(i) {
+                    v.push((r(tl + 66, tt + 8, tl + 96, tt + 38), a));
                 }
             }
             let mc = media_card(w);
@@ -768,7 +858,14 @@ fn rects(k: Kind) -> Vec<(RECT, Act)> {
             v.push((r(w - 54, h - 50, w - 14, h - 10), Act::Settings("ms-settings:")));
             v
         }
-        Kind::Cal => vec![(r(w - 84, 10, w - 52, 42), Act::CalPrev), (r(w - 48, 10, w - 16, 42), Act::CalNext), (r(16, 10, w - 100, 42), Act::CalToday)],
+        Kind::Cal => {
+            let mut v = vec![(r(w - 84, 10, w - 52, 42), Act::CalPrev), (r(w - 48, 10, w - 16, 42), Act::CalNext), (r(16, 10, w - 100, 42), Act::CalToday)];
+            if let Some(list) = crate::notif::LIST.lock().unwrap().as_ref().filter(|l| !l.is_empty()) {
+                v.push((r(w - 110, CAL_H + 6, w - 16, CAL_H + 34), Act::NoteClear));
+                v.extend(list.iter().take(crate::notif::ROWS).enumerate().map(|(i, n)| (note_x(w, i as i32), Act::Note(n.id))));
+            }
+            v
+        }
         Kind::Wifi => {
             let rows = wifi_rows().0;
             let mut v: Vec<_> = rows.iter().enumerate().map(|(i, &(t, b))| (r(12, t, w - 12, b), Act::Net(i))).collect();
@@ -991,6 +1088,18 @@ pub fn toggle_click(k: Kind) {
     toggle(k);
 }
 
+/// Moves the just opened panel next to another monitor's bar (`bar`, screen coordinates).
+pub(crate) fn move_to_bar(k: Kind, bar: RECT, top: bool) {
+    if !is_open(k) {
+        return;
+    }
+    let (w, h) = (sc(size(k).0), sc(size(k).1));
+    let x = if k == Kind::Start { (bar.left + bar.right - w) / 2 } else { bar.right - w - sc(8) };
+    let y = if top { bar.bottom + sc(8) } else { bar.top - sc(8) - h };
+    FIN.set((x, y));
+    unsafe { SetWindowPos(FH.get(), null_mut(), x, y + sc(14), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) };
+}
+
 pub fn toggle(k: Kind) {
     // The panel counts as open only while its window is alive: Alt+F4 (or anything else destroying the window behind our
     // back) leaves the state saying "open", and then every Win press would only "close" a dead window and never open a new
@@ -1025,6 +1134,7 @@ pub fn toggle(k: Kind) {
                 read_nets();
                 crate::quick::refresh();
             }
+            Kind::Cal => crate::notif::refresh(),
             Kind::Start => {
                 pinned_load(); // the search card (rs-launcher) can add to this list from another process
                 std::thread::spawn(load_apps); // apps installed since the last open show up (the panel repaints every second)
@@ -1034,7 +1144,7 @@ pub fn toggle(k: Kind) {
         let (w, h) = (sc(size(k).0), sc(size(k).1));
         let sw = GetSystemMetrics(SM_CXSCREEN);
         let x = if vert() { side_x(w) } else { match k {
-            Kind::Start => (sw - w) / 2,
+            Kind::Start => if i18n::style::start_left() || i18n::style::align_left() { sc(8) } else { (sw - w) / 2 },
             Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
             _ => sw - w - sc(8),
         } };
@@ -1223,6 +1333,8 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
             (y, m) = if m < 1 { (y - 1, 12) } else if m > 12 { (y + 1, 1) } else { (y, m) };
             CAL.set((y, m));
         }
+        Act::Note(id) => crate::notif::dismiss(id),
+        Act::NoteClear => crate::notif::clear(),
         Act::CalToday => {
             let mut t: SYSTEMTIME = zeroed();
             GetLocalTime(&mut t);
@@ -1282,8 +1394,7 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
                     let _ = Command::new("rundll32.exe").args(["user32.dll,LockWorkStation"]).creation_flags(NO_WINDOW).spawn();
                 }
                 1 => {
-                    // not `rundll32 powrprof.dll,SetSuspendState`: rundll32 passes garbage arguments and the PC hibernates
-                    // instead of sleeping whenever hibernation is on. On its own thread: the call returns only after wake-up.
+                    // on its own thread: the call returns only after wake-up
                     std::thread::spawn(|| sleep_now());
                 }
                 2 => {
@@ -1297,26 +1408,7 @@ unsafe fn run_act(a: Act, rect: RECT, x: i32) {
     }
 }
 
-/// Sleep (S3 / modern standby), never hibernate. SetSuspendState needs the shutdown privilege switched on in our token.
-pub fn sleep_now() {
-    use windows_sys::Win32::{
-        Security::{AdjustTokenPrivileges, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES},
-        System::{Power::SetSuspendState, Threading::{GetCurrentProcess, OpenProcessToken}},
-    };
-    unsafe {
-        let mut tok = null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &mut tok) != 0 {
-            let mut tp: TOKEN_PRIVILEGES = zeroed();
-            tp.PrivilegeCount = 1;
-            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-            if LookupPrivilegeValueW(null(), wide("SeShutdownPrivilege").as_ptr(), &mut tp.Privileges[0].Luid) != 0 {
-                AdjustTokenPrivileges(tok, 0, &tp, 0, null_mut(), null_mut());
-            }
-            CloseHandle(tok);
-        }
-        SetSuspendState(false, false, false);
-    }
-}
+pub use winrust_common::power::sleep_now;
 
 // ---------- painting ----------
 
@@ -1345,13 +1437,30 @@ fn inset(rc: RECT, d: i32) -> RECT {
     RECT { left: rc.left + d, top: rc.top + d, right: rc.right - d, bottom: rc.bottom - d }
 }
 
-/// Draws the whole panel of kind `k` into `dc`, which must be `size(k)` (times the scale) big: the background, then the
-/// parts. `paint` owns the window plumbing (BeginPaint, the double buffer); the test below draws into a memory DC with
-/// the very same code.
-unsafe fn draw(dc: HDC, k: Kind) {
+unsafe fn paint(hw: HWND, k: Kind) {
+    let mut ps: PAINTSTRUCT = zeroed();
+    let wdc = BeginPaint(hw, &mut ps);
+    let mut cr: RECT = zeroed();
+    GetClientRect(hw, &mut cr);
     BUSY.set(false);
-    let (w, h) = size(k);
-    let cr = RECT { left: 0, top: 0, right: sc(w), bottom: sc(h) };
+    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
+    let old = SelectObject(dc, bmp);
+    draw(dc, cr, k);
+    BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, old);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+    if BUSY.get() {
+        SetTimer(hw, 2, 16, None); // next animation frame
+    } else {
+        KillTimer(hw, 2);
+    }
+    EndPaint(hw, &ps);
+}
+
+/// The panel itself, painted into `dc` (a memory DC as big as the window client area): `paint` bit-blits it into the
+/// window, and the tests call it straight to look at the pixels.
+unsafe fn draw(dc: HDC, cr: RECT, k: Kind) {
     fill(dc, cr, if style().light() { mix(pal().bg, pal().dim, 0.3) } else { mix(pal().bg, pal().text, 0.12) }, sc(16));
     fill(dc, inset(cr, 1), pal().bg, sc(16));
     winrust_common::style::backdrop(dc, inset(cr, 1), sc(100) as f32 / 100.0);
@@ -1362,6 +1471,7 @@ unsafe fn draw(dc: HDC, k: Kind) {
     let (f_semi, f_head, f_gs, f_label) = (font(&face, 13, 600), font(&face, 18, 700), font(&gface, 11, 400), font(&face, 12, 600));
     let card = card();
     let of = SelectObject(dc, f_txt);
+    let (w, h) = size(k);
     let over = OVER.get();
     let hot = |a: Act| over == Some(a);
     // hover highlight that fades; the key is the element's position (flyout keys start at 1_000_000)
@@ -1398,37 +1508,50 @@ unsafe fn draw(dc: HDC, k: Kind) {
                 ("\u{E708}", t!("Ночной свет", "Night light", ja: "夜間モード", pt: "Luz noturna", zh: "夜间模式").to_string(), onoff(night)),
                 ("\u{E7F4}", t!("Проецировать", "Project", ja: "表示", pt: "Projetar", zh: "投影").to_string(), String::new()),
             ];
-            for (i, (glyph, label, sub)) in tiles.iter().enumerate() {
-                let full = qt_tile(i as i32); // the badge and the two text lines come from qt_badge / qt_label / qt_state
+            let drawn = tiles_drawn();
+            let lifted = TILE_GRAB.get().filter(|&g| dragging(g)).map(|g| g.0 as usize);
+            // the dragged tile last, so it passes over the others
+            let mut ids: Vec<usize> = (0..tiles.len()).filter(|&i| Some(i) != lifted).collect();
+            ids.extend(lifted);
+            for i in ids {
+                let (glyph, label, sub) = &tiles[i];
+                let (tl, tt) = drawn[i];
+                let full = r(tl, tt, tl + 104, tt + 84);
+                if lifted == Some(i) {
+                    // lifted off the grid: a soft shadow under it
+                    fill(dc, RECT { left: full.left - sc(2), top: full.top + sc(4), right: full.right + sc(2), bottom: full.bottom + sc(8) }, mix(pal().bg, 0, if style().light() { 0.12 } else { 0.5 }), sc(20));
+                }
                 let on = states[i];
                 let base = if on { mix(card, pal().accent, 0.12) } else { card };
                 surface(dc, full, base, sc(18));
                 g(Act::Tile(i as u8), inset(full, 1), base, mix(base, pal().text, 0.05), sc(16));
                 // the round icon badge: lit in the accent when on
-                let badge = qt_badge(i as i32);
+                let badge = r(tl + 12, tt + 12, tl + 44, tt + 44);
                 fill(dc, badge, if on { pal().accent } else { mix(card, pal().text, 0.08) }, sc(32));
                 let ink = if on { on_accent() } else { pal().text };
                 if i == 0 {
                     // the same arcs as the bar: lit by the signal, a cross when not connected
                     wifi_glyph(dc, (badge.left + badge.right) / 2, (badge.top + badge.bottom) / 2 - sc(1), sc(15), if q >= 0 { arcs_lit(q) } else { 0 }, ink, mix(ink, if on { pal().accent } else { card }, 0.55), if q < 0 { 1 } else { 0 });
-                    let more = rs.iter().find(|(_, a)| *a == Act::WifiMore).unwrap().0;
-                    g(Act::WifiMore, more, base, mix(base, pal().text, 0.1), sc(30));
-                    SelectObject(dc, f_gs);
-                    text(dc, "\u{E76C}", more, pal().dim, DT_CENTER);
                 } else {
                     SelectObject(dc, f_glyph);
                     text(dc, glyph, badge, ink, DT_CENTER);
                 }
+                if let Some(m) = more(i as u8) {
+                    let mr = r(tl + 66, tt + 8, tl + 96, tt + 38);
+                    g(m, mr, base, mix(base, pal().text, 0.1), sc(30));
+                    SelectObject(dc, f_gs);
+                    text(dc, "\u{E76C}", mr, pal().dim, DT_CENTER);
+                }
                 SelectObject(dc, f_label);
-                text(dc, label.as_str(), qt_label(i as i32), pal().text, DT_LEFT);
+                text(dc, label.as_str(), r(tl + 12, tt + 46, tl + 102, tt + 62), pal().text, DT_LEFT);
                 if !sub.is_empty() {
                     SelectObject(dc, f_small);
-                    text(dc, sub, qt_state(i as i32), pal().dim, DT_LEFT);
+                    text(dc, sub, r(tl + 12, tt + 61, tl + 100, tt + 75), pal().dim, DT_LEFT);
                 }
             }
             // sliders sit together on one card
             let n = sliders();
-            surface(dc, r(QT_X0, SL_TOP - 4, w - QT_X0, SL_TOP + 4 + 44 * n), card, sc(18));
+            surface(dc, r(16, SL_TOP - 4, w - 16, SL_TOP + 4 + 44 * n), card, sc(18));
             let mut y = SL_TOP;
             let b = BRIGHT.load(Relaxed);
             if b >= 0 {
@@ -1510,6 +1633,36 @@ unsafe fn draw(dc: HDC, k: Kind) {
                     fill(dc, cell, pal().accent, sc(18));
                 }
                 text(dc, &d.to_string(), cell, if today { pal().bg } else { pal().text }, DT_CENTER);
+            }
+            // notifications
+            fill(dc, r(16, CAL_H - 2, w - 16, CAL_H - 1), pal().line, 0);
+            SelectObject(dc, f_semi);
+            text(dc, t!("Уведомления", "Notifications", ja: "通知", pt: "Notificações", zh: "通知"), r(20, CAL_H + 6, w - 120, CAL_H + 34), pal().text, DT_LEFT);
+            let list = crate::notif::LIST.lock().unwrap().clone();
+            match list.as_deref() {
+                Some([_, ..]) => {
+                    let clear = r(w - 110, CAL_H + 6, w - 16, CAL_H + 34);
+                    g(Act::NoteClear, clear, pal().bg, pal().hover, sc(8));
+                    SelectObject(dc, f_small);
+                    text(dc, t!("Очистить", "Clear all", ja: "すべて消去", pt: "Limpar tudo", zh: "全部清除"), clear, pal().dim, DT_CENTER);
+                    for (i, n) in list.iter().flatten().take(crate::notif::ROWS).enumerate() {
+                        let top = CAL_H + 40 + 56 * i as i32;
+                        surface(dc, r(14, top, w - 14, top + 50), card, sc(10));
+                        SelectObject(dc, f_label);
+                        text(dc, &n.app, r(24, top + 6, w - 56, top + 24), pal().text, DT_LEFT);
+                        SelectObject(dc, f_small);
+                        text(dc, &n.text, r(24, top + 26, w - 56, top + 44), pal().dim, DT_LEFT);
+                        let x = note_x(w, i as i32);
+                        g(Act::Note(n.id), x, card, mix(card, pal().text, 0.12), sc(14));
+                        SelectObject(dc, f_gs);
+                        text(dc, "\u{E711}", x, pal().dim, DT_CENTER);
+                    }
+                }
+                other => {
+                    SelectObject(dc, f_small);
+                    let msg = if other.is_some() { t!("Новых уведомлений нет", "No new notifications", ja: "新しい通知はありません", pt: "Nenhuma notificação nova", zh: "没有新通知") } else { t!("Windows не отдаёт уведомления", "Windows does not share notifications", ja: "Windows が通知を共有していません", pt: "O Windows não compartilha as notificações", zh: "Windows 未提供通知") };
+                    text(dc, msg, r(16, CAL_H + 72, w - 16, CAL_H + 100), pal().dim, DT_CENTER);
+                }
             }
         }
         Kind::Wifi => {
@@ -1857,25 +2010,6 @@ unsafe fn draw(dc: HDC, k: Kind) {
     }
 }
 
-unsafe fn paint(hw: HWND, k: Kind) {
-    let mut ps: PAINTSTRUCT = zeroed();
-    let wdc = BeginPaint(hw, &mut ps);
-    let mut cr: RECT = zeroed();
-    GetClientRect(hw, &mut cr);
-    let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right, cr.bottom));
-    let old = SelectObject(dc, bmp);
-    draw(dc, k);
-    BitBlt(wdc, 0, 0, cr.right, cr.bottom, dc, 0, 0, SRCCOPY);
-    SelectObject(dc, old);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-    if BUSY.get() {
-        SetTimer(hw, 2, 16, None); // next animation frame
-    } else {
-        KillTimer(hw, 2);
-    }
-    EndPaint(hw, &ps);
-}
 
 // ---------- window proc ----------
 
@@ -1915,6 +2049,9 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             InvalidateRect(hw, null(), 0);
         }
         WM_TIMER => {
+            if k == Kind::Cal {
+                crate::notif::refresh();
+            }
             if k == Kind::Wifi && PASS.with_borrow(|p| p.is_none()) {
                 read_nets();
                 let (w, h) = (sc(size(k).0), sc(size(k).1));
@@ -1928,6 +2065,10 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             InvalidateRect(hw, null(), 0);
         }
         WM_MOUSEMOVE => {
+            if let Some((t, down, _)) = TILE_GRAB.get() {
+                TILE_GRAB.set(Some((t, down, (x, y))));
+                InvalidateRect(hw, null(), 0);
+            }
             if DRAG.get() != 0 {
                 let want = if DRAG.get() == 1 { Act::VolSlide } else { Act::BrightSlide };
                 if let Some((rc, a)) = rects(k).into_iter().find(|(_, a)| *a == want) {
@@ -1944,7 +2085,13 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             if CTX.with_borrow(|c| c.is_some()) && !matches!(hit, Some((_, Act::Ctx(_)))) {
                 CTX.set(None); // a click beside the open menu only closes it
             } else if let Some((rc, a)) = hit {
-                run_act(a, rc, x);
+                // a tile acts when the button comes up: until then it may be a drag
+                if let Act::Tile(i) = a {
+                    TILE_GRAB.set(Some((i, (x, y), (x, y))));
+                    SetCapture(hw);
+                } else {
+                    run_act(a, rc, x);
+                }
             }
             if FLY.get().is_some() {
                 InvalidateRect(hw, null(), 0);
@@ -1967,6 +2114,21 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             InvalidateRect(hw, null(), 0);
         }
         WM_LBUTTONUP => {
+            if let Some(g) = TILE_GRAB.take() {
+                ReleaseCapture();
+                match tile_under(x, y) {
+                    // not moved: a click (a drag that came back to its own place does nothing)
+                    Some(i) if i == g.0 && !dragging((g.0, g.1, (x, y))) => {
+                        let (l, t) = tile_at(i);
+                        run_act(Act::Tile(i), r(l, t, l + 104, t + 84), x);
+                    }
+                    Some(i) if i != g.0 => set_order(moved(order(), g.0, i)),
+                    _ => {}
+                }
+                if FLY.get().is_some() {
+                    InvalidateRect(hw, null(), 0);
+                }
+            }
             let d = DRAG.replace(0);
             if d != 0 {
                 ReleaseCapture();
@@ -2056,6 +2218,19 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
 }
 
 #[cfg(test)]
+mod tile_glide_tests {
+    #[test]
+    fn glides_reach_their_place() {
+        let mut x = 0.0;
+        for _ in 0..10 {
+            x = super::glide(x, 100.0, 16.0);
+        }
+        assert!(x > 85.0 && x < 100.0, "{x}");
+        assert_eq!(super::glide(0.0, 100.0, 500.0), 100.0); // the panel just opened: no glide
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{flip_layout, score, init, is_open, toggle, close_now, Kind, FLY, FH, GetModuleHandleW, SetProcessDPIAware, null, null_mut, DestroyWindow, IsWindow};
 
@@ -2105,13 +2280,34 @@ mod tests {
 }
 
 #[cfg(test)]
+mod tile_tests {
+    use super::*;
+
+    #[test]
+    fn saved_order_survives_junk_and_moves() {
+        assert_eq!(parse_order(""), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(parse_order("2 2 99 x 0"), [2, 0, 1, 3, 4, 5, 6, 7, 8]);
+        let o = parse_order("");
+        assert_eq!(moved(o, 0, 2), [1, 2, 0, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(moved(o, 8, 0), [8, 0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(moved(o, 4, 4), o);
+    }
+}
+#[cfg(test)]
 mod quick_tiles {
     use super::*;
 
-    /// A memory DC with the whole quick panel painted by `draw`, the code the flyout window itself runs. The fonts, the
-    /// card colour and the palette are the real ones.
+    /// The quick panel painted by `draw`, the code the panel window itself runs, into a memory DC: the real fonts, card
+    /// colour and palette, with the tiles in their default order so their places are known.
     unsafe fn panel(scale: f32) -> (HDC, HBITMAP, i32, i32) {
         SCALE.set(scale);
+        ORDER.set(Some(std::array::from_fn(|i| i as u8)));
+        TILE_GRAB.set(None);
+        TILE_T.set(0); // no glide: the tiles are drawn where they belong
+        TILE_POS.set(std::array::from_fn(|i| {
+            let (l, t) = slot(i);
+            (l as f32, t as f32)
+        }));
         let (w, h) = size(Kind::Quick);
         let (w, h) = (sc(w), sc(h));
         let sdc = GetDC(null_mut());
@@ -2119,7 +2315,7 @@ mod quick_tiles {
         let bmp = CreateCompatibleBitmap(sdc, w, h);
         SelectObject(dc, bmp);
         ReleaseDC(null_mut(), sdc);
-        draw(dc, Kind::Quick);
+        draw(dc, RECT { left: 0, top: 0, right: w, bottom: h }, Kind::Quick);
         (dc, bmp, w, h)
     }
 
@@ -2157,19 +2353,23 @@ mod quick_tiles {
         tile.bottom - 1 - lowest.expect("the text line has ink")
     }
 
+    /// The tiles that carry a state line under their title; the live-captions and project tiles have only the title.
+    const STATEFUL: [usize; 7] = [0, 1, 2, 3, 4, 6, 7];
+
     /// The state line used to end 1.5 px above the tile's bottom edge while the badge began 12 px below the top; now the
     /// text keeps about the same air under it as the badge has above it, at every scale the bar is drawn at.
     #[test]
     fn quick_tiles_keep_air_under_the_text() {
-        // the tiles that carry a state line: the live-captions and project tiles have only their title
-        const STATEFUL: [i32; 7] = [0, 1, 2, 3, 4, 6, 7];
         for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.5] {
             unsafe {
                 let (dc, bmp, w, h) = panel(scale);
                 let px = pixels(dc, bmp, w, h);
                 for i in STATEFUL {
-                    let air = air_under(&px, w, qt_state(i), qt_tile(i));
-                    assert!(air >= sc(8) && air <= sc(14), "{scale}x: tile {i}'s state line ends {} px above the tile's edge, the badge sits {} px below the top", air as f32 / SCALE.get(), QT_PAD);
+                    let (l, t) = slot(i);
+                    let tile = RECT { left: sc(l), top: sc(t), right: sc(l + 104), bottom: sc(t + 84) };
+                    let line = RECT { left: sc(l + 12), top: sc(t + 61), right: sc(l + 100), bottom: sc(t + 75) };
+                    let air = air_under(&px, w, line, tile);
+                    assert!(air >= sc(8) && air <= sc(14), "{scale}x: tile {i}'s state line ends {} px above the tile's edge", air as f32 / SCALE.get());
                 }
                 DeleteObject(bmp);
                 DeleteDC(dc);
@@ -2191,8 +2391,8 @@ mod quick_tiles {
         ];
         unsafe {
             SCALE.set(2.0);
-            let tile = qt_tile(1);
-            let (w, h) = (tile.right - tile.left, tile.bottom - tile.top);
+            let (l, t) = slot(1);
+            let (w, h) = (sc(104), sc(84));
             let sdc = GetDC(null_mut());
             let dc = CreateCompatibleDC(sdc);
             let bmp = CreateCompatibleBitmap(sdc, w, h);
@@ -2202,21 +2402,21 @@ mod quick_tiles {
             let face = wide(ui_face());
             let f_small = CreateFontW(-sc(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
             let whole = RECT { left: 0, top: 0, right: w, bottom: h };
-            let line = qt_state(1);
-            let line = RECT { left: line.left - tile.left, top: line.top - tile.top, right: line.right - tile.left, bottom: line.bottom - tile.top };
-            for (l, words) in WORDS.iter().enumerate() {
+            let line = RECT { left: sc(12), top: sc(61), right: sc(100), bottom: sc(75) };
+            for (k, words) in WORDS.iter().enumerate() {
                 for word in words.iter() {
                     fill(dc, whole, card(), 0);
                     SelectObject(dc, f_small);
                     text(dc, word, line, pal().dim, DT_LEFT);
                     let px = pixels(dc, bmp, w, h);
                     let air = air_under(&px, w, line, whole);
-                    assert!(air >= sc(8) && air <= sc(14), "{}: \u{201C}{word}\u{201D} ends {} px above the edge", NAMES[l], air as f32 / SCALE.get());
+                    assert!(air >= sc(8) && air <= sc(14), "{}: \u{201C}{word}\u{201D} ends {} px above the edge", NAMES[k], air as f32 / SCALE.get());
                 }
             }
             DeleteObject(f_small);
             DeleteObject(bmp);
             DeleteDC(dc);
+            let _ = (l, t);
         }
     }
 }

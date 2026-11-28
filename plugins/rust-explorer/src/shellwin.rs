@@ -18,7 +18,7 @@ use windows::{
 /// Posted to the window when the shell wants a file selected: lp = Box<PathBuf>. The shell calls us on an RPC thread, so the UI does the work.
 pub const WM_SHELL_SELECT: u32 = WM_APP + 6;
 
-struct Reg { sw: IShellWindows, cookie: i32, live: bool } // live: the window whose folder changes (not a stand-in)
+struct Reg { sw: IShellWindows, cookie: i32, live: bool, desktop_pidl: bool } // live: the window whose folder changes (not a stand-in)
 thread_local! { static REG: RefCell<Vec<Reg>> = const { RefCell::new(Vec::new()) }; }
 static DIR: Mutex<String> = Mutex::new(String::new());
 
@@ -28,37 +28,63 @@ fn url(dir: &str) -> String { format!("file:///{}", cur(dir).replace('\\', "/"))
 fn cur(dir: &str) -> String { if dir.is_empty() { DIR.lock().unwrap().clone() } else { dir.to_string() } }
 fn wide(s: &std::ffi::OsStr) -> Vec<u16> { s.encode_wide().chain([0]).collect() }
 
-fn pidl_variant(dir: &Path) -> Option<(VARIANT, *mut ITEMIDLIST)> {
-    let w = wide(dir.as_os_str());
+fn pidl_variant(dir: &Path, desktop_pidl: bool) -> Option<VARIANT> {
     unsafe {
         let mut pidl = std::ptr::null_mut();
-        SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None).ok()?;
-        InitVariantFromBuffer(pidl as *const c_void, ILGetSize(Some(pidl))).ok().map(|v| (v, pidl))
+        if desktop_pidl {
+            // Chromium parses folder names with a trailing separator through the desktop IShellFolder.
+            // Windows can give that spelling a different PIDL from SHParseDisplayName's canonical one.
+            let mut path = dir.to_path_buf();
+            path.push("");
+            let mut name = wide(path.as_os_str());
+            SHGetDesktopFolder().ok()?.ParseDisplayName(
+                HWND::default(), None::<&IBindCtx>, PWSTR(name.as_mut_ptr()), None, &mut pidl, std::ptr::null_mut(),
+            ).ok()?;
+        } else {
+            let name = wide(dir.as_os_str());
+            SHParseDisplayName(PCWSTR(name.as_ptr()), None, &mut pidl, 0, None).ok()?;
+        }
+        let variant = InitVariantFromBuffer(pidl as *const c_void, ILGetSize(Some(pidl))).ok();
+        CoTaskMemFree(Some(pidl as *const c_void));
+        variant
     }
 }
 
-fn add(hwnd: isize, dir: &Path, resident: bool) -> Result<()> {
+fn add(hwnd: isize, dir: &Path, resident: bool, desktop_pidl: bool) -> Result<()> {
     unsafe {
+        let location = pidl_variant(dir, desktop_pidl).ok_or(E_INVALIDARG)?;
         let sw: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_ALL)?;
         let me: IWebBrowser2 = Browser { hwnd, dir: if resident { dir.to_string_lossy().into_owned() } else { String::new() }, resident }.into();
         let cookie = sw.Register(&me.cast::<IDispatch>()?, hwnd as i32, SWC_BROWSER)?;
-        if let Some((v, pidl)) = pidl_variant(dir) {
-            let _ = sw.OnNavigate(cookie, &v);
-            CoTaskMemFree(Some(pidl as *const c_void));
+        if let Err(err) = sw.OnNavigate(cookie, &location) {
+            let _ = sw.Revoke(cookie);
+            return Err(err);
         }
-        REG.with_borrow_mut(|r| r.push(Reg { sw, cookie, live: !resident }));
+        REG.with_borrow_mut(|r| r.push(Reg { sw, cookie, live: !resident, desktop_pidl }));
     }
     Ok(())
 }
 
 /// Registers the window (call once, after the folder is shown, on the UI thread).
-pub fn register(hwnd: isize) { let _ = add(hwnd, Path::new(&DIR.lock().unwrap().clone()), false); }
+pub fn register(hwnd: isize) {
+    let dir = DIR.lock().unwrap().clone();
+    // Keep the canonical ID for other shell callers, and the desktop-parsed ID for Chromium.
+    for desktop_pidl in [false, true] {
+        let _ = add(hwnd, Path::new(&dir), false, desktop_pidl);
+    }
+}
 
 /// The always-running desktop process: stand-ins for `dirs`, so "Show in folder" there opens a window on the file.
 pub fn register_resident(dirs: &[PathBuf]) {
     // the shell may bring this window to the front; a hidden one on its own keeps the desktop where it is
     let h = unsafe { CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, w!("STATIC"), w!(""), WS_POPUP, 0, 0, 0, 0, None, None, None, None) };
-    if let Ok(h) = h { for d in dirs { let _ = add(h.0 as isize, d, true); } }
+    if let Ok(h) = h {
+        for dir in dirs {
+            for desktop_pidl in [false, true] {
+                let _ = add(h.0 as isize, dir, true, desktop_pidl);
+            }
+        }
+    }
 }
 
 /// The window now shows `dir`: the shell matches later requests against it.
@@ -66,8 +92,8 @@ pub fn navigated(dir: &Path) {
     *DIR.lock().unwrap() = dir.to_string_lossy().into_owned();
     REG.with_borrow(|rs| {
         for r in rs.iter().filter(|r| r.live) {
-            if let Some((v, pidl)) = pidl_variant(dir) {
-                unsafe { let _ = r.sw.OnNavigate(r.cookie, &v); CoTaskMemFree(Some(pidl as *const c_void)); }
+            if let Some(location) = pidl_variant(dir, r.desktop_pidl) {
+                unsafe { let _ = r.sw.OnNavigate(r.cookie, &location); }
             }
         }
     });
