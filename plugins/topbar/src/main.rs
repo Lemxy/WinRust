@@ -2304,9 +2304,14 @@ unsafe fn bg_layer(wdc: HDC, cr: RECT) -> HDC {
     dc
 }
 
-/// The bar's four fonts, made again only when the scale or the style's faces change.
+fn bar_fonts_key(scale: f32, ui: &str, icon: &str, icon_size: u8) -> u64 {
+    key_of((scale.to_bits(), ui, icon, icon_size))
+}
+
+/// The bar's four fonts, made again only when the scale, icon size or style's faces change.
 unsafe fn bar_fonts() -> [HFONT; 4] {
-    let key = key_of((SCALE.get().to_bits(), ui_face(), winrust_common::style::icon_face()));
+    let icon_size = i18n::style::icon_size();
+    let key = bar_fonts_key(SCALE.get(), ui_face(), winrust_common::style::icon_face(), icon_size);
     let (fonts, k) = FONTS.get();
     if k == key {
         return fonts;
@@ -2316,7 +2321,7 @@ unsafe fn bar_fonts() -> [HFONT; 4] {
     });
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
     let font = |f: &[u16], px: i32, wt: i32| CreateFontW(-sc(px), 0, 0, 0, wt, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr());
-    let icon_px = (16.0 * i18n::style::icon_size() as f32 / 100.0).round() as i32;
+    let icon_px = (16.0 * icon_size as f32 / 100.0).round() as i32;
     let fonts = [font(&face, 13, 400), font(&face, 12, 400), font(&gface, icon_px, 400), font(&face, 13, 600)];
     FONTS.set((fonts, key));
     fonts
@@ -3732,6 +3737,13 @@ mod tests {
         assert_eq!(as_pinned_exe(rx, ex, true), ex); // the pin the user clicks gets the windows
         assert_eq!(as_pinned_exe(rx, ex, false), rx); // no such pin: the file manager's own pin keeps them
         assert_eq!(as_pinned_exe(r"c:\tools\other.exe", ex, true), r"c:\tools\other.exe");
+    }
+
+    #[test]
+    fn bar_fonts_key_changes_with_icon_size() {
+        let a = super::bar_fonts_key(1.0, "Segoe UI Variable", "Segoe Fluent Icons", 60);
+        let b = super::bar_fonts_key(1.0, "Segoe UI Variable", "Segoe Fluent Icons", 100);
+        assert_ne!(a, b);
     }
 
     #[test]
