@@ -3166,8 +3166,12 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
                     open(l)
                 }),
                 (Some(&w), false) => close_window(w), // right / middle click
-                // several windows of one app: pick which one (the same list the right-click menu opens with)
-                (Some(_), true) if wins.len() > 1 => app_menu(BAR.load(Relaxed) as HWND, h),
+                // several windows of one app: each click brings up the next one, as Win+number and the monitor bars do;
+                // the list to pick one from is on the right click
+                (Some(_), true) if wins.len() > 1 => {
+                    let at = wins.iter().position(|&w| w == GetForegroundWindow());
+                    bring(wins[at.map_or(0, |a| (a + 1) % wins.len())]);
+                }
                 (Some(&w), true) => {
                     // like the Windows taskbar: the active app's button minimizes it, a minimized one restores, any other raises
                     let fg = GetForegroundWindow();
