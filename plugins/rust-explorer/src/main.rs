@@ -299,12 +299,22 @@ fn properties(path: &PathBuf) {
     unsafe { ShellExecuteExW(&mut sei) };
 }
 
-/// New folder / new empty file with a free name ("New folder", "New folder (2)", ...).
-fn new_entry(dir: &PathBuf, base: &str, folder: bool) {
-    if zipx::split_zip(dir).is_some() { return; }
+/// New folder / new empty file with a free name ("New folder", "New folder (2)", ...); returns the name it got.
+fn new_entry(dir: &PathBuf, base: &str, folder: bool) -> Option<String> {
+    if zipx::split_zip(dir).is_some() { return None; }
     let (stem, ext) = match base.rsplit_once('.') { Some((s, e)) if !folder => (s.to_string(), format!(".{e}")), _ => (base.to_string(), String::new()) };
     let path = (1..).map(|n| dir.join(if n == 1 { base.to_string() } else { format!("{stem} ({n}){ext}") })).find(|p| !p.exists());
-    if let Some(p) = path { let _ = if folder { fs::create_dir(p) } else { fs::File::create(p).map(drop) }; }
+    let p = path?;
+    if folder { fs::create_dir(&p) } else { fs::File::create(&p).map(drop) }.ok()?;
+    p.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+/// After the reload that shows it: selects the new entry `name` and opens the name box on it, as Explorer does.
+fn rename_new(name: Option<String>) {
+    let Some(name) = name else { return };
+    select_row(&name);
+    let (list, i) = ST.with_borrow(|st| (st.list, st.rows.iter().position(|r| r.name.eq_ignore_ascii_case(&name))));
+    if let Some(i) = i { unsafe { SetFocus(list); } put(list, LVM_EDITLABELW, i, 0); }
 }
 
 /// Pastes what is on the system clipboard (files copied or cut here or in any other file manager).
@@ -623,8 +633,13 @@ unsafe fn bg_menu(h: HWND) {
             let drive: String = dir.to_string_lossy().chars().take(2).collect();
             if let Some(exe) = disk { let _ = std::process::Command::new(exe).arg(drive).spawn(); }
         }
-        1 => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
-        2 => new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false),
+        1 | 2 => {
+            let made = if id == 1 { new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true) }
+                else { new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false) };
+            reload(h);
+            rename_new(made);
+            return;
+        }
         3 => paste(h, &dir),
         5 => properties(&dir),
         _ => {}
@@ -2251,7 +2266,12 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 return 0;
                             }
                             0x56 if ctrl => paste(h, &dir),
-                            0x4E if ctrl => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
+                            0x4E if ctrl => {
+                                let made = new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true);
+                                reload(h);
+                                rename_new(made);
+                                return 0;
+                            }
                             0x48 if ctrl => { SHOW_HIDDEN.fetch_xor(true, Relaxed); } // Ctrl+H: hidden files
                             0x74 => {} // F5: just the reload below
                             0x4D if ctrl => { toggle_view(h); return 0; } // Ctrl+M: details <-> thumbnails
