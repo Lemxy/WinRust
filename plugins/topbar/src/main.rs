@@ -249,6 +249,7 @@ thread_local! {
     static TF_ANIM: Cell<(u64, i32, i32)> = const { Cell::new((0, 0, 0)) }; // tray flyout: when it opened, its final x, y
     static FHOT: Cell<i32> = const { Cell::new(-1) };
     static HOT: Cell<i32> = const { Cell::new(NONE) };
+    static NEED_PLACE: Cell<bool> = const { Cell::new(false) }; // display/pos change arrived while fullscreen; run place() once fullscreen ends
     static ORDER: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // unpinned windows in the order their buttons were added
     static HV: RefCell<HashMap<i32, (f32, u64)>> = RefCell::new(HashMap::new()); // hover fade per element: (0..1, last update ms)
     static BUSY: Cell<bool> = const { Cell::new(false) }; // a fade is still running: the painter asks for another frame
@@ -258,6 +259,9 @@ thread_local! {
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
     static FS_WND: Cell<isize> = const { Cell::new(0) }; // the window last seen fullscreen (fullscreen_now)
     static FS_OFF: Cell<u64> = const { Cell::new(0) }; // when a fullscreen window was last missing, ms (0 = it is there)
+    static FS_ENTER_UNTIL: Cell<u64> = const { Cell::new(0) }; // guard after bring(fs_window): keep 1.5 s settle window while the game takes over
+    static FS_EXIT_UNTIL: Cell<u64> = const { Cell::new(0) }; // brief 50 ms poll after bring(non_fs) while DXGI finishes releasing fullscreen
+    static FS_REASSERT_UNTIL: Cell<u64> = const { Cell::new(0) }; // re-assert topmost/visible briefly after leaving fullscreen (DWM teardown can demote the bar)
     static OLD_STATE: Cell<usize> = const { Cell::new(ABS_ALWAYSONTOP as usize) };
     static BAT: Cell<(i32, bool)> = const { Cell::new((-1, false)) }; // (percent or -1 = no battery, on AC)
     static VOL: Cell<(i32, bool)> = const { Cell::new((-1, false)) }; // (percent or -1 = unknown, muted)
@@ -636,7 +640,10 @@ unsafe fn alt_tab(back: bool) {
         if n == 0 {
             return SWITCHING.store(false, Relaxed);
         }
-        SW.set((v, if n == 1 { 0 } else if back { n - 1 } else { 1 }));
+        let fg = GetForegroundWindow();
+        let fg_root = if fg.is_null() { null_mut() } else { GetAncestor(fg, GA_ROOTOWNER) };
+        let idx = initial_alt_tab_index(&v, fg_root, back);
+        SW.set((v, idx));
         SW_MON.set(mon);
         SW_PT.set(Some(cursor()));
         // a game in mouse-look clips the pointer to a pixel at its center and re-clips it while it keeps the focus, so the
@@ -660,6 +667,19 @@ unsafe fn alt_tab(back: bool) {
         SW.with_borrow_mut(|(v, i)| *i = if back { (*i + v.len() - 1) % v.len() } else { (*i + 1) % v.len() });
     }
     InvalidateRect(sw, null(), 0);
+}
+
+/// First card highlighted when the Alt+Tab grid opens: the previous window (`1`) when `v[0]` is already
+/// the active app, or `0` when the desktop (not in `v`) is currently in front.
+fn initial_alt_tab_index(v: &[HWND], fg_root: HWND, back: bool) -> usize {
+    let n = v.len();
+    if n <= 1 {
+        return 0;
+    }
+    if back {
+        return n - 1;
+    }
+    if !fg_root.is_null() && v[0] == fg_root { 1 } else { 0 }
 }
 
 /// Sizes the switcher for its windows (centered on its monitor) and puts the live previews on the cards.
@@ -835,7 +855,14 @@ unsafe fn hide_taskbar_if_shown() {
 }
 
 /// Reserves a strip on the bar's screen edge so maximized windows stay clear of it.
+/// Deferred while a fullscreen app owns the display: a lower-resolution game fires WM_DISPLAYCHANGE, and running
+/// set_work_area / fit_maximized then shrinks maximized windows to the game's resolution (fit_maximized only trims,
+/// so they stay stuck shrunk after leaving the game).
 unsafe fn place(hwnd: HWND) {
+    if FULLSCREEN.load(Relaxed) {
+        NEED_PLACE.set(true);
+        return;
+    }
     apply_opacity(hwnd);
     let (cx, cy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
     let mut ab: APPBARDATA = zeroed();
@@ -1516,7 +1543,9 @@ fn refresh_status() {
             })
         });
         // explorer re-raises its own Shell_TrayWnd now and then; ours must stay in front so apps keep finding it first
-        SetWindowPos(HOST.get(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if !FULLSCREEN.load(Relaxed) {
+            SetWindowPos(HOST.get(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
     }
 }
 
@@ -1796,9 +1825,43 @@ unsafe fn bar_anim(hwnd: HWND) {
     SetTimer(hwnd, 5, 15, None);
 }
 
+/// Hides the bar without the 240 ms slide-out: a visible topmost bar overlapping the primary monitor while a game
+/// enters exclusive fullscreen can knock DXGI back out of fullscreen.
+unsafe fn hide_bar_now(hwnd: HWND) {
+    KillTimer(hwnd, 5);
+    KillTimer(hwnd, 4);
+    BAR_P.set(0.0);
+    fly::close_now();
+    hide_tip(hwnd);
+    thumbs::hide_preview();
+    if IsWindowVisible(hwnd) != 0 {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+/// Brings the bar back immediately at its final position and size (no 380 ms slide-in) when leaving fullscreen.
+unsafe fn show_bar_now(hwnd: HWND) {
+    KillTimer(hwnd, 5);
+    if FULLSCREEN.load(Relaxed) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) {
+        return;
+    }
+    BAR_P.set(1.0);
+    let (px, py) = bar_pos();
+    let (pw, ph) = if vert() { (bar_h(), GetSystemMetrics(SM_CYSCREEN)) } else { (bar_x_w().1, bar_h()) };
+    if IsWindowVisible(hwnd) == 0 {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    SetWindowPos(hwnd, HWND_TOPMOST, px, py, pw, ph, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(hwnd, null(), 0);
+}
+
 unsafe fn bar_step(hwnd: HWND) {
-    // hides for a fullscreen game or video, and with "auto-hide" on while the pointer is away (never otherwise: not over the desktop, not in any style)
-    let target = if FULLSCREEN.load(Relaxed) || (i18n::style::autohide() && DESK_HIDE.load(Relaxed)) { 0.0 } else { 1.0 };
+    if FULLSCREEN.load(Relaxed) {
+        hide_bar_now(hwnd);
+        return;
+    }
+    // hides with "auto-hide" on while the pointer is away (never otherwise: not over the desktop, not in any style)
+    let target = if i18n::style::autohide() && DESK_HIDE.load(Relaxed) { 0.0 } else { 1.0 };
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1819,6 +1882,59 @@ unsafe fn bar_step(hwnd: HWND) {
     }
 }
 
+/// Converts a `WINDOWPLACEMENT::rcNormalPosition` (workspace coords) back to screen coords on `mon`.
+fn work_to_screen(r: RECT, work: RECT, mon: RECT) -> RECT {
+    let (dx, dy) = (work.left - mon.left, work.top - mon.top);
+    RECT { left: r.left + dx, top: r.top + dy, right: r.right + dx, bottom: r.bottom + dy }
+}
+
+fn is_shell_surface(w: HWND) -> bool {
+    let mut cls = [0u16; 64];
+    let n = unsafe { GetClassNameW(w, cls.as_mut_ptr(), 64) }.max(0) as usize;
+    matches!(
+        String::from_utf16_lossy(&cls[..n]).as_str(),
+        "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer" | "XamlExplorerHostIslandWindow"
+    )
+}
+
+/// A minimized window whose restored rect covers its monitor (catches fullscreen games when FS_WND was
+/// overwritten by another fullscreen window such as an F11 browser, or after the bar restarted).
+unsafe fn iconic_covers_monitor(w: HWND) -> Option<RECT> {
+    if is_shell_surface(w) {
+        return None;
+    }
+    let mut wp: WINDOWPLACEMENT = zeroed();
+    wp.length = size_of::<WINDOWPLACEMENT>() as u32;
+    if GetWindowPlacement(w, &mut wp) == 0 {
+        return None;
+    }
+    let mut mi: MONITORINFO = zeroed();
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    if GetMonitorInfoW(MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
+        return None;
+    }
+    let tool = GetWindowLongW(w, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0;
+    let r = if tool { wp.rcNormalPosition } else { work_to_screen(wp.rcNormalPosition, mi.rcWork, mi.rcMonitor) };
+    let caption = GetWindowLongW(w, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
+    covers_monitor(r, mi.rcMonitor, caption, wp.flags & WPF_RESTORETOMAXIMIZED != 0).then_some(mi.rcMonitor)
+}
+
+unsafe fn window_covers_monitor(w: HWND, bar: HWND) -> Option<RECT> {
+    if w.is_null() || w == bar || IsWindowVisible(w) == 0 || is_shell_surface(w) {
+        return None;
+    }
+    let mut r: RECT = zeroed();
+    GetWindowRect(w, &mut r);
+    let mut mi: MONITORINFO = zeroed();
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    if GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
+        return None;
+    }
+    let m = mi.rcMonitor;
+    let caption = GetWindowLongW(w, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
+    covers_monitor(r, m, caption, IsZoomed(w) != 0).then_some(m)
+}
+
 /// True when the foreground window covers the whole primary monitor (game, F11 video, presentation).
 /// A maximized window does not: the bar's reserved strip keeps it below the bar.
 unsafe fn fullscreen_now(bar: HWND) -> bool {
@@ -1828,66 +1944,98 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
 /// The monitor the foreground window covers whole, if it covers one.
 unsafe fn fg_covers(bar: HWND) -> Option<RECT> {
     let fg = GetForegroundWindow();
+    let monitor_or_primary = |w: HWND| {
+        let mut mi: MONITORINFO = zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if !w.is_null() && GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mut mi) != 0 {
+            mi.rcMonitor
+        } else {
+            RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }
+        }
+    };
+    // A Direct3D game Windows reports as exclusive-fullscreen counts even during the brief moment when GetForegroundWindow()
+    // is null across a display-mode switch (unless one of our own panels, e.g. Start, is in front).
+    if !own_foreground() {
+        let mut quns = 0;
+        if windows_sys::Win32::UI::Shell::SHQueryUserNotificationState(&mut quns) >= 0 && quns == 3 {
+            return Some(monitor_or_primary(fg)); // QUNS_RUNNING_D3D_FULL_SCREEN
+        }
+    }
     if fg.is_null() || fg == bar || IsWindowVisible(fg) == 0 {
         return None;
     }
-    let mut mi: MONITORINFO = zeroed();
-    mi.cbSize = size_of::<MONITORINFO>() as u32;
-    GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi);
-    let m = mi.rcMonitor;
     // A fullscreen game brought back with Alt+Tab gets the foreground while still minimized and only then switches the screen
-    // over: if the bar stayed on top then, the game lost fullscreen again. The window that was fullscreen counts as such
-    // while it comes back, and so does any Direct3D game Windows itself reports as fullscreen.
-    let mut quns = 0;
-    if windows_sys::Win32::UI::Shell::SHQueryUserNotificationState(&mut quns) >= 0 && quns == 3 {
-        return Some(m); // QUNS_RUNNING_D3D_FULL_SCREEN
-    }
+    // over: if the bar stayed on top then, the game lost fullscreen again. Both the last seen fullscreen window (which also
+    // covers lower-resolution stretched games) and any minimized window whose restored rect covers its monitor count.
     if IsIconic(fg) != 0 {
-        return (fg as isize == FS_WND.get()).then_some(m);
+        if fg as isize == FS_WND.get() {
+            return Some(monitor_or_primary(fg));
+        }
+        let m = iconic_covers_monitor(fg);
+        if m.is_some() {
+            FS_WND.set(fg as isize);
+        }
+        return m;
     }
-    let mut cls = [0u16; 64];
-    let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
-    if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
-        return None; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
-    }
-    let mut r: RECT = zeroed();
-    GetWindowRect(fg, &mut r);
-    let caption = GetWindowLongW(fg, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
-    let fs = covers_monitor(r, m, caption, IsZoomed(fg) != 0);
-    if fs {
+    let m = window_covers_monitor(fg, bar);
+    if m.is_some() {
         FS_WND.set(fg as isize);
+    } else if fg as isize == FS_WND.get() {
+        FS_WND.set(0); // exited fullscreen (e.g. F11 off): do not keep treating this window as fullscreen
     }
-    fs.then_some(m)
+    m
+}
+
+fn fs_should_stay_hidden(was_fs: bool, now_fs: bool, fast_exit: bool, off_since: u64, now: u64) -> (bool, u64) {
+    if now_fs {
+        return (true, 0);
+    }
+    if !was_fs || fast_exit {
+        return (false, 0);
+    }
+    let start = if off_since == 0 { now } else { off_since };
+    if now.saturating_sub(start) < 1500 {
+        (true, start)
+    } else {
+        (false, 0)
+    }
+}
+
+/// True when the user clearly left fullscreen for a normal window (Alt+Tab, Start, quitting the game), rather than a
+/// transient null/iconic foreground flicker while a game is entering fullscreen or switching display modes.
+unsafe fn fs_can_exit_immediately(now: u64, bar: HWND) -> bool {
+    if SWITCHING.load(Relaxed) || now < FS_ENTER_UNTIL.get() {
+        return false;
+    }
+    if own_foreground() {
+        return true;
+    }
+    let fg = GetForegroundWindow();
+    !fg.is_null() && fg != bar && IsWindowVisible(fg) != 0 && IsIconic(fg) == 0 && fg as isize != FS_WND.get()
 }
 
 /// A game switching into fullscreen leaves the screen without any foreground window for a moment, again and again until it
 /// settles: the bar must not come back in that moment (it would land on top and knock the game out of fullscreen, which then
-/// tries again, in a loop). So the bar returns only once fullscreen has been gone for 1.5 s without a break.
-unsafe fn fs_settled(now_fs: bool) -> bool {
-    if now_fs {
-        FS_OFF.set(0);
-        return true;
-    }
-    if !FULLSCREEN.load(Relaxed) {
-        return false;
-    }
+/// tries again, in a loop). Keep the 1.5 s settle delay for those transient gaps, but return immediately once the user has
+/// clearly switched to a visible non-fullscreen window.
+unsafe fn fs_settled(now_fs: bool, bar: HWND) -> bool {
     let now = now_ms();
-    if FS_OFF.get() == 0 {
-        FS_OFF.set(now);
+    let fast_exit = !now_fs && FULLSCREEN.load(Relaxed) && fs_can_exit_immediately(now, bar);
+    let (stay, next_off) = fs_should_stay_hidden(FULLSCREEN.load(Relaxed), now_fs, fast_exit, FS_OFF.get(), now);
+    FS_OFF.set(next_off);
+    if !stay {
+        FS_EXIT_UNTIL.set(0);
     }
-    if now.saturating_sub(FS_OFF.get()) < 1500 {
-        return true;
-    }
-    FS_OFF.set(0);
-    false
+    stay
 }
 
-/// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); but a game in "borderless
-/// window" mode that keeps its caption style while sized to the monitor (SDL, GLFW, Dota 2 and others) is. Such a window
-/// can sit a pixel past the monitor edge (Minecraft: 1921 wide on a 1920 monitor), so it has to "cover", not "equal".
+/// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); an un-maximized framed
+/// desktop window whose saved bounds still overhang all four monitor edges by its invisible resize border (e.g. -8..+8)
+/// is not fullscreen either. A game in "borderless window" mode that keeps its caption style (SDL, GLFW, Dota 2,
+/// Minecraft at 1921x1080) sits flush at the monitor edges without overhanging all four sides by a window frame.
 fn covers_monitor(r: RECT, m: RECT, caption: bool, zoomed: bool) -> bool {
-    if caption && zoomed {
-        return false; // a framed maximized window: not a game (#88)
+    if caption && (zoomed || (r.left <= m.left - 4 && r.top <= m.top - 4 && r.right >= m.right + 4 && r.bottom >= m.bottom + 4)) {
+        return false; // a framed maximized / frame-overhanging desktop window: not a game (#88)
     }
     r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
 }
@@ -1899,7 +2047,7 @@ unsafe fn desktop_now() -> bool {
 
 unsafe fn fs_update(hwnd: HWND) {
     second::update(hwnd);
-    let fs = fs_settled(fullscreen_now(hwnd));
+    let fs = fs_settled(fullscreen_now(hwnd), hwnd);
     // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
     // edges all the time); Win opens Start, which brings the bar with it
     let mut pt = POINT { x: 0, y: 0 };
@@ -1920,18 +2068,41 @@ unsafe fn fs_update(hwnd: HWND) {
     }
     if FULLSCREEN.swap(fs, Relaxed) != fs {
         if fs {
-            fly::close_now();
-            hide_tip(hwnd);
-            thumbs::hide_preview();
+            FS_REASSERT_UNTIL.set(0);
+            hide_bar_now(hwnd);
+        } else {
+            if NEED_PLACE.replace(false) {
+                place(hwnd);
+            }
+            FS_REASSERT_UNTIL.set(now.saturating_add(800));
+            show_bar_now(hwnd);
         }
-        bar_anim(hwnd);
+    } else if !fs {
+        let should_be_shown = !(i18n::style::autohide() && DESK_HIDE.load(Relaxed));
+        if NEED_PLACE.replace(false) {
+            place(hwnd);
+            show_bar_now(hwnd);
+        } else if should_be_shown && (now < FS_REASSERT_UNTIL.get() || IsWindowVisible(hwnd) == 0) {
+            show_bar_now(hwnd);
+        }
     }
     // the 250 ms watch is only needed while the pointer decides (auto-hide, dock, desktop, bar away); otherwise
-    // the foreground event, ABN_FULLSCREENAPP and the 1 s tick call this
-    let poll = i18n::style::autohide() || dock() || desktop_now() || DESK_HIDE.load(Relaxed) || FS_OFF.get() != 0;
-    if FS_POLL.replace(poll) != poll {
-        if poll {
-            SetTimer(hwnd, 3, 250, None);
+    // the foreground event, ABN_FULLSCREENAPP and the 1 s tick call this (plus brief watches while DXGI finishes
+    // releasing exclusive fullscreen and DWM finishes restoring topmost z-order right after Alt+Tab)
+    let exit_watch = fs && now < FS_EXIT_UNTIL.get();
+    let reassert_watch = !fs && now < FS_REASSERT_UNTIL.get();
+    let poll_ms = if exit_watch {
+        50
+    } else if reassert_watch {
+        200
+    } else if i18n::style::autohide() || dock() || desktop_now() || DESK_HIDE.load(Relaxed) || FS_OFF.get() != 0 {
+        250
+    } else {
+        0
+    };
+    if FS_POLL.replace(poll_ms) != poll_ms {
+        if poll_ms > 0 {
+            SetTimer(hwnd, 3, poll_ms, None);
         } else {
             KillTimer(hwnd, 3);
         }
@@ -1939,7 +2110,7 @@ unsafe fn fs_update(hwnd: HWND) {
 }
 
 thread_local! {
-    static FS_POLL: Cell<bool> = const { Cell::new(true) }; // timer 3 runs (set in main)
+    static FS_POLL: Cell<u32> = const { Cell::new(250) }; // timer 3 period in ms (0 = off; set in main)
 }
 
 /// The dock is in the way of the window in front (one dragged down under it): it hides like over the
@@ -1965,20 +2136,111 @@ unsafe fn force_fg(hw: HWND) {
     winrust_common::fg::force(hw);
 }
 
-/// Switches to a window (Alt+Tab, its button, a preview, a menu). A minimized one goes through SwitchToThisWindow, the call
-/// Windows' own Alt+Tab makes: it activates and restores in one step. Restoring first and activating after made a fullscreen
-/// game get the foreground, lose it to the previous window and get it again; it then gave up on fullscreen (stayed black).
+/// Switches to a window (Alt+Tab, its button, a preview, a menu). Minimized windows go through SwitchToThisWindow
+/// like Windows' own Alt+Tab; if the target is fullscreen on the primary monitor, the bar hides beforehand. Unlike
+/// `force_fg` (meant for our own popups), this resolves owned modal popups and avoids injecting synthetic Alt keys
+/// once `SetForegroundWindow` already succeeded.
 pub(crate) unsafe fn bring(w: HWND) {
-    if IsIconic(w) != 0 {
-        SwitchToThisWindow(w, 1);
-        if GetForegroundWindow() == w {
-            return;
-        }
+    if w.is_null() || IsWindow(w) == 0 {
+        return;
     }
-    force_fg(w);
-    if IsIconic(w) != 0 {
+    let bar = BAR.load(Relaxed) as HWND;
+    let on_primary = |m: RECT| (m.left, m.top) == (0, 0);
+    let was_iconic = IsIconic(w) != 0;
+    let target_fs_primary = if was_iconic {
+        if w as isize == FS_WND.get() {
+            let mut mi: MONITORINFO = zeroed();
+            mi.cbSize = size_of::<MONITORINFO>() as u32;
+            GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 || on_primary(mi.rcMonitor)
+        } else {
+            iconic_covers_monitor(w).is_some_and(on_primary)
+        }
+    } else {
+        window_covers_monitor(w, bar).is_some_and(on_primary)
+    };
+    if !bar.is_null() && target_fs_primary {
+        FULLSCREEN.store(true, Relaxed);
+        FS_OFF.set(0);
+        FS_EXIT_UNTIL.set(0);
+        FS_REASSERT_UNTIL.set(0);
+        FS_ENTER_UNTIL.set(now_ms().saturating_add(1500));
+        hide_bar_now(bar);
+    }
+    let finish_non_fs = || {
+        if !bar.is_null() && !target_fs_primary && FULLSCREEN.load(Relaxed) {
+            FS_ENTER_UNTIL.set(0);
+            FS_EXIT_UNTIL.set(now_ms().saturating_add(1500));
+            fs_update(bar);
+        }
+    };
+    let p = GetLastActivePopup(w);
+    let target = if !p.is_null() && p != w && IsWindowVisible(p) != 0 && IsWindowEnabled(p) != 0 { p } else { w };
+    let is_fg = || {
+        let fg = GetForegroundWindow();
+        !fg.is_null() && (fg == target || fg == w)
+    };
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(target, &mut pid);
+    if pid != 0 {
+        AllowSetForegroundWindow(pid);
+    }
+    let frameless = GetWindowLongW(w, GWL_STYLE) as u32 & WS_CAPTION != WS_CAPTION;
+    if was_iconic {
+        if target_fs_primary || frameless {
+            // Exclusive-fullscreen / frameless games (e.g. DXGI UnrealWindow) need SwitchToThisWindow to
+            // restore+activate atomically; never follow it with a second ShowWindow(SW_RESTORE).
+            SwitchToThisWindow(target, 1);
+            if is_fg() {
+                if !target_fs_primary {
+                    finish_non_fs();
+                }
+                return;
+            }
+        } else {
+            ShowWindow(w, SW_RESTORE);
+            if SetForegroundWindow(target) != 0 {
+                finish_non_fs();
+                return;
+            }
+        }
+    } else if SetForegroundWindow(target) != 0 {
+        finish_non_fs();
+        return;
+    }
+    let me = windows_sys::Win32::System::Threading::GetCurrentThreadId();
+    let fg = GetForegroundWindow();
+    let ft = if !fg.is_null() { GetWindowThreadProcessId(fg, null_mut()) } else { 0 };
+    let attach = ft != 0 && ft != me && windows_sys::Win32::System::Threading::AttachThreadInput(me, ft, 1) != 0;
+    if pid != 0 {
+        AllowSetForegroundWindow(pid);
+    }
+    if !was_iconic && IsIconic(w) != 0 {
         ShowWindow(w, SW_RESTORE);
     }
+    BringWindowToTop(target);
+    let ok = SetForegroundWindow(target) != 0;
+    if attach {
+        windows_sys::Win32::System::Threading::AttachThreadInput(me, ft, 0);
+    }
+    if !ok && !is_fg() {
+        let send = |vk: u16, up: bool| {
+            let mut i: INPUT = zeroed();
+            i.r#type = INPUT_KEYBOARD;
+            i.Anonymous.ki.wVk = vk;
+            i.Anonymous.ki.dwFlags = if up { KEYEVENTF_KEYUP } else { 0 };
+            SendInput(1, &i, size_of::<INPUT>() as i32);
+        };
+        for &(vk, up) in &[(VK_MENU, false), (0xE8, false), (0xE8, true)] {
+            send(vk, up);
+        }
+        if !was_iconic && IsIconic(w) != 0 {
+            ShowWindow(w, SW_RESTORE);
+        }
+        BringWindowToTop(target);
+        SetForegroundWindow(target);
+        send(VK_MENU, true);
+    }
+    finish_non_fs();
 }
 
 /// Fills `r` (right / bottom exclusive) in colour `c`; `rad` > 0 rounds the corners (rad = corner diameter), anti-aliased
@@ -3297,7 +3559,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             } else if GetKeyboardLayout(tid) as usize == before {
                 let w = app_window();
                 if GetForegroundWindow() != w {
-                    force_fg(w); // Win+Space switches the window in front: put the app back there first
+                    bring(w); // Win+Space switches the window in front: put the app back there first
                 }
                 keys(&[VK_LWIN, VK_SPACE]); // the app ignored the request: the system switcher always works (with explorer)
             }
@@ -3395,6 +3657,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     BUTTON_DRAG.set(Some(ButtonDrag { button, start_x: x, start_y: y, moved: false }));
                     SetCapture(hwnd);
                     hide_tip(hwnd);
+                    thumbs::hide_preview();
                     press(h);
                     InvalidateRect(hwnd, null(), 0);
                     return 0;
@@ -3426,7 +3689,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 } else if button_key(target).as_ref() == Some(&drag.button) {
                     click(target, true, false);
                 }
-                InvalidateRect(hwnd, null(), 0);
+                if IsWindowVisible(hwnd) != 0 {
+                    InvalidateRect(hwnd, null(), 0);
+                }
             }
         }
         WM_CAPTURECHANGED => { if BUTTON_DRAG.take().is_some_and(|d| d.moved) { save_button_order(); } }
@@ -3434,10 +3699,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if wp == ABN_FULLSCREENAPP as usize {
                 fs_update(hwnd);
             } else if wp == ABN_POSCHANGED as usize {
-                place(hwnd);
+                NEED_PLACE.set(true);
+                fs_update(hwnd);
             }
         }
-        WM_DISPLAYCHANGE => place(hwnd),
+        WM_DISPLAYCHANGE => {
+            NEED_PLACE.set(true);
+            fs_update(hwnd);
+        }
         WM_SETTINGCHANGE if wp == SPI_SETWORKAREA as usize => {
             if work_area_drifted() { place(hwnd); }
         }
@@ -3682,15 +3951,47 @@ mod tests {
 
     #[test]
     fn borderless_games_count_as_fullscreen() {
-        use super::{RECT, covers_monitor};
+        use super::{RECT, covers_monitor, work_to_screen};
         let m = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
         assert!(covers_monitor(m, m, false, false)); // plain borderless / exclusive fullscreen
         assert!(covers_monitor(m, m, true, false)); // borderless window that kept its caption style
         // Minecraft (SDL_app): caption style, not maximized, sized one pixel past the monitor — still fullscreen
         assert!(covers_monitor(RECT { left: 0, top: 0, right: 1921, bottom: 1080 }, m, true, false));
         assert!(!covers_monitor(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, m, true, true)); // framed maximized window (#88)
+        assert!(!covers_monitor(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, m, true, false)); // un-maximized framed window overhanging all 4 edges by its border
         assert!(!covers_monitor(m, m, true, true)); // a maximized window is never a game
         assert!(!covers_monitor(RECT { left: 0, top: 0, right: 1920, bottom: 1032 }, m, false, false)); // leaves the bar's strip
+        // minimized fullscreen restore rect (workspace coords) under bottom, top and left bars
+        let bot_w = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+        assert!(covers_monitor(work_to_screen(m, bot_w, m), m, false, false));
+        let top_w = RECT { left: 0, top: 40, right: 1920, bottom: 1080 };
+        assert!(covers_monitor(work_to_screen(RECT { left: 0, top: -40, right: 1920, bottom: 1040 }, top_w, m), m, false, false));
+        let left_w = RECT { left: 60, top: 0, right: 1920, bottom: 1080 };
+        assert!(covers_monitor(work_to_screen(RECT { left: -60, top: 0, right: 1860, bottom: 1080 }, left_w, m), m, false, false));
+    }
+
+    #[test]
+    fn alt_tab_initial_selection_respects_desktop_focus() {
+        use super::{HWND, initial_alt_tab_index};
+        let (a, b, c) = (1usize as HWND, 2usize as HWND, 3usize as HWND);
+        assert_eq!(initial_alt_tab_index(&[a, b, c], a, false), 1); // active app is v[0]: switch to previous
+        assert_eq!(initial_alt_tab_index(&[a, b, c], a, true), 2); // Shift+Alt+Tab goes to last
+        assert_eq!(initial_alt_tab_index(&[a, b, c], 99usize as HWND, false), 0); // desktop in front: pick v[0]
+        assert_eq!(initial_alt_tab_index(&[a, b, c], std::ptr::null_mut(), false), 0);
+        assert_eq!(initial_alt_tab_index(&[a], a, false), 0);
+    }
+
+    #[test]
+    fn fs_settle_returns_immediately_on_explicit_exit() {
+        use super::fs_should_stay_hidden;
+        assert_eq!(fs_should_stay_hidden(true, true, false, 1000, 1200), (true, 0));
+        // transient null/iconic gap while switching into fullscreen still waits 1.5 s
+        assert_eq!(fs_should_stay_hidden(true, false, false, 0, 1000), (true, 1000));
+        assert_eq!(fs_should_stay_hidden(true, false, false, 1000, 2499), (true, 1000));
+        assert_eq!(fs_should_stay_hidden(true, false, false, 1000, 2500), (false, 0));
+        // switching to a real visible non-fullscreen window returns the bar immediately
+        assert_eq!(fs_should_stay_hidden(true, false, true, 1000, 1050), (false, 0));
+        assert_eq!(fs_should_stay_hidden(false, false, false, 0, 1000), (false, 0));
     }
 
     fn pinned_and_running_items_can_be_reordered_together() {
