@@ -41,6 +41,8 @@
 2. Run it as administrator.
 3. Pick **Express (recommended)** and press **Install**: search, Task Manager, the bar, Settings, disk analysis and the photo viewer, nothing removed and Explorer left in place. Or pick **Custom (advanced)** to tick the components yourself, including `rust-explorer` (replaces the Windows Explorer shell; also the **Replace Explorer** switch behind the gear on the topbar row) and the extras. They are installed in the right order; one that fails or is skipped does not stop the others, and the last page lists each component with its result.
 
+**Safe Mode** installs WinRust Settings, WinRust Disk and Photo Viewer while leaving Windows Search, Task Manager and Explorer alone. When all three tools are installed, it updates only those tools. It leaves existing WinRust components installed, including any replacements you chose earlier. Use **Custom** if you want to remove an existing replacement.
+
 Windows Search is optional: on a stripped Windows (for example a debloated LTSC image without the Windows Search service) that step is skipped with a warning instead of failing the install.
 
 If UAC asks for **another administrator's** password, the per-user settings (startup entries, scheduled tasks, PowerShell profile, search permissions) still go to the user who is signed in, not to the administrator you typed. If the installer cannot tell who that is, it stops before changing anything.

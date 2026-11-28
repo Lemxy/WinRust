@@ -137,8 +137,10 @@ pub(crate) const ID_SHELL: usize = 7; // settings panel: replace Explorer with r
 pub(crate) const ID_ALL: usize = 8; // "select all / none" on the custom page
 pub(crate) const ID_UPDATE: usize = 9; // "update available" link at the bottom of the step list
 const ID_BACK: usize = 10;
-const ID_EXPRESS: usize = 11; // the two choice cards of the first page
+const ID_EXPRESS: usize = 11;
 const ID_CUSTOM: usize = 12;
+const ID_SAFE: usize = 13;
+const MODE_CARDS: [usize; 3] = [ID_EXPRESS, ID_CUSTOM, ID_SAFE];
 pub(crate) const ID_CHECK: usize = 100; // + plugin index: the whole row toggles it
 pub(crate) const STARTING: usize = usize::MAX - 1; // JOB before apply() picks its first step
 
@@ -148,7 +150,7 @@ const ON_ACCENT: u32 = rgb(12, 12, 12); // text and ticks on the accent colour
 
 thread_local! {
     static PAGE: Cell<u8> = const { Cell::new(0) }; // 0 options, 1 components, 2 working, 3 done
-    static CUSTOM: Cell<bool> = const { Cell::new(false) }; // the first page's choice
+    static INSTALL_MODE: Cell<usize> = const { Cell::new(ID_EXPRESS) };
     static REMOVING_ALL: Cell<bool> = const { Cell::new(false) }; // the job is "remove WinRust"
 }
 /// What the last job did, (plugin, install?, error) in order: the done page lists it.
@@ -194,6 +196,10 @@ fn express_adds() -> Vec<usize> {
     rows().filter(|&i| !INSTALLED[i].load(Relaxed) && express_pick(PLUGINS[i].name, PLUGINS[i].bulk, false)).collect()
 }
 
+fn safe_steps() -> (Vec<usize>, bool) {
+    safe_plan(ready().map(|i| (i, PLUGINS[i].name, INSTALLED[i].load(Relaxed))))
+}
+
 /// The running job's steps, (plugin, install?) in order: the progress page reads it.
 pub(crate) static STEPS: Mutex<Vec<(usize, bool)>> = Mutex::new(Vec::new());
 
@@ -211,7 +217,7 @@ pub(crate) fn rollback_box(_w: f32) -> Box4 {
     [X0 - 4.0, BTN_Y, X0 + 170.0, BTN_Y + BTN_H]
 }
 
-/// The choice cards of the first page: 0 express, 1 custom.
+/// The choice cards of the first page, in MODE_CARDS order.
 fn card_box(k: usize) -> Box4 {
     let t = 206.0 + k as f32 * 104.0;
     [X0, t, X1, t + 90.0]
@@ -390,7 +396,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     let icons = winrust_common::style::icon_face();
     let hair = 1.0 / s;
     let page = PAGE.get();
-    let custom = CUSTOM.get();
+    let mode = INSTALL_MODE.get();
 
     // header: the name on the left, the language on the right, the accent line under it
     ui.shape([0.0, 0.0, w, HEAD_H], 0.0, argb(HEAD, 255));
@@ -476,11 +482,19 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
                     t!("Выборочная установка (для опытных)", "Custom (advanced)", ja: "カスタム (上級者向け)", pt: "Personalizada (avançada)", zh: "自定义（高级）"),
                     t!("Выберите компоненты сами: в том числе замену Проводника, очистку Windows и удаление того, что уже стоит.", "Pick the components yourself, including the Explorer replacement, the Windows clean-up and removing what is installed.", ja: "コンポーネントを自分で選びます。エクスプローラーの置き換え、Windows のクリーンアップ、インストール済みのものの削除も含みます。", pt: "Escolha os componentes você mesmo, incluindo a substituição do Explorer, a limpeza do Windows e a remoção do que já está instalado.", zh: "自己挑选组件，包括替换资源管理器、清理 Windows 以及移除已安装的组件。").to_string(),
                 ),
+                (
+                    t!("Безопасный режим", "Safe Mode", ja: "セーフ モード", pt: "Modo seguro", zh: "安全模式"),
+                    if ready().any(|i| INSTALLED[i].load(Relaxed) && matches!(PLUGINS[i].name, "rust-search" | "rtaskmgr-win32" | RUST_EXPLORER)) {
+                        t!("Только настройки, анализ дисков и просмотр фото. Уже установленные замены останутся.", "Settings, WinRust Disk and Photo Viewer only. Existing replacements stay installed.", ja: "設定、WinRust Disk、フォト ビューアーのみ。導入済みの置き換えはそのままです。", pt: "Só Configurações, WinRust Disk e Visualizador de Fotos. As substituições já instaladas são mantidas.", zh: "仅安装设置、WinRust Disk 和照片查看器。已安装的替代组件保持原样。").to_string()
+                    } else {
+                        t!("Только настройки, анализ дисков и просмотр фото. Поиск Windows, диспетчер задач и Проводник остаются.", "Settings, WinRust Disk and Photo Viewer. Keeps Windows Search, Task Manager and Explorer.", ja: "設定、WinRust Disk、フォト ビューアー。Windows 検索、タスク マネージャー、エクスプローラーはそのままです。", pt: "Configurações, WinRust Disk e Visualizador de Fotos. Mantém a Pesquisa do Windows, o Gerenciador de Tarefas e o Explorer.", zh: "设置、WinRust Disk 和照片查看器。保留 Windows 搜索、任务管理器和资源管理器。").to_string()
+                    },
+                ),
             ];
-            for (k, (head, text)) in cards.iter().enumerate() {
+            for (k, (&id, (head, text))) in MODE_CARDS.iter().zip(&cards).enumerate() {
                 let b = card_box(k);
-                let sel = custom == (k == 1);
-                let h = hot(ID_EXPRESS + k);
+                let sel = mode == id;
+                let h = hot(id);
                 ui.round(b, 3.0, if sel { lerp(BG, ACCENT, 0.07) } else if h { rgb(44, 44, 44) } else { PANEL }, if sel { ACCENT } else { BORDER });
                 radio(&ui, b[0] + 24.0, b[1] + 26.0, sel);
                 ui.text(head, [b[0] + 46.0, b[1] + 14.0, b[2] - 16.0, b[1] + 38.0], 15.0, 600, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -491,9 +505,10 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
                 let rb = rollback_box(w);
                 ui.text(t!("Удалить WinRust", "Remove WinRust", ja: "WinRust を削除", pt: "Remover a WinRust", zh: "移除 WinRust"), rb, 13.0, 400, if hot(ID_ROLLBACK) { lerp(BAD, TEXT, 0.3) } else { BAD }, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             }
-            let label = if custom {
+            let update = if mode == ID_SAFE { safe_steps().1 } else { adds.is_empty() && n_inst > 0 };
+            let label = if mode == ID_CUSTOM {
                 t!("Далее", "Next", ja: "次へ", pt: "Avançar", zh: "下一步")
-            } else if adds.is_empty() && n_inst > 0 {
+            } else if update {
                 t!("Обновить", "Update", ja: "更新", pt: "Atualizar", zh: "更新")
             } else {
                 t!("Установить", "Install", ja: "インストール", pt: "Instalar", zh: "安装")
@@ -741,11 +756,10 @@ pub(crate) unsafe fn hit(hwnd: HWND, lp: isize) -> Option<usize> {
     let n_inst = rows().any(|i| INSTALLED[i].load(Relaxed));
     match PAGE.get() {
         0 => {
-            if inside(card_box(0)) {
-                return Some(ID_EXPRESS);
-            }
-            if inside(card_box(1)) {
-                return Some(ID_CUSTOM);
+            for (k, &id) in MODE_CARDS.iter().enumerate() {
+                if inside(card_box(k)) {
+                    return Some(id);
+                }
             }
             if n_inst && inside(rollback_box(w)) {
                 return Some(ID_ROLLBACK);
@@ -821,6 +835,10 @@ pub(crate) fn apply(h: isize) -> Result<String, String> {
     } else {
         rm.iter().map(|&i| (i, false)).chain(add.iter().map(|&i| (i, true))).collect()
     };
+    apply_steps(h, steps, update)
+}
+
+fn apply_steps(h: isize, steps: Vec<(usize, bool)>, update: bool) -> Result<String, String> {
     *STEPS.lock().unwrap() = steps.clone();
     let (mut added, mut removed, mut failed, mut warned) = (Vec::new(), Vec::new(), Vec::new(), false);
     for (i, install) in steps {
@@ -919,15 +937,21 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
         (_, ID_UPDATE) => {
             let _ = Command::new("explorer.exe").arg(format!("{}/latest", update::BASE)).spawn();
         }
-        (0, ID_EXPRESS) | (0, ID_CUSTOM) => {
-            CUSTOM.set(id == ID_CUSTOM);
+        (0, ID_EXPRESS | ID_CUSTOM | ID_SAFE) => {
+            INSTALL_MODE.set(id);
             repaint();
         }
-        (0, ID_MAIN) if CUSTOM.get() => {
+        (0, ID_MAIN) if INSTALL_MODE.get() == ID_CUSTOM => {
             MSG.lock().unwrap().0.clear();
             PAGE.set(1);
             HOVER.set(None);
             repaint();
+        }
+        (0, ID_MAIN) if INSTALL_MODE.get() == ID_SAFE => {
+            let (indices, update) = safe_steps();
+            let steps = indices.into_iter().map(|i| (i, true)).collect();
+            let h = hwnd as isize;
+            start(hwnd, STARTING, move || apply_steps(h, steps, update));
         }
         (0, ID_MAIN) => {
             // Express: the recommended set on top of what is there, no questions (nothing is removed or replaced beyond

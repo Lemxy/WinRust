@@ -29,6 +29,22 @@ pub(crate) fn linked(name: &str, on: bool) -> Option<(&'static str, bool)> {
     }
 }
 
+/// Safe Mode adds independent tools on a fresh install and only updates those tools on an existing one.
+pub(crate) fn safe_plan<'a>(components: impl IntoIterator<Item = (usize, &'a str, bool)>) -> (Vec<usize>, bool) {
+    let mut add = Vec::new();
+    let mut installed = Vec::new();
+    for (index, name, is_installed) in components {
+        if matches!(name, "wiztree" | "photoview" | "rust-settings") {
+            if is_installed {
+                installed.push(index);
+            } else {
+                add.push(index);
+            }
+        }
+    }
+    if add.is_empty() { (installed, true) } else { (add, false) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +85,19 @@ mod tests {
     #[test]
     fn existing_rust_explorer_is_selected_for_gui_updates() {
         assert!(selected_by_default(RUST_EXPLORER, true));
+    }
+
+    #[test]
+    fn safe_mode_only_adds_or_updates_the_independent_tools() {
+        let names = [
+            "rust-search", "rtaskmgr-win32", "topbar", RUST_EXPLORER, "wiztree", "photoview",
+            "rust-settings", "debloat", "purge", "future-plugin",
+        ];
+        let plan = |installed: &[usize]| safe_plan(
+            names.into_iter().enumerate().map(|(i, name)| (i, name, installed.contains(&i)))
+        );
+        assert_eq!(plan(&[]), (vec![4, 5, 6], false));
+        assert_eq!(plan(&[0, 1, 2, 3, 4, 7, 8]), (vec![5, 6], false));
+        assert_eq!(plan(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), (vec![4, 5, 6], true));
     }
 }
