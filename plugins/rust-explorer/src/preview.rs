@@ -151,7 +151,12 @@ unsafe extern "system" fn list_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id
             let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_HOVER | TME_LEAVE, hwndTrack: h, dwHoverTime: 400 };
             TrackMouseEvent(&mut t);
         }
-        WM_MOUSEHOVER => ask(h),
+        // ours alone (TME_HOVER above): the list view selects the row under the pointer on WM_MOUSEHOVER once it has been
+        // clicked, so passing it on made every row the pointer rested on the selection (#230)
+        WM_MOUSEHOVER => {
+            ask(h);
+            return 0;
+        }
         WM_IMAGE => {
             if wp == ASKED.get() && ROW.get() >= 0 {
                 show(h, lp);
