@@ -6,6 +6,22 @@ pub(crate) fn selected_by_default(name: &str, installed: bool) -> bool {
     name != RUST_EXPLORER || installed
 }
 
+/// Safe Mode adds independent tools on a fresh install and only updates those tools on an existing one.
+pub(crate) fn safe_plan<'a>(components: impl IntoIterator<Item = (usize, &'a str, bool)>) -> (Vec<usize>, bool) {
+    let mut add = Vec::new();
+    let mut installed = Vec::new();
+    for (index, name, is_installed) in components {
+        if matches!(name, "wiztree" | "photoview" | "rust-settings") {
+            if is_installed {
+                installed.push(index);
+            } else {
+                add.push(index);
+            }
+        }
+    }
+    if add.is_empty() { (installed, true) } else { (add, false) }
+}
+
 /// The "Express" choice of the window: the recommended components (not the Explorer replacement, never the extras), and
 /// everything already installed stays (express never removes anything).
 pub(crate) fn express_pick(name: &str, bulk: bool, installed: bool) -> bool {
@@ -32,6 +48,20 @@ pub(crate) fn linked(name: &str, on: bool) -> Option<(&'static str, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_mode_only_adds_or_updates_the_independent_tools() {
+        let names = [
+            "rust-search", "rtaskmgr-win32", "topbar", RUST_EXPLORER, "wiztree", "photoview",
+            "rust-settings", "debloat", "purge", "future-plugin",
+        ];
+        let plan = |installed: &[usize]| safe_plan(
+            names.into_iter().enumerate().map(|(i, name)| (i, name, installed.contains(&i)))
+        );
+        assert_eq!(plan(&[]), (vec![4, 5, 6], false));
+        assert_eq!(plan(&[0, 1, 2, 3, 4, 7, 8]), (vec![5, 6], false));
+        assert_eq!(plan(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), (vec![4, 5, 6], true));
+    }
 
     #[test]
     fn plan_touches_only_the_difference() {
