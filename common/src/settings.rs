@@ -8,7 +8,7 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM},
     UI::{
         Input::KeyboardAndMouse::keybd_event,
-        WindowsAndMessaging::{EnumWindows, FindWindowExW, GetShellWindow, GetWindow, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow},
+        WindowsAndMessaging::{EnumWindows, FindWindowExW, FindWindowW, GetShellWindow, GetWindow, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow},
     },
 };
 
@@ -161,17 +161,28 @@ fn mark_autostart_done() {
 }
 
 fn has_desktop(p: u32) -> bool {
-    proc::cmdline(p).is_some_and(|c| c.contains("--desktop"))
+    proc::cmdline(p).is_some_and(|c| proc::first_arg_is(&c, "--desktop"))
 }
 
 const LENT: &str = "Local\\WinRust-ExplorerLent";
+pub const OVERLAY_MUTEX: &str = "Local\\WinRust-rs-overlay";
+pub const DESKTOP_OWNER_MUTEX: &str = "Local\\WinRust-DesktopOwner";
+
+/// Whether the installer configured the user's overlay to replace Explorer.
+pub fn replace_explorer_requested() -> bool {
+    crate::reg::get_dword(r"HKCU\Software\rs-shell", "ReplaceExplorer") == Some(1)
+}
 
 /// True while a Settings page holds Explorer as the shell (rs-shell must not raise our desktop then: a desktop raised under it
 /// leaves Settings cloaked, and Explorer stays forever waiting for a window that never shows). A named object, set before our
 /// desktop is ended, so there is no moment where the desktop is gone and Explorer not yet visible as the shell.
 pub fn explorer_lent() -> bool {
+    mutex_exists(LENT)
+}
+
+fn mutex_exists(name: &str) -> bool {
     use windows_sys::Win32::{Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError}, System::Threading::OpenMutexW};
-    let h = unsafe { OpenMutexW(0x0010_0000 /* SYNCHRONIZE */, 0, w(LENT).as_ptr()) };
+    let h = unsafe { OpenMutexW(0x0010_0000 /* SYNCHRONIZE */, 0, w(name).as_ptr()) };
     if h.is_null() {
         return unsafe { GetLastError() } == ERROR_ACCESS_DENIED; // made by the elevated bar: exists, just not ours to open
     }
@@ -179,24 +190,38 @@ pub fn explorer_lent() -> bool {
     true
 }
 
+fn desktop_ready(executable: &std::path::Path) -> bool {
+    let window = unsafe { FindWindowW(w("Progman").as_ptr(), w("rs-desktop").as_ptr()) };
+    if window.is_null() || unsafe { IsWindowVisible(window) == 0 || IsHungAppWindow(window) != 0 } {
+        return false;
+    }
+    let pid = pid_of(window);
+    proc::exe_path(pid).is_some_and(|path| proc::image_paths_match(&path, executable))
+        && has_desktop(pid)
+}
+
 fn run(uri: &str) {
     kill_stale();
-    let mut started = false;
+    let mut borrowed = None;
     let mut lent = std::ptr::null_mut();
     if !explorer_shell() {
         lent = unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, w(LENT).as_ptr()) };
         // our desktop is a window of class Progman too: with it up Explorer thinks a shell exists and starts as a plain folder host
-        proc::pids("rust-explorer.exe").into_iter().filter(|&p| has_desktop(p)).for_each(proc::kill);
+        for pid in proc::pids("rust-explorer.exe").into_iter().filter(|&pid| has_desktop(pid)) {
+            proc::kill(pid);
+        }
         // a frame host left from an earlier Explorer stays tied to that dead shell: the Settings frame it hosts is cloaked for
         // good. Without a shell its windows are not on screen anyway; COM starts a fresh one for the new Explorer.
         proc::pids("ApplicationFrameHost.exe").into_iter().for_each(proc::kill);
         mark_autostart_done();
         let _ = proc::start_shell_explorer();
         wait(200, explorer_shell);
+        if explorer_shell() {
+            borrowed = shell_pid();
+        }
         // the shell window appears before the immersive shell services behind it are up
         wait(150, explorer_tray);
         sleep(Duration::from_secs(1));
-        started = true;
     }
     // through explorer.exe: the page opens with the user's normal token even when this process is elevated
     for _ in 0..2 {
@@ -211,7 +236,8 @@ fn run(uri: &str) {
         }
         kill_hung();
     }
-    if started {
+    // Keep Explorer if we started it in a session that had no WinRust desktop.
+    if let Some(borrowed) = borrowed.filter(|_| mutex_exists(DESKTOP_OWNER_MUTEX)) {
         // ends when Settings is closed, or when it hangs for good
         // the PIN / Windows Hello dialog is a process of its own hosted by Explorer's immersive shell, and Settings looks hung
         // while it waits on it: Explorer stays until both are gone (ending it under the dialog left it blank, #110)
@@ -230,11 +256,23 @@ fn run(uri: &str) {
             shown |= on_screen;
             bad = if !enrolling && (any_hung() || (shown && !on_screen)) { bad + 1 } else { 0 };
         }
-        kill_stale();
-        proc::kill_shell_explorers();
         let rx = std::path::PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_default()).join(r"rust-explorer\rust-explorer.exe");
-        if rx.is_file() && !proc::pids("rust-explorer.exe").into_iter().any(has_desktop) {
-            let _ = Command::new(rx).arg("--desktop").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        if mutex_exists(DESKTOP_OWNER_MUTEX) && rx.is_file() {
+            // Settings is closed. Prepare the replacement while Explorer can still serve the desktop.
+            let mut launch = if desktop_ready(&rx) {
+                None
+            } else {
+                Command::new(&rx).arg("--desktop").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()
+            };
+            if launch.is_some() {
+                wait(120, || desktop_ready(&rx) || launch.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(Some(_)))));
+            }
+            if desktop_ready(&rx) && shell_pid() == Some(borrowed) && mutex_exists(DESKTOP_OWNER_MUTEX) {
+                kill_stale();
+                proc::kill(borrowed);
+            } else if let Some(mut child) = launch {
+                let _ = child.kill();
+            }
         }
     }
     if !lent.is_null() {

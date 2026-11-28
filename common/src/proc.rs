@@ -55,19 +55,62 @@ pub fn children(parents: &[u32]) -> Vec<u32> {
     v
 }
 
-/// Exe file name of one process (`SearchHost.exe`), without a snapshot of all of them. None when it cannot be opened.
-pub fn exe_name(pid: u32) -> Option<String> {
-    use windows_sys::Win32::System::Threading::{PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+/// Full executable path of one process, without taking a process snapshot.
+pub fn exe_path(pid: u32) -> Option<std::path::PathBuf> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError},
+        System::Threading::{PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW},
+    };
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h.is_null() {
             return None;
         }
-        let (mut b, mut n) = ([0u16; 520], 520u32);
-        let ok = QueryFullProcessImageNameW(h, 0, b.as_mut_ptr(), &mut n) != 0;
+        let read = |buf: &mut [u16]| {
+            let mut len = buf.len() as u32;
+            if QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) != 0 {
+                Ok(std::path::PathBuf::from(OsString::from_wide(&buf[..len as usize])))
+            } else {
+                Err(GetLastError())
+            }
+        };
+        let mut short = [0u16; 520];
+        let path = match read(&mut short) {
+            Err(ERROR_INSUFFICIENT_BUFFER) => read(&mut vec![0u16; 32768]),
+            result => result,
+        };
         CloseHandle(h);
-        let path = String::from_utf16_lossy(&b[..n as usize]);
-        ok.then(|| path.rsplit('\\').next().unwrap_or("").to_string())
+        path.ok()
+    }
+}
+
+/// Exe file name of one process (for example, SearchHost.exe).
+pub fn exe_name(pid: u32) -> Option<String> {
+    Some(exe_path(pid)?.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Compare full image paths. Canonicalize only if Windows returned a different spelling.
+pub fn image_paths_match(actual: &std::path::Path, expected: &std::path::Path) -> bool {
+    actual == expected || std::fs::canonicalize(actual).ok().is_some_and(|actual| {
+        std::fs::canonicalize(expected).is_ok_and(|expected| actual == expected)
+    })
+}
+
+/// Match the first argument, using Windows quoting rules for the executable and argument.
+pub fn first_arg_is(command: &str, expected: &str) -> bool {
+    use windows_sys::Win32::{Foundation::LocalFree, UI::Shell::CommandLineToArgvW};
+    let command: Vec<u16> = command.encode_utf16().chain([0]).collect();
+    let mut count = 0;
+    unsafe {
+        let args = CommandLineToArgvW(command.as_ptr(), &mut count);
+        if args.is_null() {
+            return false;
+        }
+        let matches = count > 1 && expected.encode_utf16().chain([0]).enumerate()
+            .all(|(i, ch)| *(*args.add(1)).add(i) == ch);
+        LocalFree(args.cast());
+        matches
     }
 }
 
@@ -173,6 +216,14 @@ mod tests {
     use super::is_shell_cmdline;
 
     #[test]
+    fn checks_the_first_argument_with_windows_quoting() {
+        assert!(super::first_arg_is(r#""C:\Program Files\WinRust\rust-explorer.exe" "--desktop" extra"#, "--desktop"));
+        assert!(!super::first_arg_is(r#""C:\Program Files\WinRust\rust-explorer.exe" folder --desktop"#, "--desktop"));
+        assert!(!super::first_arg_is("rust-explorer.exe --desktop-extra", "--desktop"));
+        assert!(!super::first_arg_is("rust-explorer.exe", "--desktop"));
+    }
+
+    #[test]
     fn only_a_bare_explorer_is_the_shell() {
         assert!(is_shell_cmdline(r"C:\Windows\explorer.exe"));
         assert!(is_shell_cmdline(r#""C:\Windows\explorer.exe""#));
@@ -187,6 +238,7 @@ mod tests {
         let me = std::process::id();
         assert!(super::list().iter().any(|(p, _)| *p == me));
         assert!(super::cmdline(me).is_some_and(|c| !c.is_empty()));
+        assert!(super::exe_path(me).is_some_and(|p| p.is_absolute()));
         let name = super::exe_name(me).unwrap();
         assert!(name.to_lowercase().ends_with(".exe") && !name.contains('\\'), "{name}");
         assert!(super::list().iter().any(|(p, n)| *p == me && n.eq_ignore_ascii_case(&name)));

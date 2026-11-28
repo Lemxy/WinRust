@@ -2389,6 +2389,18 @@ fn main() {
         }
         return;
     }
+    let desktop = env::args().nth(1).as_deref() == Some("--desktop");
+    if desktop {
+        // The supervisor and Settings can both request the desktop. This guard is
+        // per session and applies only to --desktop, never to file manager windows.
+        let instance = unsafe {
+            windows_sys::Win32::System::Threading::CreateMutexW(ptr::null(), 0, w("Local\\WinRust-rs-desktop").as_ptr())
+        };
+        if instance.is_null() || unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            return;
+        }
+        // The process keeps the handle open until it exits.
+    }
     sh::init();
     unsafe {
         SetProcessDPIAware(); // sharp text at any scaling; every size below goes through ui::sc
@@ -2398,7 +2410,6 @@ fn main() {
         InitCommonControlsEx(&INITCOMMONCONTROLSEX { dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_LISTVIEW_CLASSES });
         let inst = GetModuleHandleW(ptr::null());
         let cls = w("RustExplorer");
-        let desktop = env::args().nth(1).as_deref() == Some("--desktop");
         // desktop without a wallpaper file shows black, not window white
         // desktop: COLOR_BACKGROUND, the user's solid colour when there is no picture, never black (#108, #111)
         let bg = if desktop { windows_sys::Win32::Graphics::Gdi::GetSysColorBrush(1) as _ } else { windows_sys::Win32::Graphics::Gdi::CreateSolidBrush(ui::pal().bg) };

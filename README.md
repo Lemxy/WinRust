@@ -187,6 +187,10 @@ plugin-launcher autoupdate               (one update check now: what the WinRust
 To include `rust-explorer` in a fresh bulk install, run `plugin-launcher install all rust-explorer --yes`. If `topbar` is already installed, you can install `rust-explorer` on its own.
 Several plugins in one command are installed in the table's order (topbar before rust-explorer); one that fails does not stop the rest. Exit codes: 0 success, 1 error (at least one plugin failed), 2 bad arguments or no `--yes`. With no arguments the window opens. Install log: `%ProgramData%\plugin-launcher\install.log`.
 
+### Manual shell overlay
+
+From a regular, non-elevated terminal, `rs-shell --overlay` keeps the Windows desktop when **Replace Explorer** is off. Start the overlay with `rs-shell --overlay --desktop` if you explicitly want the WinRust desktop alongside Explorer. If the overlay is already running, the command enables the desktop in that session.
+
 ### Adding a plugin
 1. A crate in `plugins/<name>`, added to `members` in the root `Cargo.toml`.
 2. A line in `payload.txt`.
