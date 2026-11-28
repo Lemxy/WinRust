@@ -7,6 +7,10 @@ pub const ROW_H: f64 = 28.0;
 pub const NAV_W: f64 = 48.0;
 pub const NAV_W_OPEN: f64 = 220.0;
 pub const BAND_H: f64 = 52.0;
+/// Минимальная ширина колонки при перетаскивании границы (логические px).
+pub const COL_MIN: f64 = 48.0;
+/// Максимальная ширина: дальше колонка просто уводит остальные за правый край.
+pub const COL_MAX: f64 = 900.0;
 
 pub fn series_color(i: usize, dark: bool) -> Rgb {
     let c = [Rgb(10, 132, 255), Rgb(94, 92, 230), Rgb(48, 209, 88), Rgb(255, 159, 10), Rgb(191, 90, 242)][i.min(4)]; // Apple system blue, indigo, green, orange, purple
@@ -160,6 +164,11 @@ impl App {
             }
         }
         g.hline(lay.header.l, lay.header.r, lay.header.b - 1, th.border);
+        // граница, под которой курсор (или которую тянут): тонкая линия акцентом
+        if let Hit::ColResize(i) = ui.hit
+            && i < lay.col_x.len() {
+                g.vline(lay.col_x[i] - 1, lay.header.t, lay.header.b, th.accent);
+            }
 
         // строки
         let row_h = g.px(ROW_H);
@@ -400,6 +409,39 @@ impl App {
     }
 
     // ---------------- подсказка и уведомление ----------------
+    // ---------------- окно «Запустить новую задачу» ----------------
+    pub fn draw_run_dialog(&self, g: &G, ui: &Ui, lay: &Lay) {
+        if !ui.run {
+            return;
+        }
+        let th = g.th;
+        let p = lay.run_panel;
+        // затемняем рабочую область: окно читается как модальное
+        g.fill(lay.body, th.bg.lerp(Rgb(0, 0, 0), if th.dark { 0.45 } else { 0.10 }));
+        g.round(p, g.px(8.0), Some(th.panel), Some(th.dim.lerp(th.bg, 0.25)));
+        g.text(R::new(p.l + g.px(24.0), p.t + g.px(16.0), p.r - g.px(24.0), p.t + g.px(42.0)), t!("Запустить новую задачу", "Run new task", ja: "新しいタスクの実行", pt: "Executar nova tarefa", zh: "运行新任务"), Font::Semibold, th.text);
+        g.text_right(lay.run_label, t!("Открыть:", "Open:", ja: "開く:", pt: "Abrir:", zh: "打开:"), Font::Ui, th.text);
+        // рамка поля ввода: сам контрол лежит поверх неё (place_run_input)
+        g.round(lay.run_input, g.px(5.0), Some(th.bg), Some(th.border));
+        let hint = R::new(lay.run_input.l, lay.run_input.b + g.px(6.0), p.r - g.px(24.0), lay.run_input.b + g.px(28.0));
+        g.text(hint, t!("Имя программы, папки, документа или веб-адреса", "A program, folder, document or web address", ja: "プログラム、フォルダー、ドキュメント、または Web アドレス", pt: "Um programa, pasta, documento ou endereço web", zh: "程序、文件夹、文档或网址"), Font::Small, th.dim);
+        let buttons = [
+            (lay.run_ok, t!("ОК", "OK", ja: "OK", pt: "OK", zh: "确定"), Hit::RunOk, true),
+            (lay.run_cancel, t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消"), Hit::RunCancel, false),
+            (lay.run_browse, t!("Обзор…", "Browse…", ja: "参照…", pt: "Procurar…", zh: "浏览…"), Hit::RunBrowse, false),
+        ];
+        for (r, label, hit, primary) in buttons {
+            let hov = ui.hit == hit;
+            if primary {
+                g.round(r, g.px(5.0), Some(th.accent.lerp(if th.dark { Rgb(255, 255, 255) } else { Rgb(0, 0, 0) }, if hov { 0.18 } else { 0.0 })), None);
+                g.text_center(r, label, Font::Ui, if th.dark { Rgb(0, 0, 0) } else { Rgb(255, 255, 255) });
+            } else {
+                g.round(r, g.px(5.0), Some(if hov { th.hover } else { th.panel }), Some(th.border));
+                g.text_center(r, label, Font::Ui, th.text);
+            }
+        }
+    }
+
     pub fn draw_overlay(&self, g: &G, ui: &Ui, client: R) {
         let th = g.th;
         if let Some((text, (mx, my))) = &ui.tip {

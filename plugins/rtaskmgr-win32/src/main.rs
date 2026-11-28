@@ -11,6 +11,7 @@ mod model;
 mod net;
 mod perf;
 mod res;
+mod single;
 mod startup;
 mod store;
 mod suspect;
@@ -99,6 +100,16 @@ fn main() {
         }
         let _ = std::fs::remove_file(&tray_flag);
     }
+    // Только один экземпляр: второй запуск (Ctrl+Shift+Esc, ярлык, «Параметры» → автозагрузка) поднимает уже
+    // открытое окно. Из автозагрузки — молча выходим, чтобы вход в систему не открывал окно сам.
+    // Мьютекс берём после перезапуска с правами администратора: иначе его держал бы промежуточный процесс.
+    let title = t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器");
+    if !single::claim() {
+        if !args.iter().any(|a| a == "--tray") && !tray_flag.exists() {
+            single::activate_existing(&title);
+        }
+        return;
+    }
     let ifeo = sys::taskmgr_args(&args); // Some = нас запустили вместо taskmgr.exe
     // Мы подменяем системный диспетчер: если упадём, Ctrl+Shift+Esc не должен остаться без ответа.
     // (panic = "abort" всё равно сначала вызывает этот хук.)
@@ -141,9 +152,13 @@ fn main() {
         .icon(Some(&icon_big))
         .size((cfg.size.0 as i32, cfg.size.1 as i32))
         .position(cfg.pos)
-        .title(t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器"))
+        .title(&title)
         .build(&mut win)
         .unwrap();
+    // метка окна: по ней второй запуск находит это окно, не открывая доступ к процессу (UAC-граница)
+    if let Some(h) = win.handle.hwnd() {
+        single::mark_window(h);
+    }
     let mut search = nwg::TextInput::default();
     nwg::TextInput::builder()
         .parent(&win)
@@ -152,6 +167,16 @@ fn main() {
         .position((0, 0))
         .size((300, 20))
         .build(&mut search)
+        .unwrap();
+    // поле ввода окна «Запустить новую задачу»: контрол создаётся сразу, показывается по требованию
+    let mut run_input = nwg::TextInput::default();
+    nwg::TextInput::builder()
+        .parent(&win)
+        .placeholder_text(Some(t!("например, notepad.exe", "e.g. notepad.exe", ja: "例: notepad.exe", pt: "por exemplo, notepad.exe", zh: "例如 notepad.exe")))
+        .flags(nwg::TextInputFlags::TAB_STOP)
+        .position((0, 0))
+        .size((200, 22))
+        .build(&mut run_input)
         .unwrap();
     #[allow(deprecated)] // the plain WM_TIMER is all a 1-second refresh needs; AnimationTimer runs its own thread
     let mut timer = nwg::Timer::default();
@@ -178,10 +203,13 @@ fn main() {
         tip: None,
         lay: None,
         last_click: None,
+        col_drag: None,
+        run: false,
     };
     let app = Rc::new(App {
         win,
         search,
+        run_input,
         timer,
         tray,
         tray_icon,
@@ -192,6 +220,7 @@ fn main() {
         scale,
         edit_brush: Cell::new(0),
         search_rect: Cell::new(R::new(0, 0, 0, 0)),
+        run_rect: Cell::new(R::new(0, 0, 0, 0)),
         last_tick: Cell::new(Instant::now()),
     });
     app.apply_theme();
@@ -208,6 +237,9 @@ fn main() {
     // горячая клавиша Ctrl+Alt+T
     let hwnd = app.win.handle.hwnd().unwrap();
     unsafe { RegisterHotKey(hwnd, 1, (MOD_CONTROL | MOD_ALT) as u32, b'T' as u32) };
+
+    // второй запуск присылает это сообщение: показать окно вместо второго диспетчера задач
+    let activate_msg = single::activate_message();
 
     let a = app.clone();
     let _raw = nwg::bind_raw_event_handler(&app.win.handle, 0x10000, move |hwnd, msg, w, l| -> Option<isize> {
@@ -272,6 +304,20 @@ fn main() {
                 a.show_window();
                 Some(0)
             }
+            m if activate_msg != 0 && m == activate_msg => {
+                a.show_window();
+                Some(0)
+            }
+            WM_SETCURSOR => {
+                // над границей колонки — курсор «тянуть влево-вправо», иначе обычная стрелка от nwg
+                let over = matches!(a.ui.try_borrow().map(|u| u.hit), Ok(Hit::ColResize(_)));
+                if over {
+                    unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_SIZEWE)) };
+                    Some(1)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     })
@@ -311,5 +357,25 @@ fn main() {
             _ => {}
         }
     });
+
+    // Enter — запустить, Esc — закрыть: клавиши приходят в поле ввода, до окна они не доходят
+    let a = app.clone();
+    let _run_keys = nwg::bind_raw_event_handler(&app.run_input.handle, 0x10001, move |_hwnd, msg, w, _l| -> Option<isize> {
+        if msg != WM_KEYDOWN {
+            return None;
+        }
+        match w as u32 {
+            13 => {
+                a.run_command();
+                Some(0)
+            }
+            27 => {
+                a.close_run_dialog();
+                Some(0)
+            }
+            _ => None,
+        }
+    })
+    .unwrap();
     nwg::dispatch_thread_events();
 }
