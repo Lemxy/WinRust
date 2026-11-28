@@ -7,6 +7,10 @@ pub const ROW_H: f64 = 28.0;
 pub const NAV_W: f64 = 48.0;
 pub const NAV_W_OPEN: f64 = 220.0;
 pub const BAND_H: f64 = 52.0;
+/// Минимальная ширина колонки при перетаскивании границы (логические px).
+pub const COL_MIN: f64 = 48.0;
+/// Максимальная ширина: дальше колонка просто уводит остальные за правый край.
+pub const COL_MAX: f64 = 900.0;
 
 pub fn series_color(i: usize, dark: bool) -> Rgb {
     let c = [Rgb(10, 132, 255), Rgb(94, 92, 230), Rgb(48, 209, 88), Rgb(255, 159, 10), Rgb(191, 90, 242)][i.min(4)]; // Apple system blue, indigo, green, orange, purple
@@ -160,6 +164,11 @@ impl App {
             }
         }
         g.hline(lay.header.l, lay.header.r, lay.header.b - 1, th.border);
+        // граница, под которой курсор (или которую тянут): тонкая линия акцентом
+        if let Hit::ColResize(i) = ui.hit
+            && i < lay.col_x.len() {
+                g.vline(lay.col_x[i] - 1, lay.header.t, lay.header.b, th.accent);
+            }
 
         // строки
         let row_h = g.px(ROW_H);

@@ -1,5 +1,5 @@
 //! Настройки, правила и история в %APPDATA%\rtaskmgr (обычные текстовые файлы).
-use std::{fs, io::Write, path::PathBuf};
+use std::{collections::HashMap, fs, io::Write, path::PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum RuleAct {
@@ -28,12 +28,15 @@ pub struct Settings {
     pub theme: u8, // 0 светлая, 1 тёмная, 2 как в системе
     pub etw: bool, // сеть по процессам (нужен администратор), по умолчанию выключено
     pub gpu_temp_always: bool, // читать температуру GPU и вне страницы GPU (может будить видеокарту ноутбука)
+    /// Ширины колонок, заданные перетаскиванием: номер страницы → ширины по колонкам (логические px).
+    /// Нет записи или 0 — ширина по умолчанию из `columns()`.
+    pub colw: HashMap<usize, Vec<f64>>,
     pub rules: Vec<Rule>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { view: 0, sort: 2, desc: true, pos: (150, 60), size: (1000, 740), to_tray: false, tray_asked: false, theme: 2, etw: false, gpu_temp_always: false, rules: vec![] }
+        Self { view: 0, sort: 2, desc: true, pos: (150, 60), size: (1000, 740), to_tray: false, tray_asked: false, theme: 2, etw: false, gpu_temp_always: false, colw: HashMap::new(), rules: vec![] }
     }
 }
 
@@ -49,6 +52,12 @@ pub fn render(s: &Settings) -> String {
     );
     for r in &s.rules {
         t += &format!("rule={}|{}|{}|{}|{}\n", r.proc, r.cpu, r.secs, if r.act == RuleAct::Lower { "lower" } else { "notify" }, r.hits);
+    }
+    let mut pages: Vec<usize> = s.colw.keys().copied().collect();
+    pages.sort_unstable();
+    for p in pages {
+        let ws: Vec<String> = s.colw[&p].iter().map(|w| format!("{w:.0}")).collect();
+        t += &format!("colw={p}:{}\n", ws.join(","));
     }
     t
 }
@@ -70,6 +79,16 @@ pub fn parse(text: &str) -> Settings {
             "theme" => s.theme = v.parse().unwrap_or(2).min(2),
             "etw" => s.etw = v == "1",
             "gputemp" => s.gpu_temp_always = v == "1",
+            "colw" => {
+                // «страница:ширина,ширина,...»
+                if let Some((p, ws)) = v.split_once(':')
+                    && let Ok(p) = p.parse::<usize>() {
+                        let w: Vec<f64> = ws.split(',').filter_map(|x| x.parse::<f64>().ok()).collect();
+                        if w.iter().any(|w| *w > 0.0) {
+                            s.colw.insert(p, w);
+                        }
+                    }
+            }
             "rule" => {
                 let p: Vec<&str> = v.split('|').collect();
                 if let [name, cpu, secs, act, hits] = p[..]
@@ -144,6 +163,8 @@ mod tests {
         s.to_tray = true;
         s.tray_asked = true;
         s.rules.push(Rule { proc: "chrome.exe".into(), cpu: 50.0, secs: 60, act: RuleAct::Lower, hits: 2 });
+        s.colw.insert(0, vec![300.0, 120.0, 0.0]);
+        s.colw.insert(3, vec![90.0]);
         assert_eq!(parse(&render(&s)), s);
     }
 

@@ -11,6 +11,7 @@ mod model;
 mod net;
 mod perf;
 mod res;
+mod single;
 mod startup;
 mod store;
 mod suspect;
@@ -99,6 +100,16 @@ fn main() {
         }
         let _ = std::fs::remove_file(&tray_flag);
     }
+    // Только один экземпляр: второй запуск (Ctrl+Shift+Esc, ярлык, «Параметры» → автозагрузка) поднимает уже
+    // открытое окно. Из автозагрузки — молча выходим, чтобы вход в систему не открывал окно сам.
+    // Мьютекс берём после перезапуска с правами администратора: иначе его держал бы промежуточный процесс.
+    let title = t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器");
+    if !single::claim() {
+        if !args.iter().any(|a| a == "--tray") && !tray_flag.exists() {
+            single::activate_existing(&title);
+        }
+        return;
+    }
     let ifeo = sys::taskmgr_args(&args); // Some = нас запустили вместо taskmgr.exe
     // Мы подменяем системный диспетчер: если упадём, Ctrl+Shift+Esc не должен остаться без ответа.
     // (panic = "abort" всё равно сначала вызывает этот хук.)
@@ -141,9 +152,13 @@ fn main() {
         .icon(Some(&icon_big))
         .size((cfg.size.0 as i32, cfg.size.1 as i32))
         .position(cfg.pos)
-        .title(t!("Диспетчер задач", "Task Manager", ja: "タスク マネージャー", pt: "Gerenciador de Tarefas", zh: "任务管理器"))
+        .title(&title)
         .build(&mut win)
         .unwrap();
+    // метка окна: по ней второй запуск находит это окно, не открывая доступ к процессу (UAC-граница)
+    if let Some(h) = win.handle.hwnd() {
+        single::mark_window(h);
+    }
     let mut search = nwg::TextInput::default();
     nwg::TextInput::builder()
         .parent(&win)
@@ -178,6 +193,7 @@ fn main() {
         tip: None,
         lay: None,
         last_click: None,
+        col_drag: None,
     };
     let app = Rc::new(App {
         win,
@@ -208,6 +224,9 @@ fn main() {
     // горячая клавиша Ctrl+Alt+T
     let hwnd = app.win.handle.hwnd().unwrap();
     unsafe { RegisterHotKey(hwnd, 1, (MOD_CONTROL | MOD_ALT) as u32, b'T' as u32) };
+
+    // второй запуск присылает это сообщение: показать окно вместо второго диспетчера задач
+    let activate_msg = single::activate_message();
 
     let a = app.clone();
     let _raw = nwg::bind_raw_event_handler(&app.win.handle, 0x10000, move |hwnd, msg, w, l| -> Option<isize> {
@@ -271,6 +290,20 @@ fn main() {
             WM_HOTKEY if w == 1 => {
                 a.show_window();
                 Some(0)
+            }
+            m if activate_msg != 0 && m == activate_msg => {
+                a.show_window();
+                Some(0)
+            }
+            WM_SETCURSOR => {
+                // над границей колонки — курсор «тянуть влево-вправо», иначе обычная стрелка от nwg
+                let over = matches!(a.ui.try_borrow().map(|u| u.hit), Ok(Hit::ColResize(_)));
+                if over {
+                    unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_SIZEWE)) };
+                    Some(1)
+                } else {
+                    None
+                }
             }
             _ => None,
         }

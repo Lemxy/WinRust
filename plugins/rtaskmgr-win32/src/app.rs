@@ -32,6 +32,8 @@ pub enum Hit {
     Nav(usize),
     Button(Btn),
     Header(usize),
+    /// Граница колонки i (между i-1 и i) — тянется мышью.
+    ColResize(usize),
     Row(usize),
     Chevron(usize),
     VBar,
@@ -78,6 +80,8 @@ pub struct Ui {
     pub tip: Option<(String, (i32, i32))>,
     pub lay: Option<Lay>,
     pub last_click: Option<(Instant, String)>,
+    /// Перетаскивание границы колонки: (граница i, x нажатия, ширина колонки i-1 в начале).
+    pub col_drag: Option<(usize, i32, f64)>,
 }
 
 impl Ui {
@@ -160,6 +164,14 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+/// Ширина колонки: заданная перетаскиванием границы или по умолчанию (0 — «всё оставшееся место»).
+pub fn col_width(cfg: &store::Settings, page: Page, i: usize, default: f64) -> f64 {
+    if default == 0.0 {
+        return 0.0; // гибкая колонка всегда занимает остаток — её ширину не запоминаем
+    }
+    cfg.colw.get(&(page as usize)).and_then(|v| v.get(i)).copied().filter(|w| *w > 0.0).map_or(default, |w| w.clamp(COL_MIN, COL_MAX))
+}
+
 fn page_buttons(p: Page) -> Vec<(Btn, &'static str, char)> {
     match p {
         Page::Processes => vec![(Btn::RunTask, t!("Запустить новую задачу", "Run new task", ja: "新しいタスクの実行", pt: "Executar nova tarefa", zh: "运行新任务"), '\u{E710}'), (Btn::EndTask, t!("Снять задачу", "End task", ja: "タスクの終了", pt: "Finalizar tarefa", zh: "结束任务"), '\u{E711}'), (Btn::Efficiency, t!("Режим эффективности", "Efficiency mode", ja: "効率モード", pt: "Modo de eficiência", zh: "能效模式"), '\u{E945}'), (Btn::More, "", '\u{E712}')],
@@ -224,12 +236,13 @@ impl App {
             let hh = px(if ui.page == Page::Processes { 56.0 } else { 36.0 });
             lay.header = R::new(body.l, body.t, body.r, body.t + hh);
             lay.rows_area = R::new(body.l, body.t + hh, body.r, body.b);
-            let fixed: f64 = cols.iter().map(|c| c.w).sum();
+            let fixed: f64 = (0..cols.len()).map(|i| col_width(&d.cfg, ui.page, i, cols[i].w)).sum();
             let rest = (body.w() as f64 - fixed * s).max(px(140.0) as f64);
             let mut x = body.l;
             lay.col_x.push(x);
-            for c in &cols {
-                x += if c.w == 0.0 { rest as i32 } else { px(c.w) };
+            for (i, c) in cols.iter().enumerate() {
+                let w = col_width(&d.cfg, ui.page, i, c.w);
+                x += if c.w == 0.0 { rest as i32 } else { px(w) };
                 lay.col_x.push(x);
             }
             lay.vbar = lay.rows_area;
@@ -249,7 +262,6 @@ impl App {
             }
             _ => {}
         }
-        let _ = d;
         lay
     }
 
@@ -359,6 +371,16 @@ impl App {
             _ if ui.has_table() => {
                 if lay.header.contains(x, y) {
                     let cols = columns(ui.page);
+                    // сначала границы колонок: попасть в них должно быть проще, чем в заголовок (сортировку)
+                    let tol = (5.0 * self.scale) as i32;
+                    for i in 1..lay.col_x.len() {
+                        if cols[i - 1].w == 0.0 {
+                            continue; // гибкая колонка занимает остаток — тянуть её границу нечего
+                        }
+                        if (x - lay.col_x[i]).abs() <= tol {
+                            return Hit::ColResize(i);
+                        }
+                    }
                     return (0..cols.len()).find(|&i| x >= lay.col_x[i] && x < lay.col_x[i + 1]).map_or(Hit::None, Hit::Header);
                 }
                 if lay.rows_area.contains(x, y) {
@@ -398,6 +420,28 @@ impl App {
     pub fn on_mouse_move(&self, hwnd: HWND, x: i32, y: i32) {
         let mut ui = self.ui.borrow_mut();
         ui.mouse = (x, y);
+        // тянем границу колонки: ширина = начальная + сдвиг мыши
+        if let Some((i, x0, w0)) = ui.col_drag
+            && let Some(lay) = ui.lay.clone() {
+                let s = self.scale as f64;
+                let j = i - 1;
+                // не даём колонке уехать за правый край таблицы
+                let max_w = (((lay.body.r - lay.col_x[j]) as f64) / s - 8.0).clamp(COL_MIN, COL_MAX);
+                let w = (w0 + (x - x0) as f64 / s).clamp(COL_MIN, max_w);
+                ui.hit = Hit::ColResize(i);
+                let page = ui.page;
+                drop(ui);
+                {
+                    let mut d = self.data.borrow_mut();
+                    let v = d.cfg.colw.entry(page as usize).or_insert_with(|| columns(page).iter().map(|c| c.w).collect());
+                    if v.len() < j + 1 {
+                        v.resize(j + 1, 0.0);
+                    }
+                    v[j] = w;
+                }
+                self.invalidate();
+                return;
+            }
         let hit = self.hit_test(&ui, x, y);
         let mut redraw = hit != ui.hit;
         ui.hit = hit;
@@ -480,6 +524,16 @@ impl App {
             }
             Hit::Nav(i) => self.go_page(NAV[i].0),
             Hit::Button(b) => self.on_button(hwnd, b),
+            Hit::ColResize(i) => {
+                {
+                    let mut ui = self.ui.borrow_mut();
+                    if let Some(lay) = &ui.lay {
+                        let w0 = (lay.col_x[i] - lay.col_x[i - 1]) as f64 / self.scale as f64;
+                        ui.col_drag = Some((i, x, w0));
+                    }
+                }
+                unsafe { SetCapture(hwnd) };
+            }
             Hit::Header(i) => {
                 {
                     let mut ui = self.ui.borrow_mut();
@@ -537,8 +591,13 @@ impl App {
 
     pub fn on_lbutton_up(&self) {
         let mut ui = self.ui.borrow_mut();
-        if ui.drag.take().is_some() {
+        let resized = ui.col_drag.take().is_some();
+        if ui.drag.take().is_some() || resized {
             unsafe { ReleaseCapture() };
+        }
+        drop(ui);
+        if resized {
+            self.save_settings(); // ширины колонок переживают перезапуск
         }
     }
 
