@@ -650,10 +650,14 @@ fn restore_defender_exclusion(
         return true;
     }
 
-    // A previous attempt can have removed this exclusion before a later record failed.
+    // A prior attempt can have removed it. A hidden or unverifiable list cannot prove absence.
     powershell_confirms_absence(powershell(&format!(
         "$p=Get-MpPreference -ErrorAction Stop; \
-         if ($null -ne $p -and $p.Exclusion{kind} -notcontains {value}) {{ 'absent' }}"
+         if ($null -ne $p) {{ \
+             $visibility = $p.PSObject.Properties['HideExclusionsFromLocalAdmins']; \
+             if ($null -ne $visibility -and $null -ne $visibility.Value -and $visibility.Value -eq 0 \
+                 -and $p.Exclusion{kind} -notcontains {value}) {{ 'absent' }} \
+         }}"
     )))
 }
 
@@ -814,6 +818,7 @@ mod tests {
                     (removed, String::new())
                 } else {
                     assert!(script.starts_with("$p=Get-MpPreference -ErrorAction Stop;"));
+                    assert!(script.contains("HideExclusionsFromLocalAdmins") && script.contains("$visibility.Value -eq 0"));
                     assert!(script.contains(&format!(".Exclusion{kind} -notcontains {}", psq(value))));
                     (true, if present[index] { "" } else { "absent\r\n" }.into())
                 }
