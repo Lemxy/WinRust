@@ -3480,6 +3480,9 @@ fn main() {
         // `topbar --preview quick|wifi`: one flyout on its own (no bar, no hooks), to look at a style change; the process is closed by hand
         if let Some(p) = std::env::args().skip_while(|a| a != "--preview").nth(1) {
             SetProcessDPIAware();
+            let dcp = GetDC(null_mut());
+            SCALE.set(GetDeviceCaps(dcp, LOGPIXELSX as i32) as f32 / 96.0); // the flyout is as big as on the bar
+            ReleaseDC(null_mut(), dcp);
             let (mut tok, mut inp): (usize, GdiplusStartupInput) = (0, zeroed());
             inp.GdiplusVersion = 1;
             GdiplusStartup(&mut tok, &inp, null_mut());
