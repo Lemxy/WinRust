@@ -162,16 +162,18 @@ static SHOW_HIDDEN: AtomicBool = AtomicBool::new(false); // Ctrl+H
 static NAV: AtomicBool = AtomicBool::new(false); // loading from the back / forward trail: do not record it again
 const WM_NAV: u32 = WM_APP + 3; // wp: 1 back, 2 forward, 3 properties, 4 up (sent from the message loop for Alt+key)
 const WM_DIRSIZE: u32 = WM_APP + 7; // folder-size worker -> UI: wp = Box<(era, folder name, bytes)> (#147)
+const WM_SELECT: u32 = WM_APP + 8; // wp = Box<String>: the row to select once the window is up (started with /select)
 const WM_JOB: u32 = WM_APP + 5; // jobs.rs worker finished: wp = Box<Option<String>> (the error, if any)
 
 fn row(name: String, m: Option<&fs::Metadata>) -> Row {
     Row { name, dir: m.is_some_and(|m| m.is_dir()), size: m.map_or(0, |m| m.len()), time: m.map_or(0, |m| m.last_write_time()), icon: -1, thumb: -2, hdr: false }
 }
 
-/// Folders first (unless "Folders first" is off in the folder's menu, #162); inside each group by the column (0 name, 1 size, 2 modified), ties by name.
+/// Folders first (unless "Folders first" is off in the folder's menu, #162; sorted by date they mix with the files unless
+/// "Folders first by date too" is on); inside each group by the column (0 name, 1 modified, 2 type, 3 size), ties by name.
 fn sort_rows(rows: &mut [Row], col: usize, asc: bool) {
     let key = |r: &Row| r.name.rsplit('\\').next().unwrap_or("").to_lowercase();
-    let mixed = !desk() && mixed_marker().exists();
+    let mixed = !desk() && (mixed_marker().exists() || (col == 1 && !date_dirs_marker().exists()));
     rows.sort_by(|a, b| {
         let o = match col { 1 => a.time.cmp(&b.time), 2 => type_text(&a.name, a.dir).cmp(&type_text(&b.name, b.dir)), 3 => a.size.cmp(&b.size), _ => key(a).cmp(&key(b)) };
         let dirs = if mixed { std::cmp::Ordering::Equal } else { (!a.dir).cmp(&!b.dir) };
@@ -203,6 +205,8 @@ thread_local! {
 }
 
 fn mixed_marker() -> PathBuf { PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join("rust-explorer").join("folders-mixed") }
+/// Present: sorting by date keeps folders on top as the other columns do; absent (default): newest is newest, folder or file.
+fn date_dirs_marker() -> PathBuf { PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join(r"rust-explorer\date-folders-first") }
 fn group_marker() -> PathBuf { PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join(r"rust-explorer\group-by-date") }
 static THUMBS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false); // thumbnail view: no headings
 fn group_on() -> bool { !desk() && !THUMBS.load(Relaxed) && group_marker().exists() }
@@ -299,12 +303,22 @@ fn properties(path: &PathBuf) {
     unsafe { ShellExecuteExW(&mut sei) };
 }
 
-/// New folder / new empty file with a free name ("New folder", "New folder (2)", ...).
-fn new_entry(dir: &PathBuf, base: &str, folder: bool) {
-    if zipx::split_zip(dir).is_some() { return; }
+/// New folder / new empty file with a free name ("New folder", "New folder (2)", ...); returns the name it got.
+fn new_entry(dir: &PathBuf, base: &str, folder: bool) -> Option<String> {
+    if zipx::split_zip(dir).is_some() { return None; }
     let (stem, ext) = match base.rsplit_once('.') { Some((s, e)) if !folder => (s.to_string(), format!(".{e}")), _ => (base.to_string(), String::new()) };
     let path = (1..).map(|n| dir.join(if n == 1 { base.to_string() } else { format!("{stem} ({n}){ext}") })).find(|p| !p.exists());
-    if let Some(p) = path { let _ = if folder { fs::create_dir(p) } else { fs::File::create(p).map(drop) }; }
+    let p = path?;
+    if folder { fs::create_dir(&p) } else { fs::File::create(&p).map(drop) }.ok()?;
+    p.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+/// After the reload that shows it: selects the new entry `name` and opens the name box on it, as Explorer does.
+fn rename_new(name: Option<String>) {
+    let Some(name) = name else { return };
+    select_row(&name);
+    let (list, i) = ST.with_borrow(|st| (st.list, st.rows.iter().position(|r| r.name.eq_ignore_ascii_case(&name))));
+    if let Some(i) = i { unsafe { SetFocus(list); } put(list, LVM_EDITLABELW, i, 0); }
 }
 
 /// Pastes what is on the system clipboard (files copied or cut here or in any other file manager).
@@ -560,6 +574,7 @@ unsafe fn bg_menu(h: HWND) {
         menu::item(sort, 31, "\u{E74B}", t!("По убыванию", "Descending", ja: "降順", pt: "Decrescente", zh: "降序"), !asc);
         menu::sep(sort);
         menu::item(sort, 14, "\u{E8B7}", t!("Папки сверху", "Folders first", ja: "フォルダーを先頭に表示", pt: "Pastas primeiro", zh: "文件夹优先"), !mixed_marker().exists());
+        menu::item(sort, 16, "\u{E787}", t!("Папки сверху и по дате", "Folders first by date too", ja: "日付順でもフォルダーを先頭に表示", pt: "Pastas primeiro também por data", zh: "按日期排序时也文件夹优先"), date_dirs_marker().exists());
         menu::submenu(m, "\u{E8CB}", t!("Сортировка", "Sort by", ja: "並べ替え", pt: "Classificar por", zh: "排序方式"), sort);
         menu::item(m, 15, "\u{E91B}", t!("Предпросмотр при наведении", "Preview on hover", ja: "ポイントしてプレビュー", pt: "Pré-visualizar ao passar o mouse", zh: "悬停预览"), !preview::off_marker().exists());
         menu::item(m, 13, "\u{E81C}", t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组"), group_on());
@@ -597,8 +612,8 @@ unsafe fn bg_menu(h: HWND) {
             let k = preview::off_marker();
             if k.exists() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
         }
-        14 => {
-            let k = mixed_marker();
+        14 | 16 => {
+            let k = if id == 14 { mixed_marker() } else { date_dirs_marker() };
             if k.exists() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
         }
         40..=43 => { // keep saved icon positions, mapped to the new grid
@@ -623,8 +638,13 @@ unsafe fn bg_menu(h: HWND) {
             let drive: String = dir.to_string_lossy().chars().take(2).collect();
             if let Some(exe) = disk { let _ = std::process::Command::new(exe).arg(drive).spawn(); }
         }
-        1 => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
-        2 => new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false),
+        1 | 2 => {
+            let made = if id == 1 { new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true) }
+                else { new_entry(&dir, t!("Новый текстовый документ.txt", "New text document.txt", ja: "新しいテキスト ドキュメント.txt", pt: "Novo documento de texto.txt", zh: "新建文本文档.txt"), false) };
+            reload(h);
+            rename_new(made);
+            return;
+        }
         3 => paste(h, &dir),
         5 => properties(&dir),
         _ => {}
@@ -2012,7 +2032,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 if desk() { let _ = sh::register_drop(h as _, h as isize); }
                 let (start, pick) = if desk() { (sh::desktop_dirs().into_iter().next().unwrap_or_default(), None) } else { start_target() };
                 load(h, start);
-                if let Some(name) = pick { select_row(&name); }
+                // the list is still 0x0 here, so scrolling to the row now is lost: select it once the window is shown and sized
+                if let Some(name) = pick { PostMessageW(h, WM_SELECT, Box::into_raw(Box::new(name)) as usize, 0); }
                 if desk() {
                     use windows::Win32::UI::Shell::{FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos};
                     let mut dirs: Vec<PathBuf> = [&FOLDERID_Desktop, &FOLDERID_Downloads, &FOLDERID_Documents, &FOLDERID_Pictures, &FOLDERID_Music, &FOLDERID_Videos].iter().filter_map(|id| sh::known_dir(id)).collect();
@@ -2251,7 +2272,12 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 return 0;
                             }
                             0x56 if ctrl => paste(h, &dir),
-                            0x4E if ctrl => new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true),
+                            0x4E if ctrl => {
+                                let made = new_entry(&dir, t!("Новая папка", "New folder", ja: "新しいフォルダー", pt: "Nova pasta", zh: "新建文件夹"), true);
+                                reload(h);
+                                rename_new(made);
+                                return 0;
+                            }
                             0x48 if ctrl => { SHOW_HIDDEN.fetch_xor(true, Relaxed); } // Ctrl+H: hidden files
                             0x74 => {} // F5: just the reload below
                             0x4D if ctrl => { toggle_view(h); return 0; } // Ctrl+M: details <-> thumbnails
@@ -2289,6 +2315,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             }
             WM_SETFOCUS => { SetFocus(ST.with_borrow(|st| st.list)); 0 }
             WM_APP => { reload(h); 0 }
+            WM_SELECT => { select_row(&Box::from_raw(wp as *mut String)); 0 }
             shellwin::WM_SHELL_SELECT => { shell_select(h as isize, *Box::from_raw(lp as *mut PathBuf)); 0 }
             WM_JOB => {
                 let err = *Box::from_raw(wp as *mut Option<String>);
@@ -2574,8 +2601,8 @@ mod tests {
         assert_eq!(names(&v), ["A", "a.txt", "b.txt"]);
         sort_rows(&mut v, 3, false); // biggest first, the folder still on top
         assert_eq!(names(&v), ["A", "a.txt", "b.txt"]);
-        sort_rows(&mut v, 1, true); // oldest first
-        assert_eq!(names(&v), ["A", "b.txt", "a.txt"]);
+        sort_rows(&mut v, 1, true); // oldest first, folders and files together
+        assert_eq!(names(&v), ["b.txt", "A", "a.txt"]);
     }
 
     #[test]
