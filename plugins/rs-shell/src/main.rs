@@ -13,7 +13,7 @@
 // Run/Startup entries are started through `cmd /c start` (no RunOnce, no startup-delay rules, no disabled-list in
 // StartupApproved), topbar's "open" still shells out to explorer.exe for /select; upgrade when those matter.
 use std::{os::windows::{io::{AsRawHandle, FromRawHandle, OwnedHandle}, process::CommandExt}, path::{Path, PathBuf}, process::{Child, Command}, ptr, thread, time::{Duration, Instant}};
-use windows_sys::{core::BOOL, Win32::{Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, RECT, WAIT_FAILED, WAIT_OBJECT_0}, System::Threading::{CreateEventW, CreateMutexW, OpenProcess, PROCESS_TERMINATE, SetEvent, TerminateProcess, WaitForSingleObject}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
+use windows_sys::{core::BOOL, Win32::{Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, RECT, WAIT_FAILED, WAIT_OBJECT_0}, System::Threading::{CreateEventW, CreateMutexW, OpenProcess, PROCESS_TERMINATE, SetEvent, TerminateProcess, WaitForSingleObject}, UI::{Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey}, WindowsAndMessaging::*}}};
 use winrust_common::reg;
 
 const WINLOGON: &str = r"HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon";
@@ -111,7 +111,16 @@ fn find_exe(name: &str) -> PathBuf {
     PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into())).join("topbar").join(name)
 }
 
-fn bar_up() -> bool { unsafe { !FindWindowW(wide("topbar").as_ptr(), std::ptr::null()).is_null() } }
+fn bar_window() -> HWND {
+    unsafe { FindWindowW(wide("topbar").as_ptr(), ptr::null()) }
+}
+
+fn bar_up() -> bool { !bar_window().is_null() }
+
+fn bar_responds() -> bool {
+    let window = bar_window();
+    !window.is_null() && responds(window) && bar_window() == window
+}
 
 /// Explorer is not the shell, so the dialogs it normally places (Windows' "How do you want to open this file?" chooser,
 /// Properties, ...) can be created at (0,0) or off the monitor and get clipped (#191). Pull a shown top-level window back
@@ -255,23 +264,25 @@ fn supervise() {
     }
 }
 
-/// Stop the process behind a window we have identified in this session. Wait on the
-/// same handle so another process cannot be mistaken for it after the stop.
-fn stop_window_process(window: HWND, pid: u32) -> bool {
+/// Request termination on the process handle behind this window. Keep the
+/// handle while waiting so a different process cannot be mistaken for it.
+fn terminate_window_process(window: HWND, pid: u32) -> Option<OwnedHandle> {
     const SYNCHRONIZE: u32 = 0x0010_0000;
-    unsafe {
-        let process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid);
-        if process.is_null() {
-            return false;
-        }
-        let mut owner = 0;
-        GetWindowThreadProcessId(window, &mut owner);
-        let stopped = owner == pid
-            && TerminateProcess(process, 1) != 0
-            && WaitForSingleObject(process, 1000) == WAIT_OBJECT_0;
-        CloseHandle(process);
-        stopped
+    let process = unsafe { OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid) };
+    if process.is_null() {
+        return None;
     }
+    let handle = unsafe { OwnedHandle::from_raw_handle(process) };
+    if window_pid(window) != Some(pid) || unsafe { TerminateProcess(process, 1) } == 0 {
+        return None;
+    }
+    Some(handle)
+}
+
+fn stop_window_process(window: HWND, pid: u32) -> bool {
+    terminate_window_process(window, pid).is_some_and(|process| {
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 1000) == WAIT_OBJECT_0 }
+    })
 }
 
 fn window_pid(window: HWND) -> Option<u32> {
@@ -293,14 +304,16 @@ fn shell_window() -> Option<(HWND, u32)> {
     Some((window, window_pid(window)?))
 }
 
-/// Ends only the Explorer described by the autostart checks in this session.
-fn kill_shell_explorer(observed: Option<(HWND, u32)>) -> bool {
+/// Request a stop only for the Explorer that passed the autostart checks.
+fn request_explorer_stop(observed: Option<(HWND, u32)>) -> Result<Option<OwnedHandle>, ()> {
     if shell_window() != observed {
-        return false;
+        return Err(());
     }
-    observed.is_none_or(|(window, pid)| {
-        belongs_to(window, "explorer.exe") == Some(pid) && stop_window_process(window, pid)
-    })
+    let Some((window, pid)) = observed else { return Ok(None) };
+    if belongs_to(window, "explorer.exe") != Some(pid) {
+        return Err(());
+    }
+    terminate_window_process(window, pid).map(Some).ok_or(())
 }
 
 fn claim_desktop() -> Option<OwnedHandle> {
@@ -430,17 +443,11 @@ fn desktop_ready(window: HWND) -> bool {
     unsafe { !window.is_null() && IsWindowVisible(window) != 0 && IsHungAppWindow(window) == 0 }
 }
 
-fn same_executable(actual: &Path, expected: &Path) -> bool {
-    actual == expected || std::fs::canonicalize(actual).ok().is_some_and(|actual| {
-        std::fs::canonicalize(expected).is_ok_and(|expected| actual == expected)
-    })
-}
-
 fn desktop_window_owner(window: HWND, executable: &Path) -> Option<u32> {
     let pid = window_pid(window)?;
     let path = winrust_common::proc::exe_path(pid)?;
-    (same_executable(&path, executable)
-        && winrust_common::proc::cmdline(pid).is_some_and(|args| args.split_whitespace().last() == Some("--desktop")))
+    (winrust_common::proc::image_paths_match(&path, executable)
+        && winrust_common::proc::cmdline(pid).is_some_and(|args| winrust_common::proc::first_arg_is(&args, "--desktop")))
         .then_some(pid)
 }
 
@@ -635,6 +642,7 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
     let mut observed_shell = if replace { shell_window() } else { None };
     let mut use_startup_markers = true;
     let mut desktop_owner = None;
+    let mut stopping_explorer: Option<OwnedHandle> = None;
     loop {
         if desktop.is_none() && !desktop_request.is_null() {
             match unsafe { WaitForSingleObject(desktop_request, 3000) } {
@@ -653,7 +661,18 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
         } else {
             thread::sleep(Duration::from_secs(3));
         }
-        let bar = bar_up();
+        if !replaced && desktop_owner.is_some()
+            && stopping_explorer.as_ref().is_none_or(|process| {
+                unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_OBJECT_0 }
+            })
+        {
+            stopping_explorer = None;
+            replaced = true;
+            watch_stray_windows();
+            // Returning from the watchdog also ends the hotkey thread.
+            thread::spawn(hotkey_loop);
+        }
+        let bar = if replaced { bar_responds() } else { bar_up() };
         if let Some(path) = &desktop {
             let window = desktop_window();
             let ready = desktop_ready(window);
@@ -677,7 +696,7 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
                 }
             }
 
-            if replace && !replaced {
+            if replace && !replaced && stopping_explorer.is_none() {
                 let now = Instant::now();
                 let shell = shell_window();
                 if observed_shell != shell {
@@ -695,26 +714,31 @@ fn overlay_watch(replace: bool, mut desktop: Option<PathBuf>, desktop_request: H
                 let markers = stable >= 3 && use_startup_markers && startup_run();
                 if stable >= 3 && may_end_explorer(markers, began.elapsed(), missing.is_empty(), untracked, last.elapsed())
                     && !winrust_common::settings::explorer_lent() && winrust_common::settings::replace_explorer_requested()
-                    && bar_up() && desktop_responds(path)
+                    && bar_responds() && desktop_responds(path)
                 {
                     log(&format!("autostart done (markers: {}, after {} s, last start {} s ago, not running: {:?})", markers, began.elapsed().as_secs(), last.elapsed().as_secs(), missing));
-                    if !kill_shell_explorer(observed_shell) {
-                        // A stop can still be pending after the bounded wait. Keep both
-                        // replacement surfaces up until another tick can confirm the state.
-                        log("overlay: the Windows shell has not stopped yet");
-                        stable = 0;
-                        continue;
+                    // Publish ownership before Windows can lose its old shell.
+                    // Settings will see either Explorer or a WinRust desktop owner.
+                    if let Some(owner) = claim_desktop() {
+                        if !winrust_common::settings::explorer_lent() {
+                            match request_explorer_stop(observed_shell) {
+                                Ok(pending) => {
+                                    desktop_owner = Some(owner);
+                                    stopping_explorer = pending;
+                                }
+                                Err(()) => {
+                                    stable = 0;
+                                    log("overlay: Windows shell stop was not accepted");
+                                }
+                            }
+                        }
                     }
-                    replaced = true;
-                    desktop_owner = claim_desktop();
-                    watch_stray_windows(); // Explorer has handed off; keep its dialogs on screen (#191)
-                    // Keep the watcher on the main thread so returning also ends the hotkey loop.
-                    thread::spawn(hotkey_loop);
                 }
             }
         }
 
         if bar { misses = 0; continue; }
+        if stopping_explorer.is_some() { continue; }
         misses += 1;
         if misses < 2 || (replace && winrust_common::settings::explorer_lent()) { continue; }
         starts += 1;
@@ -824,8 +848,8 @@ mod tests {
     fn a_matching_basename_is_not_enough_to_identify_the_desktop_binary() {
         let executable = std::env::current_exe().unwrap();
         let other = executable.with_file_name("other-dir").join(executable.file_name().unwrap());
-        assert!(super::same_executable(&executable, &executable));
-        assert!(!super::same_executable(&other, &executable));
+        assert!(winrust_common::proc::image_paths_match(&executable, &executable));
+        assert!(!winrust_common::proc::image_paths_match(&other, &executable));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM},
     UI::{
         Input::KeyboardAndMouse::keybd_event,
-        WindowsAndMessaging::{EnumWindows, FindWindowExW, GetShellWindow, GetWindow, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow},
+        WindowsAndMessaging::{EnumWindows, FindWindowExW, FindWindowW, GetShellWindow, GetWindow, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow},
     },
 };
 
@@ -161,7 +161,7 @@ fn mark_autostart_done() {
 }
 
 fn has_desktop(p: u32) -> bool {
-    proc::cmdline(p).is_some_and(|c| c.contains("--desktop"))
+    proc::cmdline(p).is_some_and(|c| proc::first_arg_is(&c, "--desktop"))
 }
 
 const LENT: &str = "Local\\WinRust-ExplorerLent";
@@ -190,14 +190,21 @@ fn mutex_exists(name: &str) -> bool {
     true
 }
 
+fn desktop_ready(executable: &std::path::Path) -> bool {
+    let window = unsafe { FindWindowW(w("Progman").as_ptr(), w("rs-desktop").as_ptr()) };
+    if window.is_null() || unsafe { IsWindowVisible(window) == 0 || IsHungAppWindow(window) != 0 } {
+        return false;
+    }
+    let pid = pid_of(window);
+    proc::exe_path(pid).is_some_and(|path| proc::image_paths_match(&path, executable))
+        && has_desktop(pid)
+}
+
 fn run(uri: &str) {
     kill_stale();
-    let mut restore_desktop = false;
+    let mut borrowed = None;
     let mut lent = std::ptr::null_mut();
     if !explorer_shell() {
-        // A standalone shell or a completed overlay handoff owns the desktop,
-        // even if its window happens to be down at the start of the loan.
-        restore_desktop = mutex_exists(DESKTOP_OWNER_MUTEX);
         lent = unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, w(LENT).as_ptr()) };
         // our desktop is a window of class Progman too: with it up Explorer thinks a shell exists and starts as a plain folder host
         for pid in proc::pids("rust-explorer.exe").into_iter().filter(|&pid| has_desktop(pid)) {
@@ -209,6 +216,9 @@ fn run(uri: &str) {
         mark_autostart_done();
         let _ = proc::start_shell_explorer();
         wait(200, explorer_shell);
+        if explorer_shell() {
+            borrowed = shell_pid();
+        }
         // the shell window appears before the immersive shell services behind it are up
         wait(150, explorer_tray);
         sleep(Duration::from_secs(1));
@@ -227,7 +237,7 @@ fn run(uri: &str) {
         kill_hung();
     }
     // Keep Explorer if we started it in a session that had no WinRust desktop.
-    if restore_desktop {
+    if let Some(borrowed) = borrowed.filter(|_| mutex_exists(DESKTOP_OWNER_MUTEX)) {
         // ends when Settings is closed, or when it hangs for good
         // the PIN / Windows Hello dialog is a process of its own hosted by Explorer's immersive shell, and Settings looks hung
         // while it waits on it: Explorer stays until both are gone (ending it under the dialog left it blank, #110)
@@ -248,12 +258,20 @@ fn run(uri: &str) {
         }
         let rx = std::path::PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_default()).join(r"rust-explorer\rust-explorer.exe");
         if mutex_exists(DESKTOP_OWNER_MUTEX) && rx.is_file() {
-            kill_stale();
-            proc::kill_shell_explorers();
-            if !proc::pids("rust-explorer.exe").into_iter().any(has_desktop)
-                && Command::new(rx).arg("--desktop").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_err()
-            {
-                let _ = proc::start_shell_explorer();
+            // Settings is closed. Prepare the replacement while Explorer can still serve the desktop.
+            let mut launch = if desktop_ready(&rx) {
+                None
+            } else {
+                Command::new(&rx).arg("--desktop").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()
+            };
+            if launch.is_some() {
+                wait(120, || desktop_ready(&rx) || launch.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(Some(_)))));
+            }
+            if desktop_ready(&rx) && shell_pid() == Some(borrowed) && mutex_exists(DESKTOP_OWNER_MUTEX) {
+                kill_stale();
+                proc::kill(borrowed);
+            } else if let Some(mut child) = launch {
+                let _ = child.kill();
             }
         }
     }
