@@ -280,7 +280,7 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
                 SelectObject(dc, of);
                 return CDRF_SKIPDEFAULT as isize;
             }
-            let sel = SendMessageW(list, LVM_GETITEMSTATE, i, LVIS_SELECTED as isize) as u32 & LVIS_SELECTED != 0;
+            let sel = SendMessageW(list, LVM_GETITEMSTATE, i, (LVIS_SELECTED | LVIS_DROPHILITED) as isize) as u32 & (LVIS_SELECTED | LVIS_DROPHILITED) != 0; // or a drag is over it
             let hot = ROWHOT.get() == i as isize;
             let focus = GetFocus() == list;
             let pill = rc(sc(6), r.top + sc(2), cr.right - sc(6), r.bottom - sc(2));
@@ -800,6 +800,22 @@ pub fn toggle_pin(p: &Path) {
     if !h.is_null() { nav_init(h); nav_dirty(); }
 }
 
+/// Reads the drives again: one was plugged in or removed (#186).
+pub fn nav_refresh() {
+    let h = NAVWND.get() as HWND;
+    if !h.is_null() { nav_init(h); nav_dirty(); }
+}
+
+pub fn nav_window() -> isize { NAVWND.get() }
+
+/// The pane's item at height `y` and the folder it opens (for a drop onto it).
+pub fn nav_at(y: i32) -> Option<(usize, PathBuf)> { nav_hit(y).and_then(|i| nav_path(i).map(|p| (i, p))) }
+
+/// Lights the item a drag is over (-1: none).
+pub fn nav_hot(i: i32) {
+    if NAVHOT.replace(i) != i { nav_dirty(); }
+}
+
 pub fn nav_init(h: HWND) {
     NAVWND.set(h as isize);
     let home = PathBuf::from(env::var_os("USERPROFILE").unwrap_or_default());
@@ -846,8 +862,13 @@ pub fn nav_init(h: HWND) {
             v.push(NavItem { title: format!("{base} ({letter}:)"), path: PathBuf::from(root), glyph: "\u{EDA2}", cap });
         }
     }
+    if !crate::sh::portable_devices().is_empty() {
+        v.push(NavItem { title: crate::sh::PORTABLE.into(), path: PathBuf::from(crate::sh::PORTABLE), glyph: "\u{E8EA}", cap: None }); // cell phone glyph
+    }
     NAV.with_borrow_mut(|n| *n = v);
 }
+
+pub fn nav_wnd() -> HWND { NAVWND.get() as HWND }
 
 pub fn nav_path(i: usize) -> Option<PathBuf> {
     NAV.with_borrow(|n| n.get(i).map(|x| x.path.clone()).filter(|p| !p.as_os_str().is_empty()))
@@ -961,6 +982,9 @@ pub unsafe extern "system" fn nav_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) 
             if NAVHOT.replace(k) != k { InvalidateRect(h, ptr::null(), 0); }
         }
         WM_MOUSELEAVE => { NAVHOT.set(-1); InvalidateRect(h, ptr::null(), 0); }
+        WM_RBUTTONUP => {
+            if let Some(i) = nav_hit(y) { PostMessageW(GetParent(h), WM_UI, 22, i as isize); }
+        }
         WM_LBUTTONDOWN => {
             if let Some(i) = nav_hit(y) {
                 PRESS.set((5000 + i as i32, now()));

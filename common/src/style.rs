@@ -146,10 +146,36 @@ pub fn set_align_left(on: bool) {
     }
 }
 
+fn start_left_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("start-left.txt"))
+}
+
+static START_LEFT: AtomicU8 = AtomicU8::new(0);
+static START_LEFT_AT: AtomicU64 = AtomicU64::new(0);
+
+/// Start (Windows) button sits at the bar's far left end next to the gear, even when app buttons stay centered. Re-read once a second.
+pub fn start_left() -> bool {
+    if now_ms().saturating_sub(START_LEFT_AT.load(Relaxed)) > 1000 {
+        START_LEFT.store(start_left_file().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|s| s.trim() == "1") as u8, Relaxed);
+        START_LEFT_AT.store(now_ms(), Relaxed);
+    }
+    START_LEFT.load(Relaxed) == 1
+}
+
+pub fn set_start_left(on: bool) {
+    START_LEFT.store(on as u8, Relaxed);
+    START_LEFT_AT.store(now_ms(), Relaxed);
+    if let Some(f) = start_left_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, if on { "1" } else { "0" });
+    }
+}
+
 /// Which screen edge the topbar sits on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     Bottom,
+    Top,
     Left,
     Right,
 }
@@ -157,6 +183,7 @@ pub enum Side {
 impl Side {
     pub fn parse(s: &str) -> Side {
         match s.trim().to_ascii_lowercase().as_str() {
+            "top" => Side::Top,
             "left" => Side::Left,
             "right" => Side::Right,
             _ => Side::Bottom,
@@ -165,6 +192,7 @@ impl Side {
     pub fn name(self) -> &'static str {
         match self {
             Side::Bottom => "bottom",
+            Side::Top => "top",
             Side::Left => "left",
             Side::Right => "right",
         }
@@ -183,10 +211,11 @@ fn side_code(s: Side) -> u8 {
         Side::Bottom => 0,
         Side::Left => 1,
         Side::Right => 2,
+        Side::Top => 3,
     }
 }
 
-/// The bar's edge (bottom unless %ProgramData%\WinRust\side.txt says left or right). Re-read once a second.
+/// The bar's edge (bottom unless %ProgramData%\WinRust\side.txt names another edge). Re-read once a second.
 pub fn side() -> Side {
     if now_ms().saturating_sub(SIDE_AT.load(Relaxed)) > 1000 {
         let s = side_file().and_then(|f| std::fs::read_to_string(f).ok()).map_or(Side::Bottom, |s| Side::parse(&s));
@@ -196,6 +225,7 @@ pub fn side() -> Side {
     match SIDE.load(Relaxed) {
         1 => Side::Left,
         2 => Side::Right,
+        3 => Side::Top,
         _ => Side::Bottom,
     }
 }
@@ -442,8 +472,10 @@ pub fn save_themes(t: &[Theme]) {
 pub fn reset_all() {
     set_side(Side::Bottom);
     set_bar_size(1);
+    set_icon_size(60);
     set_autohide(false);
     set_align_left(false);
+    set_start_left(false);
     set_alttab_per_monitor(false);
     Theme { name: String::new(), style: Style::Normal, colors: [u32::MAX; 7], opacity: 100 }.apply();
 }
@@ -613,8 +645,19 @@ mod tests {
         assert_eq!(Side::parse(" Left
 "), Side::Left);
         assert_eq!(Side::parse("right"), Side::Right);
+        assert_eq!(Side::parse("TOP"), Side::Top);
+        assert_eq!(Side::Top.name(), "top");
         assert_eq!(Side::parse(""), Side::Bottom);
-        assert_eq!(Side::parse("top"), Side::Bottom);
+        assert_eq!(Side::parse("unknown"), Side::Bottom);
+    }
+
+    #[test]
+    fn icon_size_accepts_menu_choices_only() {
+        assert_eq!(valid_icon_size(50), Some(50));
+        assert_eq!(valid_icon_size(60), Some(60));
+        assert_eq!(valid_icon_size(100), Some(100));
+        assert_eq!(valid_icon_size(55), None);
+        assert_eq!(valid_icon_size(0), None);
     }
 }
 
@@ -641,6 +684,38 @@ pub fn set_bar_size(v: u8) {
     if let Some(f) = size_file() {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, v.min(2).to_string());
+    }
+}
+
+fn icon_size_file() -> Option<PathBuf> {
+    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("icon-size.txt"))
+}
+
+static ICON_SIZE: AtomicU8 = AtomicU8::new(60);
+static ICON_SIZE_AT: AtomicU64 = AtomicU64::new(0);
+
+fn valid_icon_size(v: u8) -> Option<u8> {
+    (50..=100).contains(&v).then_some(v).filter(|v| v % 10 == 0)
+}
+
+/// Icon size as a percentage of the original, 60 by default. Re-read once a second.
+pub fn icon_size() -> u8 {
+    if now_ms().saturating_sub(ICON_SIZE_AT.load(Relaxed)) > 1000 {
+        let v = icon_size_file().and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|s| s.trim().parse::<u8>().ok()).and_then(valid_icon_size).unwrap_or(60);
+        ICON_SIZE.store(v, Relaxed);
+        ICON_SIZE_AT.store(now_ms(), Relaxed);
+    }
+    ICON_SIZE.load(Relaxed)
+}
+
+pub fn set_icon_size(v: u8) {
+    let v = valid_icon_size(v).unwrap_or(60);
+    ICON_SIZE.store(v, Relaxed);
+    ICON_SIZE_AT.store(now_ms(), Relaxed);
+    if let Some(f) = icon_size_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, v.to_string());
     }
 }
 

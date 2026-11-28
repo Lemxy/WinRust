@@ -239,10 +239,7 @@ pub(crate) unsafe extern "system" fn pv_proc(hwnd: HWND, msg: u32, wp: WPARAM, l
                 }
             } else {
                 hide_preview();
-                if IsIconic(w) != 0 {
-                    ShowWindow(w, SW_RESTORE);
-                }
-                force_fg(w);
+                bring(w);
             }
         }
         WM_TIMER if wp == 1 => {
