@@ -1,6 +1,62 @@
-//! Snapshot and restore the DWORDs changed by rust-explorer's service tuning.
+//! Snapshot and restore the DWORDs changed by rust-explorer.
 
 pub(crate) type Dword<'a> = (&'a str, &'a str);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OriginalDword {
+    Present(u32),
+    Absent,
+}
+
+pub(crate) struct OptionalDwordBackup<'a> {
+    pub(crate) target: Dword<'a>,
+    pub(crate) saved: Dword<'a>,
+    pub(crate) absent: Dword<'a>,
+}
+
+impl<'a> OptionalDwordBackup<'a> {
+    pub(crate) fn load(&self, read: impl Fn(Dword<'a>) -> Result<Option<u32>, String>) -> Result<Option<OriginalDword>, String> {
+        match (read(self.saved)?, read(self.absent)?) {
+            (Some(old), None) => Ok(Some(OriginalDword::Present(old))),
+            (None, Some(1)) => Ok(Some(OriginalDword::Absent)),
+            (None, None) => Ok(None),
+            _ => Err(format!("{}: invalid snapshot for {}", self.saved.0, self.target.1)),
+        }
+    }
+
+    pub(crate) fn capture(
+        &self,
+        read: impl Fn(Dword<'a>) -> Result<Option<u32>, String>,
+        write: impl Fn(Dword<'a>, u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.load(&read)?.is_some() {
+            return Ok(());
+        }
+        let original = read(self.target)?;
+        // Keep a baseline that was saved while we read the live setting.
+        if self.load(&read)?.is_some() {
+            return Ok(());
+        }
+        match original {
+            Some(old) => write(self.saved, old),
+            None => write(self.absent, 1),
+        }
+    }
+
+    pub(crate) fn restore(
+        &self,
+        read: impl Fn(Dword<'a>) -> Result<Option<u32>, String>,
+        write: impl Fn(Dword<'a>, u32) -> Result<(), String>,
+        remove: impl Fn(Dword<'a>) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        match self.load(read)? {
+            Some(OriginalDword::Present(old)) => write(self.target, old)?,
+            Some(OriginalDword::Absent) => remove(self.target)?,
+            None => return Ok(false),
+        }
+        Ok(true)
+    }
+}
 
 pub(crate) fn backup_and_set<'a>(
     setting: Dword<'a>,
@@ -67,6 +123,84 @@ mod tests {
         fn undo(&self) -> Result<bool, String> {
             restore(START, BACKUP, |key| Ok(self.get(key)), |key, value| self.write(key, value))
         }
+    }
+
+    const SHELL: OptionalDwordBackup<'static> = OptionalDwordBackup {
+        target: ("Winlogon", "AutoRestartShell"),
+        saved: ("Installer", "AutoRestartShell"),
+        absent: ("Installer", "AutoRestartShellAbsent"),
+    };
+
+    fn capture_shell(reg: &Registry) -> Result<(), String> {
+        SHELL.capture(|key| Ok(reg.get(key)), |key, value| reg.write(key, value))
+    }
+
+    fn restore_shell(reg: &Registry) -> Result<bool, String> {
+        SHELL.restore(|key| Ok(reg.get(key)), |key, value| reg.write(key, value), |key| {
+            if reg.write_error == Some(key) {
+                return Err("access denied".into());
+            }
+            reg.values.borrow_mut().remove(&key);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn shell_value_returns_to_its_first_snapshot() {
+        let reg = Registry::default();
+        reg.write(SHELL.target, u32::MAX).unwrap();
+        capture_shell(&reg).unwrap();
+        reg.write(SHELL.target, 0).unwrap();
+        capture_shell(&reg).unwrap();
+        assert!(restore_shell(&reg).unwrap());
+        assert_eq!(reg.get(SHELL.target), Some(u32::MAX));
+    }
+
+    #[test]
+    fn shell_value_originally_absent_is_deleted_even_on_retry() {
+        let reg = Registry::default();
+        capture_shell(&reg).unwrap();
+        reg.write(SHELL.target, 0).unwrap();
+        capture_shell(&reg).unwrap();
+        assert!(restore_shell(&reg).unwrap());
+        assert!(restore_shell(&reg).unwrap());
+        assert_eq!(reg.get(SHELL.target), None);
+        assert_eq!(reg.get(SHELL.absent), Some(1));
+    }
+
+    #[test]
+    fn missing_snapshot_leaves_shell_value_alone_and_legacy_backup_is_read() {
+        let reg = Registry::default();
+        reg.write(SHELL.target, 0).unwrap();
+        assert!(!restore_shell(&reg).unwrap());
+        assert_eq!(reg.get(SHELL.target), Some(0));
+        reg.write(SHELL.saved, 1).unwrap();
+        assert!(restore_shell(&reg).unwrap());
+        assert_eq!(reg.get(SHELL.target), Some(1));
+    }
+
+    #[test]
+    fn unknown_or_inconsistent_registry_state_is_not_treated_as_absent() {
+        let reg = Registry::default();
+        assert!(SHELL.capture(|key| {
+            if key == SHELL.target { Err("access denied".into()) } else { Ok(reg.get(key)) }
+        }, |key, value| reg.write(key, value)).is_err());
+        assert!(reg.values.borrow().is_empty());
+        reg.write(SHELL.target, 0).unwrap();
+        reg.write(SHELL.saved, 1).unwrap();
+        reg.write(SHELL.absent, 1).unwrap();
+        assert!(restore_shell(&reg).is_err());
+        assert_eq!(reg.get(SHELL.target), Some(0));
+    }
+
+    #[test]
+    fn a_failed_delete_leaves_the_absence_marker_for_retry() {
+        let reg = Registry { write_error: Some(SHELL.target), ..Registry::default() };
+        reg.write(SHELL.absent, 1).unwrap();
+        reg.values.borrow_mut().insert(SHELL.target, 0);
+        assert!(restore_shell(&reg).is_err());
+        assert_eq!(reg.get(SHELL.absent), Some(1));
+        assert_eq!(reg.get(SHELL.target), Some(0));
     }
 
     #[test]

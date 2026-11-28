@@ -1,5 +1,5 @@
 //! Страница «Ускорение»: профили «Игра»/«Работа», кэш памяти, лишние процессы оболочки и группы debloat
-//! (апдейтеры, исключения Defender, NTFS, блокировка рекламы в hosts). Всё обратимо; долгие действия идут в фоновом потоке,
+//! (апдейтеры, исключения Defender, NTFS, блокировка рекламы в hosts, фоновая работа, VBS). Всё обратимо; долгие действия идут в фоновом потоке,
 //! результат забирает такт окна (`take_done`).
 use crate::sys;
 use std::{
@@ -24,9 +24,11 @@ pub enum Id {
     Defender,
     Ntfs,
     Dns,
+    Background,
+    Vbs,
 }
 
-pub const ALL: [Id; 9] = [Id::Game, Id::Work, Id::MemNow, Id::MemAuto, Id::Shell, Id::Updaters, Id::Defender, Id::Ntfs, Id::Dns];
+pub const ALL: [Id; 11] = [Id::Game, Id::Work, Id::MemNow, Id::MemAuto, Id::Shell, Id::Updaters, Id::Defender, Id::Ntfs, Id::Dns, Id::Background, Id::Vbs];
 
 impl Id {
     pub fn key(self) -> &'static str {
@@ -40,6 +42,8 @@ impl Id {
             Id::Defender => "defender",
             Id::Ntfs => "ntfs",
             Id::Dns => "dns",
+            Id::Background => "background",
+            Id::Vbs => "vbs",
         }
     }
     pub fn from_key(k: &str) -> Option<Id> {
@@ -56,11 +60,13 @@ impl Id {
             Id::Defender => t!("Исключения Defender для сборок и игр", "Defender exclusions for builds and games", ja: "ビルドとゲーム用の Defender 除外", pt: "Exclusões do Defender para compilações e jogos", zh: "为编译和游戏添加 Defender 排除项"),
             Id::Ntfs => t!("Быстрее NTFS", "Faster NTFS", ja: "高速 NTFS", pt: "NTFS mais rápido", zh: "加速 NTFS"),
             Id::Dns => t!("Блокировать рекламу (hosts)", "Block ads (hosts)", ja: "広告をブロック (hosts)", pt: "Bloquear anúncios (hosts)", zh: "拦截广告（hosts）"),
+            Id::Background => t!("Меньше фоновой работы", "Less background work", ja: "バックグラウンド処理を減らす", pt: "Menos trabalho em segundo plano", zh: "减少后台活动"),
+            Id::Vbs => t!("Выключить VBS и целостность памяти", "Turn off VBS and memory integrity", ja: "VBS とメモリ整合性をオフ", pt: "Desligar VBS e integridade de memória", zh: "关闭 VBS 和内存完整性"),
         }
     }
     pub fn desc(self) -> &'static str {
         match self {
-            Id::Game => t!("Останавливает Windows Update, BITS, оптимизацию доставки, печать, телеметрию; закрывает OneDrive, Teams, Dropbox, Google Drive, Phone Link, виджеты. «Выключить» всё запускает обратно.", "Stops Windows Update, BITS, Delivery Optimization, printing, telemetry; closes OneDrive, Teams, Dropbox, Google Drive, Phone Link, widgets. 'Disable' starts everything again.", ja: "Windows Update、BITS、配信の最適化、印刷、テレメトリを停止し、OneDrive、Teams、Dropbox、Google Drive、スマートフォン連携、ウィジェットを終了します。「無効にする」とすべて再開します。", pt: "Para o Windows Update, o BITS, a Otimização de Entrega, a impressão e a telemetria; fecha OneDrive, Teams, Dropbox, Google Drive, Phone Link e widgets. 'Desativar' inicia tudo de novo.", zh: "停止 Windows Update、BITS、传递优化、打印、遥测；关闭 OneDrive、Teams、Dropbox、Google Drive、手机连接、小组件。「禁用」会重新启动所有项目。"),
+            Id::Game => t!("Останавливает Windows Update, BITS, оптимизацию доставки, печать, телеметрию; закрывает OneDrive, Teams, Dropbox, Google Drive, Phone Link, виджеты; пока профиль включён, фоновые программы, занявшие больше половины ядра, переходят в режим эффективности (нужна панель topbar). «Выключить» всё запускает обратно.", "Stops Windows Update, BITS, Delivery Optimization, printing, telemetry; closes OneDrive, Teams, Dropbox, Google Drive, Phone Link, widgets; while it is on, background programs that use over half a core get efficiency mode (needs the topbar). 'Disable' starts everything again.", ja: "Windows Update、BITS、配信の最適化、印刷、テレメトリを停止し、OneDrive、Teams、Dropbox、Google Drive、スマートフォン連携、ウィジェットを終了します。有効な間、コアの半分以上を使うバックグラウンドのプログラムは効率モードになります (topbar が必要)。「無効にする」とすべて再開します。", pt: "Para o Windows Update, o BITS, a Otimização de Entrega, a impressão e a telemetria; fecha OneDrive, Teams, Dropbox, Google Drive, Phone Link e widgets; enquanto ativo, programas em segundo plano que usam mais de meio núcleo entram no modo de eficiência (requer a topbar). 'Desativar' inicia tudo de novo.", zh: "停止 Windows Update、BITS、传递优化、打印、遥测；关闭 OneDrive、Teams、Dropbox、Google Drive、手机连接、小组件；开启期间，占用超过半个核心的后台程序会进入效率模式（需要 topbar）。「禁用」会重新启动所有项目。"),
             Id::Work => t!("Закрывает Steam, Epic, Battle.net, EA, Ubisoft, GOG, Overwolf, Xbox и Game Bar, останавливает их службы. «Выключить» запускает лаунчеры обратно.", "Closes Steam, Epic, Battle.net, EA, Ubisoft, GOG, Overwolf, Xbox and Game Bar, stops their services. 'Disable' starts the launchers again.", ja: "Steam、Epic、Battle.net、EA、Ubisoft、GOG、Overwolf、Xbox、Game Bar を終了し、それらのサービスを停止します。「無効にする」とランチャーを再び起動します。", pt: "Fecha Steam, Epic, Battle.net, EA, Ubisoft, GOG, Overwolf, Xbox e Game Bar e para os serviços deles. 'Desativar' inicia os lançadores de novo.", zh: "关闭 Steam、Epic、Battle.net、EA、Ubisoft、GOG、Overwolf、Xbox 和 Game Bar，并停止其服务。「禁用」会重新启动这些启动器。"),
             Id::MemNow => t!("Сбрасывает список standby (кэш файлов, который никто не держит), как ISLC. Помогает от рывков в играх, когда свободной памяти нет.", "Drops the standby list (cached file data nobody holds), like ISLC. Helps against stutter in games when no memory is free.", ja: "ISLC のように、スタンバイ リスト (誰も使っていないキャッシュ済みのファイル データ) を破棄します。空きメモリがないときのゲームのカクつきに効果があります。", pt: "Descarta a lista de espera (dados de arquivos em cache que ninguém usa), como o ISLC. Ajuda contra engasgos em jogos quando não há memória livre.", zh: "清空备用列表（无人持有的缓存文件数据），类似 ISLC。在没有可用内存时有助于缓解游戏卡顿。"),
             Id::MemAuto => t!("Панель topbar каждые 10 с проверяет память и сбрасывает кэш, если свободно меньше 5% (не меньше 512 МБ), а кэш больше 1 ГБ; не чаще раза в минуту.", "The topbar checks memory every 10 s and drops the cache when less than 5% (at least 512 MB) is free and the cache holds over 1 GB; at most once a minute.", ja: "topbar は 10 秒ごとにメモリを確認し、空きが 5% (最低 512 MB) 未満でキャッシュが 1 GB を超えているときにキャッシュを破棄します。最大で 1 分に 1 回です。", pt: "A topbar verifica a memória a cada 10 s e descarta o cache quando há menos de 5% livre (no mínimo 512 MB) e o cache passa de 1 GB; no máximo uma vez por minuto.", zh: "topbar 每 10 秒检查一次内存，当可用内存低于 5%（至少 512 MB）且缓存超过 1 GB 时清理缓存；每分钟最多一次。"),
@@ -69,10 +75,12 @@ impl Id {
             Id::Defender => t!("Defender перестаёт проверять кэши cargo, rustup, npm, pip, NuGet, Gradle и библиотеки Steam/Epic, а также cargo.exe и rustc.exe. Сборка и загрузка игр быстрее, но эти папки не сканируются.", "Defender stops scanning the caches of cargo, rustup, npm, pip, NuGet, Gradle and the Steam/Epic libraries, and cargo.exe and rustc.exe. Builds and game loading get faster, but those folders are not scanned.", ja: "Defender は cargo、rustup、npm、pip、NuGet、Gradle、Steam/Epic ライブラリのキャッシュと、cargo.exe および rustc.exe のスキャンを停止します。ビルドとゲームの読み込みが速くなりますが、これらのフォルダーはスキャンされません。", pt: "O Defender deixa de verificar os caches de cargo, rustup, npm, pip, NuGet, Gradle e as bibliotecas do Steam/Epic, além de cargo.exe e rustc.exe. Compilações e carregamento de jogos ficam mais rápidos, mas essas pastas não são verificadas.", zh: "Defender 将不再扫描 cargo、rustup、npm、pip、NuGet、Gradle 的缓存以及 Steam/Epic 库，还有 cargo.exe 和 rustc.exe。编译和游戏加载会更快，但这些文件夹不会被扫描。"),
             Id::Ntfs => t!("NTFS не пишет время последнего доступа при каждом чтении и не создаёт короткие имена 8.3. Действует после перезагрузки.", "NTFS stops writing the last-access time on every read and creating 8.3 short names. Takes effect after a reboot.", ja: "NTFS は読み取りのたびに最終アクセス日時を書き込むことと、8.3 形式の短い名前の作成をやめます。再起動後に有効になります。", pt: "O NTFS para de gravar o horário do último acesso a cada leitura e de criar nomes curtos 8.3. Vale após reiniciar.", zh: "NTFS 不再在每次读取时写入最后访问时间，也不再创建 8.3 短名称。重启后生效。"),
             Id::Dns => t!("Около 170 рекламных и следящих доменов ведут в никуда через файл hosts (домены Microsoft не трогаются).", "About 170 ad and tracker domains lead nowhere through the hosts file (Microsoft domains are left alone).", ja: "約 170 の広告・トラッカーのドメインを hosts ファイルで無効化します (Microsoft のドメインは対象外)。", pt: "Cerca de 170 domínios de anúncios e rastreadores não levam a lugar nenhum pelo arquivo hosts (domínios da Microsoft são preservados).", zh: "hosts 文件让约 170 个广告和跟踪域名无法访问（Microsoft 域名保持原样）。"),
+            Id::Background => t!("Приложения Store не работают в фоне (закрытые не присылают уведомлений), Windows не раздаёт обновления другим компьютерам через ваш интернет, программы автозагрузки стартуют без задержки ~10 с.", "Store apps stay out of the background (closed ones send no notifications), Windows does not share updates with other PCs over your connection, startup apps start without the ~10 s delay.", ja: "ストア アプリをバックグラウンドで実行せず (閉じたアプリは通知を送りません)、Windows は回線経由で他の PC と更新を共有せず、スタートアップ アプリは約 10 秒の遅延なしで起動します。", pt: "Apps da Store ficam fora do segundo plano (os fechados não enviam notificações), o Windows não compartilha atualizações com outros PCs pela sua conexão e os apps de inicialização abrem sem o atraso de ~10 s.", zh: "商店应用不在后台运行（已关闭的应用不发送通知），Windows 不通过你的网络向其他电脑分享更新，启动应用不再延迟约 10 秒。"),
+            Id::Vbs => t!("Игры обычно на 5–10% быстрее, но защита ядра от вредоносных драйверов слабее (и Credential Guard, если он был). После перезагрузки. Не действует, если VBS закреплён в UEFI.", "Games are usually 5-10% faster, but the kernel is less protected from malicious drivers (and Credential Guard is off, if it was on). After a reboot. Has no effect when VBS is locked in UEFI.", ja: "ゲームは通常 5～10% 速くなりますが、悪意のあるドライバーからのカーネル保護は弱くなります (Credential Guard も無効)。再起動後に有効。UEFI で VBS がロックされている場合は効果がありません。", pt: "Jogos costumam ficar 5-10% mais rápidos, mas o kernel fica menos protegido contra drivers maliciosos (e o Credential Guard é desligado, se estava ativo). Após reiniciar. Sem efeito se o VBS estiver travado na UEFI.", zh: "游戏通常快 5-10%，但内核对恶意驱动的防护变弱（若启用了 Credential Guard 也会关闭）。重启后生效。若 VBS 在 UEFI 中锁定则无效。"),
         }
     }
     fn debloat_group(self) -> Option<&'static str> {
-        matches!(self, Id::Updaters | Id::Defender | Id::Ntfs | Id::Dns).then(|| self.key())
+        matches!(self, Id::Updaters | Id::Defender | Id::Ntfs | Id::Dns | Id::Background | Id::Vbs).then(|| self.key())
     }
 }
 
@@ -388,7 +396,7 @@ fn shell_set(on: bool) -> Result<String, String> {
             }
             let v = w(&noop_debugger());
             let rc = unsafe { RegSetKeyValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), w("Debugger").as_ptr(), REG_SZ, v.as_ptr() as *const _, (v.len() * 2) as u32) };
-            let _ = Command::new("taskkill.exe").args(["/f", "/im", exe]).creation_flags(0x0800_0000).output();
+            processes().iter().filter(|p| p.1.eq_ignore_ascii_case(exe)).for_each(|p| { sys::kill(p.0); });
             rc
         } else if cur.as_deref().is_some_and(ours) {
             unsafe { RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), w("Debugger").as_ptr()) }

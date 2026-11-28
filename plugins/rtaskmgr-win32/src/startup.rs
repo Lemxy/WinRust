@@ -393,14 +393,44 @@ pub fn parse_boot_log(xml: &str) -> BootLog {
 /// Читается один раз за запуск программы: записи меняются только с новой загрузкой Windows.
 pub fn boot_log() -> &'static BootLog {
     static LOG: std::sync::OnceLock<BootLog> = std::sync::OnceLock::new();
-    LOG.get_or_init(|| {
-        use std::os::windows::process::CommandExt;
-        let out = std::process::Command::new("wevtutil.exe")
-            .args(["qe", "Microsoft-Windows-Diagnostics-Performance/Operational", "/q:*[System[(EventID=100 or EventID=101 or EventID=103)]]", "/c:200", "/rd:true", "/f:xml"])
-            .creation_flags(0x0800_0000)
-            .output();
-        out.map(|o| parse_boot_log(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
-    })
+    LOG.get_or_init(|| parse_boot_log(&events_xml("Microsoft-Windows-Diagnostics-Performance/Operational", "*[System[(EventID=100 or EventID=101 or EventID=103)]]", 200)))
+}
+
+/// The newest `max` events of a channel as XML, one `<Event>` after another (what `wevtutil qe /f:xml /rd:true` prints).
+fn events_xml(channel: &str, query: &str, max: usize) -> String {
+    use windows_sys::Win32::System::EventLog::*;
+    let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let mut out = String::new();
+    unsafe {
+        let q = EvtQuery(0, w(channel).as_ptr(), w(query).as_ptr(), EvtQueryChannelPath | EvtQueryReverseDirection);
+        if q == 0 {
+            return out; // no such channel, or no right to read it
+        }
+        let mut buf: Vec<u16> = vec![0; 8192];
+        let mut left = max;
+        while left > 0 {
+            let mut evs = [0isize; 32];
+            let mut n = 0u32;
+            if EvtNext(q, evs.len().min(left) as u32, evs.as_mut_ptr(), 2000, 0, &mut n) == 0 {
+                break; // ERROR_NO_MORE_ITEMS
+            }
+            for &e in &evs[..n as usize] {
+                let (mut used, mut props) = (0u32, 0u32);
+                if EvtRender(0, e, EvtRenderEventXml, (buf.len() * 2) as u32, buf.as_mut_ptr().cast(), &mut used, &mut props) == 0 {
+                    buf.resize(used as usize / 2 + 1, 0); // too small: grow once and render again
+                    if EvtRender(0, e, EvtRenderEventXml, (buf.len() * 2) as u32, buf.as_mut_ptr().cast(), &mut used, &mut props) == 0 {
+                        used = 0;
+                    }
+                }
+                let len = (used as usize / 2).saturating_sub(1); // without the closing NUL
+                out.push_str(&String::from_utf16_lossy(&buf[..len]));
+                EvtClose(e);
+            }
+            left -= n as usize;
+        }
+        EvtClose(q);
+    }
+    out
 }
 
 /// Насколько элемент автозагрузки замедлил загрузку (по журналу), мс.
@@ -431,6 +461,14 @@ pub fn set_self_autostart(on: bool, exe: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_live_event_log() {
+        let xml = events_xml("System", "*", 40); // more than one EvtNext batch
+        assert_eq!(xml.matches("<Event ").count(), 40);
+        assert!(xml.trim_end().ends_with("</Event>") && !xml.contains('\0'));
+        assert_eq!(events_xml("No-Such-Channel/winrust", "*", 5), "");
+    }
 
     #[test]
     fn approved_flags_round_trip() {

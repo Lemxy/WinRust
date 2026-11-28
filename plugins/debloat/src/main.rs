@@ -6,6 +6,8 @@
 //   defender   Defender exclusions for build caches and game libraries (opt-in: those folders are no longer scanned)
 //   ntfs       NTFS stops updating last-access times and creating 8.3 short names (after a reboot)
 //   dns        ad and tracker domains blocked in the hosts file
+//   background Store apps kept out of the background, no peer-to-peer update sharing, startup apps without Explorer's delay
+//   vbs        virtualization-based security and memory integrity off (opt-in: faster games, weaker protection; after a reboot)
 // debloat --status <group>     prints on/off; exit code 0 = applied (its undo file exists)
 //
 // Only reversible things. Not touched on purpose: Windows Update, Print Spooler, Xbox/Game services, SysMain, installed apps,
@@ -18,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use winrust_common::{t, tf};
+use winrust_common::{reg, t, tf};
 
 // (service, what it is for). A function, not a `const`: `t!` needs the language at run time.
 fn services() -> Vec<(&'static str, &'static str)> {
@@ -113,6 +115,21 @@ fn ntfs_regs() -> Vec<(&'static str, &'static str, u32, &'static str)> {
     ]
 }
 
+fn bg_regs() -> Vec<(&'static str, &'static str, u32, &'static str)> {
+    vec![
+        (r"HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy", "LetAppsRunInBackground", 2, t!("приложения Store не работают в фоне (уведомления закрытых приложений не приходят)", "Store apps do not run in the background (closed apps send no notifications)", ja: "ストア アプリをバックグラウンドで実行しない (閉じたアプリの通知は届きません)", pt: "apps da Store não rodam em segundo plano (apps fechados não enviam notificações)", zh: "商店应用不在后台运行（已关闭的应用不会发送通知）")),
+        (r"HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization", "DODownloadMode", 0, t!("обновления не раздаются другим компьютерам через ваш интернет", "updates are not shared with other PCs over your connection", ja: "更新プログラムを回線経由で他の PC と共有しない", pt: "atualizações não são compartilhadas com outros PCs pela sua conexão", zh: "不通过你的网络向其他电脑分享更新")),
+        (r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize", "StartupDelayInMSec", 0, t!("автозагрузка без задержки ~10 с после входа", "startup apps without the ~10 s delay after sign-in", ja: "サインイン後のスタートアップ アプリの約 10 秒の遅延をなくす", pt: "apps de inicialização sem o atraso de ~10 s após entrar", zh: "登录后启动应用不再延迟约 10 秒")),
+    ]
+}
+
+fn vbs_regs() -> Vec<(&'static str, &'static str, u32, &'static str)> {
+    vec![
+        (r"HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard", "EnableVirtualizationBasedSecurity", 0, t!("безопасность на основе виртуализации выключена", "virtualization-based security off", ja: "仮想化ベースのセキュリティをオフ", pt: "segurança baseada em virtualização desligada", zh: "关闭基于虚拟化的安全性")),
+        (r"HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity", "Enabled", 0, t!("целостность памяти (HVCI) выключена", "memory integrity (HVCI) off", ja: "メモリ整合性 (HVCI) をオフ", pt: "integridade de memória (HVCI) desligada", zh: "关闭内存完整性 (HVCI)")),
+    ]
+}
+
 const DEF_PROCS: &[&str] = &["cargo.exe", "rustc.exe"];
 
 const HOSTS_BEGIN: &str = "# >>> WinRust DNS block >>>";
@@ -156,6 +173,8 @@ enum Group {
     Defender,
     Ntfs,
     Dns,
+    Background,
+    Vbs,
 }
 
 impl Group {
@@ -165,6 +184,8 @@ impl Group {
             "defender" => Group::Defender,
             "ntfs" => Group::Ntfs,
             "dns" => Group::Dns,
+            "background" => Group::Background,
+            "vbs" => Group::Vbs,
             _ => return None,
         })
     }
@@ -175,14 +196,14 @@ impl Group {
             Group::Defender => "undo-defender.txt",
             Group::Ntfs => "undo-ntfs.txt",
             Group::Dns => "undo-dns.txt",
+            Group::Background => "undo-background.txt",
+            Group::Vbs => "undo-vbs.txt",
         }
     }
 }
 
 fn run(prog: &str, args: &[&str]) -> (bool, String) {
-    // HKCU = the signed-in user's when the installer was elevated as another administrator (WINRUST_SID)
-    let args: Vec<String> = if prog == "reg.exe" { winrust_common::reg::user_args(args) } else { args.iter().map(|a| a.to_string()).collect() };
-    match Command::new(prog).args(&args).output() {
+    match Command::new(prog).args(args).output() {
         Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stdout).into_owned()),
         Err(e) => (false, e.to_string()),
     }
@@ -199,17 +220,7 @@ fn psq(s: &str) -> String {
 
 /// Current start mode as `sc config` spells it. None = service missing, or boot/system driver (never touched).
 fn start_mode(svc: &str) -> Option<&'static str> {
-    let (ok, out) = run("sc.exe", &["qc", svc]);
-    let line = out.lines().find(|l| ok && l.contains("START_TYPE"))?;
-    Some(if line.contains("DISABLED") {
-        "disabled"
-    } else if line.contains("DEMAND_START") {
-        "demand"
-    } else if line.contains("AUTO_START") {
-        if line.contains("DELAYED") { "delayed-auto" } else { "auto" }
-    } else {
-        return None;
-    })
+    winrust_common::svc::start_mode(svc)
 }
 
 #[derive(Debug, PartialEq)]
@@ -219,20 +230,18 @@ enum Val {
     Other, // a value of another type: not ours to overwrite
 }
 
-/// Reads `reg query /v` output.
-fn parse_val(ok: bool, out: &str) -> Val {
-    if !ok {
-        return Val::Missing;
-    }
-    match winrust_common::reg::value(out) {
-        Some(_) => winrust_common::reg::dword(out).map_or(Val::Other, Val::Dword),
+/// The value now, read natively; HKCU = the signed-in user's (see `reg::user_path`).
+fn reg_val(key: &str, value: &str) -> Val {
+    let key = reg::user_path(key);
+    match reg::get_dword(&key, value) {
+        Some(d) => Val::Dword(d),
+        None if reg::exists(&key, Some(value)) => Val::Other,
         None => Val::Missing,
     }
 }
 
-fn reg_val(key: &str, value: &str) -> Val {
-    let (ok, out) = run("reg.exe", &["query", key, "/v", value]);
-    parse_val(ok, &out)
+fn reg_set(key: &str, value: &str, data: u32) -> bool {
+    reg::set_dword(&reg::user_path(key), value, data)
 }
 
 fn undo_path(g: Group) -> PathBuf {
@@ -293,8 +302,8 @@ fn defender_paths() -> Vec<String> {
 }
 
 fn steam_libraries() -> Vec<PathBuf> {
-    let (_, out) = run("reg.exe", &["query", r"HKCU\Software\Valve\Steam", "/v", "SteamPath"]);
-    let Some(("REG_SZ", root)) = winrust_common::reg::value(&out) else { return vec![] };
+    let Some(root) = reg::get_text(&reg::user_path(r"HKCU\Software\Valve\Steam"), "SteamPath") else { return vec![] };
+    let root = root.as_str();
     let vdf = fs::read_to_string(Path::new(root).join(r"steamapps\libraryfolders.vdf")).unwrap_or_default();
     let mut libs = vec![PathBuf::from(root)];
     libs.extend(parse_vdf_paths(&vdf).into_iter().map(PathBuf::from));
@@ -348,6 +357,8 @@ fn plan(g: Group) {
         Group::Base => (services(), regs()),
         Group::Updaters => (upd_services(), vec![]),
         Group::Ntfs => (vec![], ntfs_regs()),
+        Group::Background => (vec![], bg_regs()),
+        Group::Vbs => (vec![], vbs_regs()),
         _ => (vec![], vec![]),
     };
     for (svc, why) in svcs {
@@ -416,8 +427,8 @@ fn apply_services(list: &[(&str, &str)], log: &mut Log) -> Result<u32, String> {
             Some("disabled") => println!("{}", tf!("пропуск {0}: уже отключена", "skip   {0}: already disabled", ja: "スキップ {0}: すでに無効です", pt: "ignorar {0}: já está desativado", zh: "跳过   {0}：已禁用", svc)),
             Some(mode) => {
                 log.line(&format!("svc|{svc}|{mode}"))?; // log BEFORE changing
-                let ok = run("sc.exe", &["config", svc, "start=", "disabled"]).0;
-                let _ = run("sc.exe", &["stop", svc]);
+                let ok = winrust_common::svc::set_start(svc, "disabled");
+                winrust_common::svc::stop(svc);
                 failed += !ok as u32;
                 println!("{}", tf!("{0}  {1}: {2} -> disabled", "{0}  {1}: {2} -> disabled", ja: "{0}  {1}: {2} -> disabled", pt: "{0}  {1}: {2} -> disabled", zh: "{0}  {1}: {2} -> disabled", done(ok), svc, mode));
             }
@@ -442,7 +453,7 @@ fn apply_regs(list: &[(&str, &str, u32, &str)], log: &mut Log) -> Result<u32, St
             Val::Missing => "-".into(),
         };
         log.line(&format!("reg|{key}|{value}|{old}"))?;
-        let ok = run("reg.exe", &["add", key, "/v", value, "/t", "REG_DWORD", "/d", &data.to_string(), "/f"]).0;
+        let ok = reg_set(key, value, *data);
         failed += !ok as u32;
         println!("{}", tf!("{0}  {value} = {data}", "{0}  {value} = {data}", ja: "{0}  {value} = {data}", pt: "{0}  {value} = {data}", zh: "{0}  {value} = {data}", done(ok)));
     }
@@ -539,6 +550,8 @@ fn apply(g: Group) -> Result<(), String> {
         Group::Defender => apply_defender(&mut log)?,
         Group::Ntfs => apply_regs(&ntfs_regs(), &mut log)?,
         Group::Dns => apply_dns(&mut log)?,
+        Group::Background => apply_regs(&bg_regs(), &mut log)?,
+        Group::Vbs => apply_regs(&vbs_regs(), &mut log)?,
     };
     drop(log);
     // nothing was changed (all skipped): no undo file, so the group does not show as applied
@@ -591,18 +604,16 @@ fn parse_undo_line(line: &str) -> Option<UndoEntry<'_>> {
     })
 }
 
-fn registry_value_is_missing(key: &str, value: &str) -> bool {
-    use winrust_common::reg;
-    let keys = reg::user_args(&[key]);
-    let target = &keys[0];
+fn delete_saved_value(key: &str, value: &str) -> bool {
+    let target = reg::user_path(key);
     if target != key {
-        // A missing signed-in user's hive does not tell us whether the value exists.
+        // A user's unloaded hive does not prove that the backed-up value is absent.
         let hive = target.splitn(3, '\\').take(2).collect::<Vec<_>>().join("\\");
         if !reg::exists(&hive, None) {
             return false;
         }
     }
-    reg::value_is_missing(target, value)
+    reg::delete_value(&target, value)
 }
 
 fn powershell_confirms_absence((ok, output): (bool, String)) -> bool {
@@ -648,12 +659,10 @@ fn restore_defender_exclusion(
 
 fn restore_entry(entry: UndoEntry<'_>) -> bool {
     match entry {
-        UndoEntry::Service { name, mode } => run("sc.exe", &["config", name, "start=", mode]).0,
-        UndoEntry::Registry { key, value, previous: "-" } => {
-            run("reg.exe", &["delete", key, "/v", value, "/f"]).0 || registry_value_is_missing(key, value)
-        }
+        UndoEntry::Service { name, mode } => winrust_common::svc::set_start(name, mode),
+        UndoEntry::Registry { key, value, previous: "-" } => delete_saved_value(key, value),
         UndoEntry::Registry { key, value, previous } => {
-            run("reg.exe", &["add", key, "/v", value, "/t", "REG_DWORD", "/d", previous, "/f"]).0
+            previous.parse().is_ok_and(|data| reg_set(key, value, data))
         }
         UndoEntry::EnableTask(name) => {
             run("schtasks.exe", &["/change", "/tn", name, "/enable"]).0 || task_is_missing(name, ps)
@@ -717,7 +726,7 @@ fn main() {
         Some(g) => match Group::parse(g) {
             Some(g) => g,
             None => {
-                eprintln!("{}", tf!("неизвестная группа '{g}' (updaters, defender, ntfs, dns)", "unknown group '{g}' (updaters, defender, ntfs, dns)", ja: "不明なグループ '{g}' (updaters、defender、ntfs、dns)", pt: "grupo desconhecido '{g}' (updaters, defender, ntfs, dns)", zh: "未知的组 '{g}'（updaters、defender、ntfs、dns）"));
+                eprintln!("{}", tf!("неизвестная группа '{g}' (updaters, defender, ntfs, dns, background, vbs)", "unknown group '{g}' (updaters, defender, ntfs, dns, background, vbs)", ja: "不明なグループ '{g}' (updaters、defender、ntfs、dns、background、vbs)", pt: "grupo desconhecido '{g}' (updaters, defender, ntfs, dns, background, vbs)", zh: "未知的组 '{g}'（updaters、defender、ntfs、dns、background、vbs）"));
                 std::process::exit(2);
             }
         },
@@ -838,18 +847,24 @@ mod tests {
     }
 
     #[test]
-    fn reads_reg_query_output() {
-        let dw = "\r\nHKEY_LOCAL_MACHINE\\X\r\n    AllowTelemetry    REG_DWORD    0x1\r\n\r\n";
-        assert_eq!(parse_val(true, dw), Val::Dword(1));
-        assert_eq!(parse_val(true, "    V    REG_SZ    hello\r\n"), Val::Other);
-        assert_eq!(parse_val(false, "ERROR: The system was unable to find the specified registry key or value."), Val::Missing);
-        assert_eq!(parse_val(true, "    NtfsDisableLastAccessUpdate    REG_DWORD    0x80000002\r\n"), Val::Dword(0x8000_0002));
+    fn reads_values_and_start_modes_natively() {
+        let nt = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+        assert!(matches!(reg_val(nt, "CurrentMajorVersionNumber"), Val::Dword(d) if d >= 10));
+        assert_eq!(reg_val(nt, "ProductName"), Val::Other, "REG_SZ is not ours to overwrite");
+        assert_eq!(reg_val(nt, "no-such-value-winrust"), Val::Missing);
+        // the native start mode agrees with what sc.exe (the old way) reports, for every service debloat touches
+        for (svc, _) in services().into_iter().chain(upd_services()) {
+            let (ok, out) = run("sc.exe", &["qc", svc]);
+            let line = out.lines().find(|l| ok && l.contains("START_TYPE")).unwrap_or("");
+            let sc = if line.contains("DISABLED") { Some("disabled") } else if line.contains("DEMAND_START") { Some("demand") } else if line.contains("AUTO_START") { Some(if line.contains("DELAYED") { "delayed-auto" } else { "auto" }) } else { None };
+            assert_eq!(start_mode(svc), sc, "{svc}");
+        }
     }
 
     #[test]
     fn every_registry_item_is_hkcu_or_hklm_and_unique() {
         let mut seen = std::collections::HashSet::new();
-        for (k, v, _, _) in regs().into_iter().chain(ntfs_regs()) {
+        for (k, v, _, _) in regs().into_iter().chain(ntfs_regs()).chain(bg_regs()).chain(vbs_regs()) {
             assert!(k.starts_with("HKLM\\") || k.starts_with("HKCU\\"), "{k}");
             assert!(seen.insert((k, v)), "duplicate {k} {v}");
         }
@@ -892,9 +907,9 @@ mod tests {
 
     #[test]
     fn groups_parse_and_have_own_files() {
-        let gs = ["updaters", "defender", "ntfs", "dns"].map(|g| Group::parse(g).unwrap());
+        let gs = ["updaters", "defender", "ntfs", "dns", "background", "vbs"].map(|g| Group::parse(g).unwrap());
         let files: std::collections::HashSet<_> = gs.iter().map(|g| g.file()).chain([Group::Base.file()]).collect();
-        assert_eq!(files.len(), 5);
+        assert_eq!(files.len(), 7);
         assert_eq!(Group::parse("x"), None);
     }
 }
