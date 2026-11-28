@@ -1,4 +1,4 @@
-// topbar: replaces the Windows taskbar with a panel at the bottom of the screen (the name stayed from when it sat on top),
+// topbar: replaces the Windows taskbar with a panel on the chosen screen edge,
 // drawn in the Windows 11 taskbar palette: Start, pinned apps and open windows in the center; tray apps, language, wifi,
 // volume, battery and date/time on the right. `--restore` brings the normal taskbar back (used by uninstall).
 #![windows_subsystem = "windows"]
@@ -29,7 +29,10 @@ mod run;
 mod shot;
 mod lang;
 mod settings;
+mod second; // a bar on every other monitor
+mod notif; // notifications under the calendar
 mod thumbs;
+mod wmi;
 use {tray::*, status::*, run::*, shot::*, lang::*, settings::*};
 use windows::{
     Win32::{
@@ -65,17 +68,17 @@ use windows_sys::Win32::{
 fn rr(v: i32) -> i32 {
     if style().square() { 0 } else { sc(v) }
 }
-/// The bar sits at the top of the screen (tiling) instead of the bottom.
+/// The bar sits at the top of the screen (by position setting or tiling theme).
 fn at_top() -> bool {
-    style() == Style::Tiling && !vert()
+    !vert() && (i18n::style::side() == i18n::style::Side::Top || style() == Style::Tiling)
 }
 /// The bar stands on the left or right edge of the screen (its "width" is bar_h(), it spans the screen height).
 fn vert() -> bool {
-    i18n::style::side() != i18n::style::Side::Bottom
+    matches!(i18n::style::side(), i18n::style::Side::Left | i18n::style::Side::Right)
 }
-/// The floating dock (a pill in the middle of the bottom edge); a side bar is never a dock.
+/// The floating dock (a pill in the middle of the bottom edge).
 fn dock() -> bool {
-    style() == Style::Dock && !vert()
+    style() == Style::Dock && i18n::style::side() == i18n::style::Side::Bottom
 }
 /// Screen x of a side bar's current left edge, slid away by the show/hide animation.
 unsafe fn bar_x() -> i32 {
@@ -138,6 +141,17 @@ const GEAR: i32 = -12; // the gear at the left end: the Style menu
 const GEAR_X: (i32, i32) = (6, 36); // its left edge and width, before scaling (sc() is applied where used)
 const POW_R: i32 = -15; // Restart button next to the clock (#173)
 const POW_S: i32 = -16; // Shut down button
+// The right group: the language label, then one pill with the wifi, the volume and (on a laptop) the battery with its
+// percentage. layout() adds these up and paint() draws them at the same offsets, so the group is as wide as it draws.
+const SYS_LANG: i32 = 42; // the language label's slot
+const SYS_WIFI: i32 = 32; // the wifi icon's slot
+const SYS_VOL: i32 = 22; // the volume glyph
+const SYS_BAT_W: i32 = 22; // the battery itself
+const SYS_BAT_PCT: i32 = 40; // the percentage next to it
+const SYS_BAT: i32 = SYS_BAT_W + 8 + SYS_BAT_PCT; // 70: the battery and the percentage
+const SYS_END: i32 = 2; // air after the last icon, inside the pill
+const CLOCK_PAD: i32 = 10; // air on each side of the clock block
+const CLOCK_MIN: i32 = 72; // a short date ("1/1/2026") must not make the block hug its edges
 const SYS_GRP: i32 = -11; // hover key of the one pill around wifi + volume + battery (they open the same panel)
 const WIN_START: u32 = WM_APP + 10; // posted by the keyboard hook: Win key pressed alone
 const ALT_TAB: u32 = WM_APP + 11; // posted by the keyboard hook: Alt+Tab (wp 1 = Shift held: backwards)
@@ -150,6 +164,7 @@ static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook t
 const WIN_NUM: u32 = WM_APP + 15; // posted by the keyboard hook: Win+1..9 (wp 0..8) = the n-th button of the bar
 const WIN_X: u32 = WM_APP + 17; // posted by the keyboard hook: Win+X = our power-user menu (start_menu)
 const NEXT_LANG: u32 = WM_APP + 16; // posted by the keyboard hook: Win+Space with no explorer (wp 1 = Shift held: previous layout)
+const TILE_WINDOWS: u32 = WM_APP + 19; // posted by the keyboard hook: Ctrl+Alt+T
 const VOLKEY: u32 = WM_APP + 14; // posted by the keyboard hook: a volume key (wp 0 up, 1 down, 2 mute)
 const WIN_V: u32 = WM_APP + 18; // posted by the keyboard hook: Win+V with no explorer (our clipboard history, #171)
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
@@ -227,13 +242,13 @@ thread_local! {
     static TIP: RefCell<String> = const { RefCell::new(String::new()) };
     static PINS: RefCell<Vec<Pin>> = const { RefCell::new(Vec::new()) };
     static BTNS: RefCell<Vec<Btn>> = const { RefCell::new(Vec::new()) }; // [0] is always Start (pin None, no wins)
+    static BUTTON_ORDER: RefCell<Vec<DragButton>> = const { RefCell::new(Vec::new()) };
     static TAPPS: RefCell<Vec<TIcon>> = const { RefCell::new(Vec::new()) };
     static SHOWN: RefCell<Option<Vec<String>>> = const { RefCell::new(None) }; // tray icons kept on the bar (by exe); None = none: every tray icon lives in the chevron flyout
     static TRAYFLY: Cell<HWND> = const { Cell::new(null_mut()) };
     static TF_ANIM: Cell<(u64, i32, i32)> = const { Cell::new((0, 0, 0)) }; // tray flyout: when it opened, its final x, y
     static FHOT: Cell<i32> = const { Cell::new(-1) };
     static HOT: Cell<i32> = const { Cell::new(NONE) };
-    static DOWN_BTN: Cell<i32> = const { Cell::new(NONE) }; // app button pressed on WM_LBUTTONDOWN, activated on WM_LBUTTONUP
     static NEED_PLACE: Cell<bool> = const { Cell::new(false) }; // display/pos change arrived while fullscreen; run place() once fullscreen ends
     static ORDER: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // unpinned windows in the order their buttons were added
     static HV: RefCell<HashMap<i32, (f32, u64)>> = RefCell::new(HashMap::new()); // hover fade per element: (0..1, last update ms)
@@ -257,6 +272,7 @@ thread_local! {
     static FLASH: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // windows asking for attention (FlashWindowEx) until activated (#129)
     static APP_FG: Cell<HWND> = const { Cell::new(null_mut()) }; // last foreground window that is not ours: the language button acts on it
     static LANG_TRY: Cell<(u32, usize, usize)> = const { Cell::new((0, 0, 0)) }; // (thread, layout before, layout asked for) of the last switch, checked by timer 7
+    static BAR_WORK: Cell<(i32, i32, i32, i32)> = const { Cell::new((-1, -1, -1, -1)) }; // last work area reserved by place()
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -265,9 +281,42 @@ fn wide(s: &str) -> Vec<u16> {
 fn sc(v: i32) -> i32 {
     (v as f32 * SCALE.get()) as i32
 }
+/// Taskbar symbols use the chosen size; slots and hit targets stay unchanged.
+fn icon_sc(v: i32) -> i32 {
+    sc((v as f32 * i18n::style::icon_size() as f32 / 100.0).round() as i32).max(1)
+}
 fn bar_h() -> i32 {
     let d = [-6, 0, 8][i18n::style::bar_size() as usize % 3]; // small / normal / large
     if vert() { sc(60 + d) } else { sc(BAR_H + d) }
+}
+/// The width of the right group: exactly what paint() draws at those offsets. A wider slot was a hole between the
+/// volume icon and the clock (and a click on empty space opened the battery panel).
+fn sys_w() -> i32 {
+    sc(SYS_LANG + SYS_WIFI + SYS_VOL + SYS_END + if BAT.get().0 >= 0 { SYS_BAT } else { 0 })
+}
+/// Width and height of `s` in the font `f` of `dc`.
+unsafe fn text_size(dc: HDC, f: HFONT, s: &str) -> (i32, i32) {
+    SelectObject(dc, f);
+    let w = wide(s);
+    let mut sz: SIZE = zeroed();
+    GetTextExtentPoint32W(dc, w.as_ptr(), w.len() as i32 - 1, &mut sz);
+    (sz.cx, sz.cy)
+}
+/// The clock cell: the wider of the time and the date in the bar's own fonts (the ones it paints them with), with the
+/// same air on both sides, so a narrow clock ("9:05") and a wide date sit the same in it.
+fn clock_w() -> i32 {
+    unsafe {
+        let [_, f_small, _, f_bold] = bar_fonts();
+        let dc = CreateCompatibleDC(null_mut());
+        let (tm, dt) = clock_texts();
+        let w = clock_cell_w(text_size(dc, f_bold, &tm).0, text_size(dc, f_small, &dt).0);
+        DeleteDC(dc);
+        w
+    }
+}
+/// The cell of the clock: the wider of its two lines plus the same air on both sides.
+fn clock_cell_w(tw: i32, dw: i32) -> i32 {
+    (tw.max(dw) + 2 * sc(CLOCK_PAD)).max(sc(CLOCK_MIN))
 }
 /// Screen y of the bar's top edge when it is in place (bottom of the primary monitor, or its top in the tiling style).
 unsafe fn bar_top() -> i32 {
@@ -333,9 +382,12 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     match msg {
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
-            let dc = BeginPaint(hwnd, &mut ps);
+            let wdc = BeginPaint(hwnd, &mut ps);
             let mut r: RECT = zeroed();
             GetClientRect(hwnd, &mut r);
+            // drawn off screen first: painting every animation frame straight to the window flickered (#199)
+            let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, r.right, r.bottom));
+            let screen_bmp = SelectObject(dc, bmp);
             fill(dc, r, pal().line, sc(12));
             fill(dc, RECT { left: 1, top: 1, right: r.right - 1, bottom: r.bottom - 1 }, pal().bg, sc(12));
             let (cols, _, _) = fly_size();
@@ -353,8 +405,8 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         tip = ti.tip.clone();
                     }
                     if !ti.icon.is_null() {
-                        let sz = (sc(20) as f32 * (0.4 + 0.6 * tf_progress(n as i32))) as i32; // pops in
-                        DrawIconEx(dc, x + sc(19) - sz / 2, y + sc(18) - sz / 2, ti.icon, sz, sz, 0, null_mut(), DI_NORMAL);
+                        // 16 logical px, the small-icon size apps make theirs for: any other size gets resampled and blurs
+                        DrawIconEx(dc, x + sc(19) - sc(16) / 2, y + sc(18) - sc(16) / 2, ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
                     }
                 }
             });
@@ -365,9 +417,14 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             DrawTextW(dc, wide(&tip).as_ptr(), -1, &mut tr, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
             SelectObject(dc, of);
             DeleteObject(f);
+            BitBlt(wdc, 0, 0, r.right, r.bottom, dc, 0, 0, SRCCOPY);
+            SelectObject(dc, screen_bmp);
+            DeleteObject(bmp);
+            DeleteDC(dc);
             EndPaint(hwnd, &ps);
             0
         }
+        WM_ERASEBKGND => 1,
         WM_MOUSEMOVE => {
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
@@ -407,7 +464,7 @@ unsafe extern "system" fn fly_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             SetLayeredWindowAttributes(hwnd, 0, (255.0 * e) as u8, LWA_ALPHA);
             SetWindowPos(hwnd, null_mut(), x, y + tf_slide(e), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             InvalidateRect(hwnd, null(), 0);
-            if tf_progress(over_idx().len() as i32) >= 1.0 {
+            if e >= 1.0 {
                 KillTimer(hwnd, 1);
             }
             0
@@ -530,18 +587,30 @@ unsafe fn show_tip(s: String, cx: i32) {
 
 // ---------- Alt+Tab switcher: a grid of the open windows with live previews, most recently used first (#92) ----------
 
+const SW_CLIP_TIMER: usize = 9;
+
 thread_local! {
     static SW_MON: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) }; // the monitor it is shown on
     static SW_CARDS: RefCell<(Vec<RECT>, Vec<isize>)> = const { RefCell::new((Vec::new(), Vec::new())) }; // card rects, DWM previews
     // where the pointer was when the switcher opened: a window appearing under a still pointer gets a WM_MOUSEMOVE,
     // which must not pick the card under it (#183, #116); None once the pointer really moved
     static SW_PT: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+    // a game's cursor clip when the switcher opened, and its window: put back on close when we return to it
+    static SW_CLIP: Cell<Option<(RECT, HWND)>> = const { Cell::new(None) };
 }
 
 unsafe fn cursor() -> (i32, i32) {
     let mut p: POINT = zeroed();
     GetCursorPos(&mut p);
     (p.x, p.y)
+}
+
+/// A clip smaller than the whole virtual desktop: a game (or another app) has confined the pointer.
+unsafe fn clipped(c: &RECT) -> bool {
+    c.left > GetSystemMetrics(SM_XVIRTUALSCREEN)
+        || c.top > GetSystemMetrics(SM_YVIRTUALSCREEN)
+        || c.right < GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        || c.bottom < GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN)
 }
 
 unsafe fn alt_tab(back: bool) {
@@ -574,7 +643,23 @@ unsafe fn alt_tab(back: bool) {
         SW.set((v, idx));
         SW_MON.set(mon);
         SW_PT.set(Some(cursor()));
+        // a game in mouse-look clips the pointer to a pixel at its center and re-clips it while it keeps the focus, so the
+        // pointer snaps back the moment it leaves the cards. Take the focus (as the system switcher does) so the game lets
+        // the pointer go anywhere, and release the clip too in case it keeps it without the focus.
+        let mut c: RECT = zeroed();
+        let fg = GetForegroundWindow();
+        SW_CLIP.set(None);
+        if GetClipCursor(&mut c) != 0 && clipped(&c) {
+            SW_CLIP.set(Some((c, fg)));
+            ClipCursor(null());
+            SetTimer(sw, SW_CLIP_TIMER, 10, None);
+        }
         sw_layout(sw);
+        if SW_CLIP.get().is_some() {
+            let ex = GetWindowLongW(sw, GWL_EXSTYLE) as u32;
+            SetWindowLongW(sw, GWL_EXSTYLE, (ex & !WS_EX_NOACTIVATE) as i32);
+            force_fg(sw);
+        }
     } else {
         SW.with_borrow_mut(|(v, i)| *i = if back { (*i + v.len() - 1) % v.len() } else { (*i + 1) % v.len() });
     }
@@ -635,13 +720,28 @@ unsafe fn alt_close() {
 /// Alt released: switch to the selected window (restored if minimized). Esc: just close.
 unsafe fn alt_done(cancel: bool) {
     ShowWindow(SWWND.get(), SW_HIDE);
+    KillTimer(SWWND.get(), SW_CLIP_TIMER);
     SW_CARDS.with_borrow_mut(|(r, ids)| {
         thumbs::unregister(SWWND.get(), ids);
         r.clear();
     });
     let (v, i) = SW.take();
-    if let Some(&w) = v.get(i).filter(|_| !cancel) {
+    let target = v.get(i).copied().filter(|_| !cancel);
+    if let Some(w) = target {
         bring(w);
+    }
+    // we took the focus and made the switcher activatable because a game was clipping the pointer: put the style back,
+    // return the focus to that game on Esc, and give it its mouse-look clip back when we stay on / return to it
+    if let Some((c, fg)) = SW_CLIP.take() {
+        let sw = SWWND.get();
+        let ex = GetWindowLongW(sw, GWL_EXSTYLE) as u32;
+        SetWindowLongW(sw, GWL_EXSTYLE, (ex | WS_EX_NOACTIVATE) as i32);
+        if cancel {
+            force_fg(fg);
+        }
+        if cancel || target == Some(fg) {
+            ClipCursor(&c);
+        }
     }
 }
 
@@ -678,6 +778,7 @@ unsafe extern "system" fn sw_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
         }
         WM_MOUSEWHEEL => alt_tab((wp >> 16) as i16 > 0),
+        WM_TIMER if wp == SW_CLIP_TIMER => { ClipCursor(null()); }
         _ => return DefWindowProcW(hwnd, msg, wp, lp),
     }
     0
@@ -750,7 +851,7 @@ unsafe fn hide_taskbar_if_shown() {
     }
 }
 
-/// Reserves the bottom strip of the primary monitor (maximized windows stay above it).
+/// Reserves a strip on the bar's screen edge so maximized windows stay clear of it.
 /// Deferred while a fullscreen app owns the display: a lower-resolution game fires WM_DISPLAYCHANGE, and running
 /// set_work_area / fit_maximized then shrinks maximized windows to the game's resolution (fit_maximized only trims,
 /// so they stay stuck shrunk after leaving the game).
@@ -791,9 +892,9 @@ unsafe fn place(hwnd: HWND) {
     // No explorer (rs-shell / rust-explorer): nobody handles appbars, so set the work area ourselves. Without it maximized
     // windows slide under the bar and, covering the whole monitor, count as "fullscreen" and hide the bar.
     // Also with Explorer: it does not always honour the appbar when its own taskbar is hidden (#89).
-    {
-        set_work_area(if vert() { if ab.uEdge == ABE_LEFT { RECT { left: ab.rc.right, top: 0, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: ab.rc.left, bottom: cy } } } else if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } });
-    }
+    let work = if vert() { if ab.uEdge == ABE_LEFT { RECT { left: ab.rc.right, top: 0, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: ab.rc.left, bottom: cy } } } else if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } };
+    BAR_WORK.set((work.left, work.top, work.right, work.bottom));
+    set_work_area(work);
     let (x, w) = bar_x_w();
     // the dock is a pill; the other styles a plain strip
     SetWindowRgn(hwnd, if dock() { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
@@ -805,6 +906,7 @@ unsafe fn place(hwnd: HWND) {
         SetWindowPos(hwnd, HWND_TOPMOST, x, bar_y(), w, bar_h(), SWP_NOACTIVATE | SWP_NOZORDER);
     }
     InvalidateRect(hwnd, null(), 0);
+    second::sync();
 }
 
 /// How far from its screen edge the bar may sit after ABM_QUERYPOS (room left for other appbars). Explorer sometimes answers
@@ -815,8 +917,10 @@ fn sane_edge(offset: i32, size: i32) -> i32 {
 }
 
 unsafe fn set_work_area(mut want: RECT) {
-    let mut cur: RECT = zeroed();
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut cur as *mut _ as *mut _, 0);
+    let mut mi: MONITORINFO = zeroed();
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    GetMonitorInfoW(MonitorFromRect(&want, MONITOR_DEFAULTTONEAREST), &mut mi);
+    let cur = mi.rcWork;
     if (cur.left, cur.top, cur.right, cur.bottom) != (want.left, want.top, want.right, want.bottom) {
         // SPIF_SENDCHANGE waits for every top-level window (took ~3 s, #94): set quietly and post the notice instead
         SystemParametersInfoW(SPI_SETWORKAREA, 0, &mut want as *mut _ as *mut _, 0);
@@ -825,11 +929,20 @@ unsafe fn set_work_area(mut want: RECT) {
     }
 }
 
+/// Explorer and display changes can reset the work area after the bar has already claimed its edge.
+unsafe fn work_area_drifted() -> bool {
+    let want = BAR_WORK.get();
+    if want.0 < 0 { return false; }
+    let mut current: RECT = zeroed();
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut current as *mut _ as *mut _, 0) != 0
+        && (current.left, current.top, current.right, current.bottom) != want
+}
+
 /// A window that was already maximized keeps its old height when the work area shrinks: trim it (size only, no restore).
 unsafe extern "system" fn fit_maximized(h: HWND, lp: isize) -> i32 {
     let want = &*(lp as *const RECT);
-    // the work area is the primary monitor's: a window maximized on another monitor would be cut to a sliver
-    if IsWindowVisible(h) == 0 || IsZoomed(h) == 0 || MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) != MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) {
+    // the work area belongs to one monitor: a window maximized on another one would be cut to a sliver
+    if IsWindowVisible(h) == 0 || IsZoomed(h) == 0 || MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) != MonitorFromRect(want, MONITOR_DEFAULTTONEAREST) {
         return 1;
     }
     let mut r: RECT = zeroed();
@@ -954,10 +1067,10 @@ unsafe fn lnk_icon(lnk: &[u16], target: &str) -> HICON {
     icon
 }
 
-/// Size app icons are drawn at (24 logical px, like the Windows 11 taskbar). Icons are loaded at exactly this size:
+/// Size app icons are drawn at. Icons are loaded at exactly this size:
 /// a 32 px icon stretched by DrawIconEx comes out jagged.
 fn icon_px() -> i32 {
-    sc(24)
+    icon_sc(24)
 }
 
 /// Icon of a file, shortcut (its target's icon, no arrow) or shell item ("shell:AppsFolder\<app id>") rendered by the
@@ -981,6 +1094,24 @@ unsafe fn item_icon(path: &str, px: i32) -> HICON {
 
 thread_local! {
     static EXE_ICONS: RefCell<HashMap<String, HICON>> = RefCell::new(HashMap::new()); // crisp icons of running apps, by exe
+}
+
+/// Recreate cached app icons after the size changes so they remain crisp.
+unsafe fn reload_icons() {
+    PINS.with_borrow_mut(|pins| {
+        for pin in pins.iter_mut() {
+            let icon = lnk_icon(&pin.lnk, &pin.target);
+            if !pin.icon.is_null() { DestroyIcon(pin.icon); }
+            pin.icon = icon;
+        }
+    });
+    EXE_ICONS.with_borrow_mut(|icons| {
+        for icon in icons.values() {
+            if !icon.is_null() { DestroyIcon(*icon); }
+        }
+        icons.clear();
+    });
+    refresh_buttons();
 }
 
 /// Icon of a running window for its bar button: its exe's icon at the exact size (cached), else what the window reports.
@@ -1256,6 +1387,25 @@ fn as_pinned_exe(exe: &str, explorer: &str, explorer_pinned: bool) -> String {
     if explorer_pinned && exe.ends_with(r"\rust-explorer\rust-explorer.exe") { explorer.to_string() } else { exe.to_string() }
 }
 
+/// `...\app-1.0.9001\discord.exe` without the version folder: Squirrel apps (Discord, Slack...) move on every update.
+fn unversioned(exe: &str) -> String {
+    exe.split('\\').filter(|p| !p.strip_prefix("app-").is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit()))).collect::<Vec<_>>().join(r"\")
+}
+
+/// A window of `exe` (with AppUserModelID `id`) belongs to a pin of another exe (#198): the same AppUserModelID, a pin of
+/// Squirrel's launcher (`Update.exe --processStart App.exe`) or of an older version folder. All lower-case but `args`.
+fn pin_of_other_exe(target: &str, args: &str, aumid: &str, exe: &str, id: &str) -> bool {
+    if !aumid.is_empty() && aumid == id {
+        return true;
+    }
+    let args = args.to_lowercase();
+    if let (Some(dir), Some(at)) = (target.strip_suffix(r"\update.exe"), args.find("--processstart")) {
+        let name = args[at + "--processstart".len()..].trim_start_matches(['=', ' ', '"']).split(['"', ' ']).next().unwrap_or("");
+        return !name.is_empty() && exe.strip_prefix(dir).is_some_and(|r| r.starts_with('\\') && r.rsplit('\\').next() == Some(name));
+    }
+    !exe.is_empty() && unversioned(target) == unversioned(exe)
+}
+
 fn refresh_buttons() {
     let mut wins: Vec<HWND> = Vec::new();
     unsafe { EnumWindows(Some(collect), &mut wins as *mut _ as LPARAM) };
@@ -1271,10 +1421,10 @@ fn refresh_buttons() {
         // takes any window of its exe
         let pin = PINS.with_borrow(|p| {
             let mine: Vec<usize> = (0..p.len()).filter(|&i| !p[i].target.is_empty() && p[i].target == exe).collect();
-            if mine.is_empty() {
-                return None;
-            }
             let id = unsafe { win_meta(w).0 };
+            if mine.is_empty() {
+                return (0..p.len()).find(|&i| pin_of_other_exe(&p[i].target, &p[i].args, &p[i].aumid, &exe, &id));
+            }
             mine.iter().copied().find(|&i| !id.is_empty() && p[i].aumid == id).or_else(|| mine.iter().copied().find(|&i| id.is_empty() || p[i].aumid.is_empty()))
         });
         match pin {
@@ -1301,6 +1451,12 @@ fn refresh_buttons() {
                 }
             }
         }
+    });
+    let keys: Vec<DragButton> = btns.iter().skip(1).filter_map(key_for_button).collect();
+    BUTTON_ORDER.with_borrow_mut(|order| {
+        order.retain(|key| keys.contains(key));
+        for key in &keys { if !order.contains(key) { order.push(key.clone()); } }
+        btns[1..].sort_by_key(|b| key_for_button(b).and_then(|key| order.iter().position(|x| *x == key)).unwrap_or(usize::MAX));
     });
     BTNS.set(btns);
 }
@@ -1421,7 +1577,9 @@ unsafe fn paint_power(dc: HDC, l: &Layout, hot: i32, f_glyph: HFONT, cell: impl 
 }
 
 struct Layout {
-    x0: i32, // first slot: the search button; Start and the rest follow
+    gear_x: i32,  // Style/Bar settings gear: far left normally, or right of Start when start_left is on
+    start_x: i32, // Start (Windows) button: far left corner when start_left is on, or in the main group
+    x0: i32,      // first slot of the main group: Search, Task View, then Start (unless start_left) and apps
     bw: i32,
     gap: i32,
     power: (i32, i32),
@@ -1430,21 +1588,106 @@ struct Layout {
     clock: (i32, i32),
 }
 
+impl Layout {
+    fn btn_pos(&self, i: i32) -> i32 {
+        if i == 0 {
+            self.start_x
+        } else {
+            let lead = if i18n::style::start_left() { LEAD - 1 } else { LEAD };
+            self.x0 + (i + lead) * (self.bw + self.gap)
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum DragButton { Pin(Vec<u16>), Window(isize) }
+struct ButtonDrag { button: DragButton, start_x: i32, start_y: i32, moved: bool }
+thread_local! { static BUTTON_DRAG: RefCell<Option<ButtonDrag>> = const { RefCell::new(None) }; }
+
+fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from >= items.len() || to >= items.len() || from == to { return false; }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
+}
+
+fn button_key(index: i32) -> Option<DragButton> {
+    if index < 1 { return None; }
+    BTNS.with_borrow(|b| b.get(index as usize).and_then(key_for_button))
+}
+
+fn key_for_button(button: &Btn) -> Option<DragButton> {
+    match button.pin {
+        Some(i) => PINS.with_borrow(|pins| pins.get(i).map(|p| DragButton::Pin(p.lnk.clone()))),
+        None => button.wins.first().map(|w| DragButton::Window(*w as isize)),
+    }
+}
+
+fn save_button_order() {
+    BUTTON_ORDER.with_borrow(|order| {
+        let pins = order.iter().filter_map(|key| match key { DragButton::Pin(path) => Some(std::path::Path::new(&wstr_of(path)).file_name().unwrap_or_default().to_string_lossy().into_owned()), _ => None }).collect::<Vec<_>>().join("\n");
+        let _ = std::fs::write(appdata_file("topbar-pin-order.txt"), pins);
+    });
+}
+
+fn reorder_buttons(from: DragButton, to: DragButton) {
+    let changed = BUTTON_ORDER.with_borrow_mut(|order| {
+        if let (Some(from), Some(to)) = (order.iter().position(|x| *x == from), order.iter().position(|x| *x == to)) {
+            move_item(order, from, to)
+        } else {
+            false
+        }
+    });
+    if changed {
+        let pins: Vec<Vec<u16>> = BUTTON_ORDER.with_borrow(|order| order.iter().filter_map(|key| match key { DragButton::Pin(path) => Some(path.clone()), _ => None }).collect());
+        PINS.with_borrow_mut(|items| items.sort_by_key(|item| pins.iter().position(|p| *p == item.lnk).unwrap_or(usize::MAX)));
+        refresh_buttons();
+    }
+}
+
+unsafe fn drag_target(hwnd: HWND, x: i32, y: i32) -> Option<DragButton> {
+    let mut rect: RECT = zeroed();
+    GetClientRect(hwnd, &mut rect);
+    let (axis, length) = if vert() { (y, rect.bottom) } else { (x, rect.right) };
+    let layout = layout(length);
+    let count = BTNS.with_borrow(|b| b.len()) as i32;
+    let lead = if i18n::style::start_left() { LEAD - 1 } else { LEAD }; // the same slots as Layout::btn_pos
+    drag_slot(axis, layout.x0, layout.bw, layout.gap, count, layout.apps.0, lead).and_then(button_key)
+}
+
+/// The button under `axis`: button i sits in slot i + `lead` from x0 (Layout::btn_pos); Start (0) is never a target.
+fn drag_slot(axis: i32, x0: i32, bw: i32, gap: i32, count: i32, apps_left: i32, lead: i32) -> Option<i32> {
+    if count <= 1 || bw <= 0 || gap < 0 || axis < x0 || axis >= apps_left { return None; }
+    Some(((axis - x0 + gap / 2) / (bw + gap) - lead).clamp(1, count - 1))
+}
+
 fn layout(w: i32) -> Layout {
     let gap = sc(4);
-    let clock = (w - sc(96), w - sc(6));
+    let clock = (w - sc(6) - clock_w(), w - sc(6));
     let power = (clock.0 - sc(4) - sc(32) * POWER_KEYS.len() as i32, clock.0 - sc(4));
-    let sys = (power.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), power.0 - sc(4));
+    let sys = (power.0 - sc(4) - sys_w(), power.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD; // + the search and Task View slots
-    let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
-    // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + 1).min(n);
+    let sl = i18n::style::start_left();
+    let btns_len = BTNS.with_borrow(|b| b.len()) as i32;
+    let total_n = btns_len + LEAD; // + the search and Task View slots
+    let bw = (((w - 2 * margin + gap) / total_n.max(1)) - gap).clamp(sc(16), sc(44 + [-6, 0, 8][i18n::style::bar_size() as usize % 3]));
+    let group_n = total_n - i32::from(sl);
+    // centered on search + (Start if not pinned left) + pins only: opening an unpinned window adds a button on the right instead of shifting left
+    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + LEAD + if sl { 0 } else { 1 }).min(group_n);
     // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
-    let right_limit = w - margin - (n * (bw + gap) - gap);
+    let right_limit = w - margin - (group_n * (bw + gap) - gap);
     let centered = (w - (fixed * (bw + gap) - gap)) / 2;
-    Layout { x0: if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, power, apps, sys, clock } // clear of the gear
+    let (start_left_x, gear_x) = if sl {
+        let sx = sc(GEAR_X.0);
+        (sx, sx + bw + gap)
+    } else {
+        (0, sc(GEAR_X.0))
+    };
+    let left_min = gear_x + sc(GEAR_X.1 + 6);
+    let x0 = if i18n::style::align_left() { 0 } else { centered }.min(right_limit).max(left_min); // clear of the gear (and Start if pinned left)
+    let start_x = if sl { start_left_x } else { x0 + LEAD * (bw + gap) };
+    Layout { gear_x, start_x, x0, bw, gap, power, apps, sys, clock }
 }
 
 unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
@@ -1452,7 +1695,15 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     GetClientRect(hwnd, &mut r);
     // a side bar runs the same layout along its height
     let (x, l) = if vert() { (y, layout(r.bottom)) } else { (x, layout(r.right)) };
-    if x < sc(GEAR_X.0 + GEAR_X.1) {
+    let sl = i18n::style::start_left();
+    if sl {
+        if x < l.start_x + l.bw {
+            return 0; // Start reaches all the way to the screen corner
+        }
+        if x >= l.gear_x && x < l.gear_x + sc(GEAR_X.1) {
+            return GEAR;
+        }
+    } else if x < l.gear_x + sc(GEAR_X.1) {
         return GEAR;
     }
     if x >= l.clock.1 {
@@ -1466,14 +1717,15 @@ unsafe fn hit(hwnd: HWND, x: i32, y: i32) -> i32 {
     }
     if x >= l.sys.0 {
         let d = x - l.sys.0;
-        return if d < sc(42) { LANG } else if d < sc(74) { WIFI_I } else if d < sc(106) { VOL_I } else { BAT_I };
+        let (lw, ww) = (sc(SYS_LANG), sc(SYS_WIFI));
+        return if d < lw { LANG } else if d < lw + ww { WIFI_I } else if d < lw + ww + sc(SYS_VOL) { VOL_I } else if BAT.get().0 >= 0 { BAT_I } else { NONE };
     }
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
     }
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD;
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + LEAD - i32::from(sl);
     let (d, i) = (x - l.x0, (x - l.x0) / (l.bw + l.gap));
-    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD }
+    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else if i == 1 { TASKVIEW } else { i - LEAD + i32::from(sl) }
 }
 
 // ---------- animation ----------
@@ -1623,77 +1875,91 @@ fn is_shell_surface(w: HWND) -> bool {
     matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer")
 }
 
-/// A minimized window whose restored rect covers the primary monitor (catches fullscreen games when FS_WND was
+/// A minimized window whose restored rect covers its monitor (catches fullscreen games when FS_WND was
 /// overwritten by another fullscreen window such as an F11 browser, or after the bar restarted).
-unsafe fn iconic_covers_primary(w: HWND) -> bool {
+unsafe fn iconic_covers_monitor(w: HWND) -> Option<RECT> {
     if is_shell_surface(w) {
-        return false;
+        return None;
     }
     let mut wp: WINDOWPLACEMENT = zeroed();
     wp.length = size_of::<WINDOWPLACEMENT>() as u32;
     if GetWindowPlacement(w, &mut wp) == 0 {
-        return false;
+        return None;
     }
     let mut mi: MONITORINFO = zeroed();
     mi.cbSize = size_of::<MONITORINFO>() as u32;
     if GetMonitorInfoW(MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
-        return false;
+        return None;
     }
     let tool = GetWindowLongW(w, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0;
     let r = if tool { wp.rcNormalPosition } else { work_to_screen(wp.rcNormalPosition, mi.rcWork, mi.rcMonitor) };
     let caption = GetWindowLongW(w, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
-    (mi.rcMonitor.left, mi.rcMonitor.top) == (0, 0) && covers_monitor(r, mi.rcMonitor, caption, wp.flags & WPF_RESTORETOMAXIMIZED != 0)
+    covers_monitor(r, mi.rcMonitor, caption, wp.flags & WPF_RESTORETOMAXIMIZED != 0).then_some(mi.rcMonitor)
 }
 
-unsafe fn window_covers_primary(w: HWND, bar: HWND) -> bool {
+unsafe fn window_covers_monitor(w: HWND, bar: HWND) -> Option<RECT> {
     if w.is_null() || w == bar || IsWindowVisible(w) == 0 || is_shell_surface(w) {
-        return false;
+        return None;
     }
     let mut r: RECT = zeroed();
     GetWindowRect(w, &mut r);
     let mut mi: MONITORINFO = zeroed();
     mi.cbSize = size_of::<MONITORINFO>() as u32;
     if GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
-        return false;
+        return None;
     }
     let m = mi.rcMonitor;
     let caption = GetWindowLongW(w, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION;
-    (m.left, m.top) == (0, 0) && covers_monitor(r, m, caption, IsZoomed(w) != 0)
+    covers_monitor(r, m, caption, IsZoomed(w) != 0).then_some(m)
 }
 
 /// True when the foreground window covers the whole primary monitor (game, F11 video, presentation).
 /// A maximized window does not: the bar's reserved strip keeps it below the bar.
 unsafe fn fullscreen_now(bar: HWND) -> bool {
+    fg_covers(bar).is_some_and(|m| (m.left, m.top) == (0, 0))
+}
+
+/// The monitor the foreground window covers whole, if it covers one.
+unsafe fn fg_covers(bar: HWND) -> Option<RECT> {
     let fg = GetForegroundWindow();
+    let monitor_or_primary = |w: HWND| {
+        let mut mi: MONITORINFO = zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        if !w.is_null() && GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mut mi) != 0 {
+            mi.rcMonitor
+        } else {
+            RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }
+        }
+    };
     // A Direct3D game Windows reports as exclusive-fullscreen counts even during the brief moment when GetForegroundWindow()
     // is null across a display-mode switch (unless one of our own panels, e.g. Start, is in front).
     if !own_foreground() {
         let mut quns = 0;
         if windows_sys::Win32::UI::Shell::SHQueryUserNotificationState(&mut quns) >= 0 && quns == 3 {
-            return true; // QUNS_RUNNING_D3D_FULL_SCREEN
+            return Some(monitor_or_primary(fg)); // QUNS_RUNNING_D3D_FULL_SCREEN
         }
     }
     if fg.is_null() || fg == bar || IsWindowVisible(fg) == 0 {
-        return false;
+        return None;
     }
     // A fullscreen game brought back with Alt+Tab gets the foreground while still minimized and only then switches the screen
     // over: if the bar stayed on top then, the game lost fullscreen again. Both the last seen fullscreen window (which also
-    // covers lower-resolution stretched games) and any minimized window whose restored rect covers the primary monitor count.
+    // covers lower-resolution stretched games) and any minimized window whose restored rect covers its monitor count.
     if IsIconic(fg) != 0 {
         if fg as isize == FS_WND.get() {
-            return true;
+            return Some(monitor_or_primary(fg));
         }
-        let fs = iconic_covers_primary(fg);
-        if fs {
+        let m = iconic_covers_monitor(fg);
+        if m.is_some() {
             FS_WND.set(fg as isize);
         }
-        return fs;
+        return m;
     }
-    let fs = window_covers_primary(fg, bar);
-    if fs {
+    let m = window_covers_monitor(fg, bar);
+    if m.is_some() {
         FS_WND.set(fg as isize);
     }
-    fs
+    m
 }
 
 /// A game switching into fullscreen leaves the screen without any foreground window for a moment, again and again until it
@@ -1719,10 +1985,11 @@ unsafe fn fs_settled(now_fs: bool) -> bool {
 }
 
 /// A framed maximized window overhangs the monitor by its border and is not fullscreen (#88); but a game in "borderless
-/// window" mode that keeps its caption style while sized exactly to the monitor (Dota 2 and others) is.
+/// window" mode that keeps its caption style while sized to the monitor (SDL, GLFW, Dota 2 and others) is. Such a window
+/// can sit a pixel past the monitor edge (Minecraft: 1921 wide on a 1920 monitor), so it has to "cover", not "equal".
 fn covers_monitor(r: RECT, m: RECT, caption: bool, zoomed: bool) -> bool {
-    if caption {
-        return !zoomed && (r.left, r.top, r.right, r.bottom) == (m.left, m.top, m.right, m.bottom);
+    if caption && zoomed {
+        return false; // a framed maximized window: not a game (#88)
     }
     r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
 }
@@ -1733,6 +2000,7 @@ unsafe fn desktop_now() -> bool {
 }
 
 unsafe fn fs_update(hwnd: HWND) {
+    second::update(hwnd);
     let fs = fs_settled(fullscreen_now(hwnd));
     // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
     // edges all the time); Win opens Start, which brings the bar with it
@@ -1812,7 +2080,17 @@ pub(crate) unsafe fn bring(w: HWND) {
         return;
     }
     let bar = BAR.load(Relaxed) as HWND;
-    if !bar.is_null() && (w as isize == FS_WND.get() || if IsIconic(w) != 0 { iconic_covers_primary(w) } else { window_covers_primary(w, bar) }) {
+    let on_primary = |m: RECT| (m.left, m.top) == (0, 0);
+    let target_fs_primary = if w as isize == FS_WND.get() {
+        let mut mi: MONITORINFO = zeroed();
+        mi.cbSize = size_of::<MONITORINFO>() as u32;
+        GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 || on_primary(mi.rcMonitor)
+    } else if IsIconic(w) != 0 {
+        iconic_covers_monitor(w).is_some_and(on_primary)
+    } else {
+        window_covers_monitor(w, bar).is_some_and(on_primary)
+    };
+    if !bar.is_null() && target_fs_primary {
         FULLSCREEN.store(true, Relaxed);
         FS_OFF.set(0);
         hide_bar_now(bar);
@@ -1955,6 +2233,7 @@ unsafe fn repaint_if_changed(hwnd: HWND, tick: bool) {
     if s != last || (tick && quiet >= 10) {
         SIG.set((s, 0));
         InvalidateRect(hwnd, null(), 0);
+        second::invalidate();
     } else if tick {
         SIG.set((s, quiet + 1));
     }
@@ -1997,11 +2276,15 @@ unsafe fn view_sig() -> u64 {
 }
 
 unsafe fn clock_texts() -> (String, String) {
+    clock_texts_of(0x0400) // LOCALE_USER_DEFAULT
+}
+/// The time and the date as `locale` (an LCID) formats them: short time without seconds, short date.
+unsafe fn clock_texts_of(locale: u32) -> (String, String) {
     let mut t: SYSTEMTIME = zeroed();
     GetLocalTime(&mut t);
     let (mut a, mut b) = ([0u16; 40], [0u16; 40]);
-    let n = GetTimeFormatW(0x0400, 2, &t, null(), a.as_mut_ptr(), 40).max(1) as usize - 1; // LOCALE_USER_DEFAULT, TIME_NOSECONDS
-    let m = GetDateFormatW(0x0400, 1, &t, null(), b.as_mut_ptr(), 40).max(1) as usize - 1; // DATE_SHORTDATE
+    let n = GetTimeFormatW(locale, 2, &t, null(), a.as_mut_ptr(), 40).max(1) as usize - 1; // TIME_NOSECONDS
+    let m = GetDateFormatW(locale, 1, &t, null(), b.as_mut_ptr(), 40).max(1) as usize - 1; // DATE_SHORTDATE
     (String::from_utf16_lossy(&a[..n]), String::from_utf16_lossy(&b[..m]))
 }
 
@@ -2019,7 +2302,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let cell = |y: i32, len: i32| RECT { left: lft, top: y, right: rgt, bottom: y + len };
     let dim = mix(pal().dim, pal().text, 0.5);
 
-    let gr = cell(sc(GEAR_X.0), sc(GEAR_X.1));
+    let gr = cell(l.gear_x, sc(GEAR_X.1));
     glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { dim }, DT_CENTER);
@@ -2033,7 +2316,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
 
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let y = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let y = l.btn_pos(i as i32);
             let r = cell(y, l.bw);
             let mid = y + l.bw / 2;
             let act = b.wins.contains(&fg);
@@ -2046,7 +2329,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
                 fill(dc, r, mix(pal().bg, pal().accent, 0.4), sc(8));
             }
             if i == 0 {
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
                 let g = sc(1).max(1);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
@@ -2080,7 +2363,7 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
 
     glow(dc, TAPP, hot == TAPP, cell(l.apps.0, sc(24)), pal().bg, pal().hover, sc(8));
     let turn = ease(hv(TF_KEY, IsWindowVisible(TRAYFLY.get()) != 0));
-    chevron(dc, cx, l.apps.0 + sc(12), sc(5), if left { 90.0 } else { 270.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
+    chevron(dc, cx, l.apps.0 + sc(12), icon_sc(5), if left { 90.0 } else { 270.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
     SelectObject(dc, f_txt);
     let bar = bar_idx();
     TAPPS.with_borrow(|t| {
@@ -2089,36 +2372,39 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
             let y = l.apps.0 + i as i32 * sc(24);
             glow(dc, TAPP + i as i32, hot == TAPP + i as i32, cell(y, sc(24)), pal().bg, pal().hover, sc(8));
             if !ti.icon.is_null() {
-                DrawIconEx(dc, cx - sc(8), y + sc(4), ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                let size = icon_sc(16);
+                DrawIconEx(dc, cx - size / 2, y + (sc(24) - size) / 2, ti.icon, size, size, 0, null_mut(), DI_NORMAL);
             }
         }
     });
 
     paint_power(dc, &l, hot, f_glyph, cell);
-    glow(dc, LANG, hot == LANG, cell(l.sys.0, sc(42)), pal().bg, pal().hover, sc(8));
-    let grp = cell(l.sys.0 + sc(44), l.sys.1 - l.sys.0 - sc(44));
+    glow(dc, LANG, hot == LANG, cell(l.sys.0, sc(SYS_LANG)), pal().bg, pal().hover, sc(8));
+    let grp = cell(l.sys.0 + sc(SYS_LANG + 2), l.sys.1 - l.sys.0 - sc(SYS_LANG + 2));
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
         fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
     }
-    text(dc, &lang_name(), cell(l.sys.0, sc(42)), pal().text, DT_CENTER);
-    net_icon(dc, cx, l.sys.0 + sc(58), sc(17), f_glyph);
+    text(dc, &lang_name(), cell(l.sys.0, sc(SYS_LANG)), pal().text, DT_CENTER);
+    let y0 = l.sys.0 + sc(SYS_LANG);
+    net_icon(dc, cx, y0 + sc(SYS_WIFI) / 2, icon_sc(17), f_glyph);
     SelectObject(dc, f_glyph);
     let (vol, muted) = VOL.get();
     let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
-    text(dc, vg, cell(l.sys.0 + sc(79), sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
+    let y1 = y0 + sc(SYS_WIFI);
+    text(dc, vg, cell(y1, sc(SYS_VOL)), if muted { BAD } else { pal().text }, DT_CENTER);
     let (pct, ac) = BAT.get();
     if pct >= 0 {
         let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
-        let (bw, bh) = (sc(22), sc(11));
-        let (bx, by) = (cx - bw / 2 - sc(1), l.sys.0 + sc(111));
+        let (bw, bh) = (icon_sc(SYS_BAT_W), icon_sc(11));
+        let (bx, by) = (cx - bw / 2 - sc(1), y1 + sc(SYS_VOL));
         fill(dc, RECT { left: bx, top: by, right: bx + bw, bottom: by + bh }, col, sc(4));
         fill(dc, RECT { left: bx + sc(1), top: by + sc(1), right: bx + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
         let fw = ((bw - sc(4)) * pct / 100).max(sc(1));
         fill(dc, RECT { left: bx + sc(2), top: by + sc(2), right: bx + sc(2) + fw, bottom: by + bh - sc(2) }, col, sc(2));
         fill(dc, RECT { left: bx + bw + sc(1), top: by + sc(3), right: bx + bw + sc(3), bottom: by + bh - sc(3) }, col, sc(1));
         SelectObject(dc, f_small);
-        text(dc, &format!("{pct}%"), cell(l.sys.0 + sc(126), sc(18)), pal().text, DT_CENTER);
+        text(dc, &format!("{pct}%"), cell(y1 + sc(SYS_VOL + SYS_BAT_W + 8), sc(18)), pal().text, DT_CENTER);
     }
 
     let cb = cell(l.clock.0, l.clock.1 - l.clock.0);
@@ -2126,9 +2412,9 @@ unsafe fn paint_vert(dc: HDC, cr: RECT, fonts: [HFONT; 4]) {
     let (tm, dt) = clock_texts();
     let mid = (cb.top + cb.bottom) / 2;
     SelectObject(dc, f_bold);
-    text(dc, &tm, RECT { left: 0, top: cb.top, right: cr.right, bottom: mid + sc(1) }, pal().text, DT_CENTER);
+    text(dc, &tm, RECT { left: cb.left, top: cb.top, right: cb.right, bottom: mid + sc(1) }, pal().text, DT_CENTER);
     SelectObject(dc, f_small);
-    text(dc, &dt, RECT { left: 0, top: mid - sc(1), right: cr.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
+    text(dc, &dt, RECT { left: cb.left, top: mid - sc(1), right: cb.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
 }
 
 thread_local! {
@@ -2198,7 +2484,8 @@ unsafe fn bar_fonts() -> [HFONT; 4] {
     });
     let (face, gface) = (wide(ui_face()), wide(winrust_common::style::icon_face()));
     let font = |f: &[u16], px: i32, wt: i32| CreateFontW(-sc(px), 0, 0, 0, wt, 0, 0, 0, 1, 0, 0, 5, 0, f.as_ptr());
-    let fonts = [font(&face, 13, 400), font(&face, 12, 400), font(&gface, 16, 400), font(&face, 13, 600)];
+    let icon_px = (16.0 * i18n::style::icon_size() as f32 / 100.0).round() as i32;
+    let fonts = [font(&face, 13, 400), font(&face, 12, 400), font(&gface, icon_px, 400), font(&face, 13, 600)];
     FONTS.set((fonts, key));
     fonts
 }
@@ -2232,8 +2519,8 @@ unsafe fn paint(hwnd: HWND) {
     let hot = HOT.get();
     let active_bg = mix(pal().active, pal().accent, 0.12); // the focused app's button: a hint of the accent, not plain grey
 
-    // the gear at the left end: the Style menu
-    let gr = RECT { left: sc(GEAR_X.0), top, right: sc(GEAR_X.0 + GEAR_X.1), bottom: bot };
+    // the gear: the Style menu
+    let gr = RECT { left: l.gear_x, top, right: l.gear_x + sc(GEAR_X.1), bottom: bot };
     glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
     text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
@@ -2250,7 +2537,7 @@ unsafe fn paint(hwnd: HWND) {
     // Start, pinned apps, open windows (center)
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let x = l.x0 + (i as i32 + LEAD) * (l.bw + l.gap);
+            let x = l.btn_pos(i as i32);
             let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
             let act = b.wins.contains(&fg);
             let att = !act && FLASH.with_borrow(|f| b.wins.iter().any(|w| f.contains(w))); // flashing: lit until it is activated
@@ -2263,7 +2550,7 @@ unsafe fn paint(hwnd: HWND) {
             }
             if i == 0 {
                 // Windows logo in four tiles, lit from the top left; grows a little on hover, squeezes on click
-                let t = ((sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
+                let t = ((icon_sc(8) as f32) * (1.0 + 0.12 * th) * (1.0 - 0.2 * tp)) as i32;
                 let (g, cx) = (sc(1).max(1), (r.left + r.right) / 2);
                 let tint = [mix(pal().accent, pal().text, 0.35), mix(pal().accent, pal().text, 0.15), mix(pal().accent, pal().text, 0.15), pal().accent];
                 for (k, (dx, dy)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
@@ -2306,7 +2593,7 @@ unsafe fn paint(hwnd: HWND) {
     let open_tf = IsWindowVisible(TRAYFLY.get()) != 0;
     let turn = ease(hv(TF_KEY, open_tf)); // the chevron turns over as the flyout opens, and back
     let cc = cell(l.apps.0, sc(24));
-    chevron(dc, (cc.left + cc.right) / 2, mid, sc(5), if at_top() { 180.0 } else { 0.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
+    chevron(dc, (cc.left + cc.right) / 2, mid, icon_sc(5), if at_top() { 180.0 } else { 0.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
     SelectObject(dc, f_txt);
     let bar = bar_idx();
     TAPPS.with_borrow(|t| {
@@ -2315,7 +2602,8 @@ unsafe fn paint(hwnd: HWND) {
             let x = l.apps.0 + i as i32 * sc(24);
             glow(dc, TAPP + i as i32, hot == TAPP + i as i32, cell(x, sc(24)), pal().bg, pal().hover, sc(8));
             if !ti.icon.is_null() {
-                DrawIconEx(dc, x + sc(4), mid - sc(8), ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                let size = icon_sc(16);
+                DrawIconEx(dc, x + (sc(24) - size) / 2, mid - size / 2, ti.icon, size, size, 0, null_mut(), DI_NORMAL);
             }
         }
     });
@@ -2323,36 +2611,36 @@ unsafe fn paint(hwnd: HWND) {
     // system group: language on its own, then one pill for wifi + volume + battery (like Windows 11: they open one panel)
     paint_power(dc, &l, hot, f_glyph, |s, len| RECT { left: s, top, right: s + len, bottom: bot });
     let tb = RECT { left: l.sys.0, top, right: l.sys.1, bottom: bot };
-    glow(dc, LANG, hot == LANG, RECT { left: tb.left, top, right: tb.left + sc(42), bottom: bot }, pal().bg, pal().hover, sc(8));
-    let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
+    glow(dc, LANG, hot == LANG, cell(tb.left, sc(SYS_LANG)), pal().bg, pal().hover, sc(8));
+    let grp = RECT { left: tb.left + sc(SYS_LANG + 2), top, right: tb.right, bottom: bot };
     let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
     if tg > 0.01 || pg > 0.0 {
         fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
     }
-    let mut x = tb.left + sc(10);
-    text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
-    x += sc(42);
-    net_icon(dc, x + sc(9), mid, sc(17), f_glyph);
-    x += sc(32);
+    let x = tb.left + sc(SYS_LANG);
+    text(dc, &lang_name(), cell(tb.left, sc(SYS_LANG)), pal().text, DT_CENTER);
+    net_icon(dc, x + sc(SYS_WIFI) / 2, mid, icon_sc(17), f_glyph);
     SelectObject(dc, f_glyph);
     let (vol, muted) = VOL.get();
     let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
-    text(dc, vg, cell(x, sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
-    x += sc(32);
+    let xv = x + sc(SYS_WIFI);
+    text(dc, vg, cell(xv, sc(SYS_VOL)), if muted { BAD } else { pal().text }, DT_CENTER);
     let (pct, ac) = BAT.get();
     if pct >= 0 {
+        let x = xv + sc(SYS_VOL);
         let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
-        let (bw, bh, by) = (sc(22), sc(11), mid - sc(5));
+        let (bw, bh) = (icon_sc(SYS_BAT_W), icon_sc(11));
+        let by = mid - bh / 2;
         fill(dc, RECT { left: x, top: by, right: x + bw, bottom: by + bh }, col, sc(4)); // outline
         fill(dc, RECT { left: x + sc(1), top: by + sc(1), right: x + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
         let fw = ((bw - sc(4)) * pct / 100).max(sc(1));
         fill(dc, RECT { left: x + sc(2), top: by + sc(2), right: x + sc(2) + fw, bottom: by + bh - sc(2) }, col, sc(2));
         fill(dc, RECT { left: x + bw + sc(1), top: by + sc(3), right: x + bw + sc(3), bottom: by + bh - sc(3) }, col, sc(1)); // terminal nub
         SelectObject(dc, f_txt);
-        text(dc, &format!("{pct}%"), cell(x + bw + sc(8), sc(40)), pal().text, DT_LEFT);
+        text(dc, &format!("{pct}%"), cell(x + bw + sc(8), sc(SYS_BAT_PCT)), pal().text, DT_LEFT);
     }
 
-    // time (semibold) over the date (dimmed)
+    // time (semibold) over the date (dimmed); the cell is as wide as the wider line, so both get the same air
     let cb = cell(l.clock.0, l.clock.1 - l.clock.0);
     glow(dc, CLOCK, hot == CLOCK || fly::is_open(fly::Kind::Cal), cb, pal().bg, pal().hover, sc(8));
     let (tm, dt) = clock_texts();
@@ -2563,6 +2851,11 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
                 if let Some(p) = PINS.with_borrow(|p| p.iter().position(|x| wstr_of(&x.lnk) == lnk)) {
                     let to = if matches!(a, A::Left) { p.wrapping_sub(1) } else { p + 1 };
                     if PINS.with_borrow_mut(|v| (to < v.len()).then(|| v.swap(p, to))).is_some() {
+                        let pins: Vec<DragButton> = PINS.with_borrow(|v| v.iter().map(|p| DragButton::Pin(p.lnk.clone())).collect());
+                        BUTTON_ORDER.with_borrow_mut(|order| {
+                            let mut pins = pins.into_iter();
+                            for entry in order.iter_mut() { if matches!(entry, DragButton::Pin(_)) { if let Some(pin) = pins.next() { *entry = pin; } } }
+                        });
                         save_pin_order();
                         refresh_buttons();
                     }
@@ -2631,16 +2924,12 @@ unsafe fn lnk_args(lnk: &[u16]) -> String {
 
 /// What a running process was started with, minus the exe (e.g. `--profile-directory="Profile 2"`).
 fn proc_args(pid: u32) -> String {
-    use std::os::windows::process::CommandExt;
     if pid == 0 {
         return String::new();
     }
-    // the PEB first (microseconds); PowerShell (about a second) only for a process that cannot be opened for reading
-    let cl = winrust_common::proc::cmdline(pid).map(|c| c.trim().to_string()).unwrap_or_else(|| {
-        let script = format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8;(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
-        let out = Command::new("powershell.exe").args(["-NoProfile", "-Command", &script]).creation_flags(NO_WINDOW).output();
-        out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
-    });
+    // the PEB first (microseconds); WMI only for a process that cannot be opened for reading
+    let cl = winrust_common::proc::cmdline(pid).or_else(|| wmi::string(r"root\cimv2", &format!("SELECT CommandLine FROM Win32_Process WHERE ProcessId={pid}"), "CommandLine"));
+    let cl = cl.map(|c| c.trim().to_string()).unwrap_or_default();
     let rest = match cl.strip_prefix('"') {
         Some(r) => r.split_once('"').map_or("", |x| x.1),
         None => cl.split_once(' ').map_or("", |x| x.1),
@@ -3076,7 +3365,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     let exe = exe_of(w);
     let i = BTNS.with_borrow(|b| b.iter().position(|b| b.wins.contains(&w)).or_else(|| b.iter().position(|b| !exe.is_empty() && b.wins.first().is_some_and(|&x| exe_of(x) == exe))));
     let x = match i {
-        Some(i) => l.x0 + (i as i32 + LEAD) * (l.bw + l.gap),
+        Some(i) => l.btn_pos(i as i32),
         None => (l.x0 + l.apps.0) / 2, // no button (yet): the middle of the bar
     };
     if vert() {
@@ -3092,7 +3381,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
 unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
     // along the bar: screen x for a bottom bar, screen y for a side bar
     (if vert() { 0 } else { bar_x_w().0 }) + match h {
-        GEAR => sc(GEAR_X.0 + GEAR_X.1 / 2),
+        GEAR => l.gear_x + sc(GEAR_X.1 / 2),
         SEARCH => l.x0 + l.bw / 2,
         TASKVIEW => l.x0 + (l.bw + l.gap) + l.bw / 2,
         CLOCK => (l.clock.0 + l.clock.1) / 2,
@@ -3103,7 +3392,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
         VOL_I => l.sys.0 + sc(90),
         BAT_I => l.sys.0 + sc(130),
         t if (TAPP..TAPP + 100).contains(&t) => l.apps.0 + (t - TAPP) * sc(24) + sc(12),
-        i => l.x0 + (i + LEAD) * (l.bw + l.gap) + l.bw / 2,
+        i => l.btn_pos(i) + l.bw / 2,
     }
 }
 
@@ -3136,6 +3425,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             _ => return 0,
         }
         InvalidateRect(hwnd, null(), 0);
+        second::invalidate();
         return 0;
     }
     if msg != 0 && msg == TB_MSG.get() {
@@ -3195,6 +3485,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         0x031D => hist::on_update(hwnd), // WM_CLIPBOARDUPDATE
         NEXT_LANG => next_lang(hwnd, wp == 1),
+        TILE_WINDOWS => tile_windows(),
         ALT_UP if wp == 2 => alt_close(),
         ALT_UP => alt_done(wp == 1),
         SNIP if wp == 1 => screenshot_notice(hwnd),
@@ -3218,6 +3509,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_TIMER => {
             hide_taskbar_if_shown();
+            if work_area_drifted() { place(hwnd); }
             refresh_status();
             if TICK.get() % 5 == 0 {
                 refresh_windows(); // safety net for a window event the hook did not report
@@ -3226,6 +3518,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             repaint_if_changed(hwnd, true);
         }
         WM_MOUSEMOVE => {
+            let x = (lp & 0xffff) as i16 as i32;
+            let y = (lp >> 16) as i16 as i32;
+            BUTTON_DRAG.with_borrow_mut(|d| if let Some(d) = d { if (x - d.start_x).abs() >= sc(4) || (y - d.start_y).abs() >= sc(4) { d.moved = true; } });
+            let moving = BUTTON_DRAG.with_borrow(|d| d.as_ref().filter(|d| d.moved).map(|d| d.button.clone()));
+            if let Some(from) = moving {
+                if let Some(to) = drag_target(hwnd, x, y) { reorder_buttons(from, to); }
+                hide_tip(hwnd);
+                InvalidateRect(hwnd, null(), 0);
+                return 0;
+            }
             let h = hit(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
@@ -3239,7 +3541,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSELEAVE => {
             hide_tip(hwnd);
-            DOWN_BTN.set(NONE);
             HOT.set(-1);
             InvalidateRect(hwnd, null(), 0);
         }
@@ -3255,39 +3556,51 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
             let x = (lp & 0xffff) as i16 as i32;
-            let h = hit(hwnd, x, (lp >> 16) as i16 as i32);
+            let y = (lp >> 16) as i16 as i32;
+            let h = hit(hwnd, x, y);
+            if msg == WM_LBUTTONDOWN {
+                if let Some(button) = button_key(h) {
+                    BUTTON_DRAG.set(Some(ButtonDrag { button, start_x: x, start_y: y, moved: false }));
+                    SetCapture(hwnd);
+                    hide_tip(hwnd);
+                    thumbs::hide_preview();
+                    press(h);
+                    InvalidateRect(hwnd, null(), 0);
+                    return 0;
+                }
+            }
             let x = if vert() { (lp >> 16) as i16 as i32 } else { x }; // position along the bar
             hide_tip(hwnd);
             thumbs::hide_preview();
             if h != NONE {
                 press(h);
             }
-            if h >= 1 && msg == WM_LBUTTONDOWN {
-                // Switch / launch app buttons on release (like the Windows taskbar and preview / Alt+Tab cards):
-                // activating on DOWN leaves the mouse button held during AttachThreadInput and fullscreen restore.
-                DOWN_BTN.set(h);
+            if h == NONE && msg == WM_RBUTTONDOWN {
+                fly::context_menu(x); // right click on an empty spot
+            } else if h >= 1 && msg == WM_RBUTTONDOWN {
+                app_menu(hwnd, h);
             } else {
-                DOWN_BTN.set(NONE);
-                if h == NONE && msg == WM_RBUTTONDOWN {
-                    fly::context_menu(x); // right click on an empty spot
-                } else if h >= 1 && msg == WM_RBUTTONDOWN {
-                    app_menu(hwnd, h);
-                } else {
-                    click(h, msg == WM_LBUTTONDOWN, msg == WM_MBUTTONDOWN);
-                }
+                click(h, msg == WM_LBUTTONDOWN, msg == WM_MBUTTONDOWN);
             }
             InvalidateRect(hwnd, null(), 0);
         }
         WM_LBUTTONUP => {
-            let down = DOWN_BTN.replace(NONE);
-            let h = hit(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
-            if down >= 1 && h == down {
-                click(h, true, false);
+            let drag = BUTTON_DRAG.take();
+            if let Some(drag) = drag {
+                ReleaseCapture();
+                let target = hit(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
+                if drag.moved {
+                    if let Some(to) = drag_target(hwnd, (lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32) { reorder_buttons(drag.button, to); }
+                    save_button_order();
+                } else if button_key(target).as_ref() == Some(&drag.button) {
+                    click(target, true, false);
+                }
                 if IsWindowVisible(hwnd) != 0 {
                     InvalidateRect(hwnd, null(), 0);
                 }
             }
         }
+        WM_CAPTURECHANGED => { if BUTTON_DRAG.take().is_some_and(|d| d.moved) { save_button_order(); } }
         CALLBACK => {
             if wp == ABN_FULLSCREENAPP as usize {
                 fs_update(hwnd);
@@ -3300,12 +3613,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             NEED_PLACE.set(true);
             fs_update(hwnd);
         }
+        WM_SETTINGCHANGE if wp == SPI_SETWORKAREA as usize => {
+            if work_area_drifted() { place(hwnd); }
+        }
         WM_DESTROY => {
             let mut ab: APPBARDATA = zeroed();
             ab.cbSize = size_of::<APPBARDATA>() as u32;
             ab.hWnd = hwnd;
             SHAppBarMessage(ABM_REMOVE, &mut ab);
             set_work_area(RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }); // ours: give the strip back
+            second::release();
             show_taskbar(OLD_STATE.get());
             forget_taskbar_state();
             DestroyWindow(HOST.replace(null_mut()));
@@ -3323,6 +3640,7 @@ fn main() {
             show_taskbar(saved_taskbar_state().unwrap_or(ABS_ALWAYSONTOP as usize));
             forget_taskbar_state();
             set_work_area(RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }); // a killed bar's reserved strip
+            second::restore_work_areas();
             announce(); // a killed bar took its tray icons with it; apps re-register with explorer
             return;
         }
@@ -3377,6 +3695,7 @@ fn main() {
         load_pins();
         fly::init(GetModuleHandleW(null()));
         thread::spawn(fly::load_apps);
+        thread::spawn(winrust_common::eco::auto_loop); // efficiency mode for background CPU hogs while the Game profile is on
         thread::spawn(winrust_common::mem::auto_loop); // standby purge when memory runs short, switched on from the task manager's Speed page
         let hi = GetModuleHandleW(null());
         let class = wide("topbar");
@@ -3467,6 +3786,24 @@ fn main() {
 }
 
 #[cfg(test)]
+mod pin_match_tests {
+    use super::pin_of_other_exe;
+
+    #[test]
+    fn windows_find_their_pin_across_exes() {
+        let up = r"c:\users\a\appdata\local\discord\update.exe";
+        let app = r"c:\users\a\appdata\local\discord\app-1.0.9002\discord.exe";
+        assert!(pin_of_other_exe(up, "--processStart Discord.exe", "", app, ""));
+        assert!(pin_of_other_exe(up, "--processStart=\"Discord.exe\"", "", app, ""));
+        assert!(pin_of_other_exe(r"c:\users\a\appdata\local\discord\app-1.0.9001\discord.exe", "", "", app, ""));
+        assert!(pin_of_other_exe(r"c:\x\launcher.exe", "", "com.app", app, "com.app"));
+        assert!(!pin_of_other_exe(up, "--processStart Slack.exe", "", app, ""));
+        assert!(!pin_of_other_exe(r"c:\x\launcher.exe", "", "", app, ""));
+        assert!(!pin_of_other_exe("", "", "", app, ""));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn magnet_picks_the_nearest_edge_within_reach() {
@@ -3484,12 +3821,48 @@ mod tests {
         assert_eq!(super::sane_edge(-20, 1080), 0);
     }
 
+    /// The clock cell is measured from the time and the date in the bar's own fonts, so the air around the block is the
+    /// same in every language, and the date of a locale still fits (no ellipsis, no clipped slash).
+    #[test]
+    fn clock_cell_fits_every_locale() {
+        use super::*;
+        const LOCALES: [(u32, &str); 5] = [(0x0409, "en-US"), (0x0419, "ru-RU"), (0x0411, "ja-JP"), (0x0416, "pt-BR"), (0x0804, "zh-CN")];
+        unsafe {
+            SCALE.set(2.0); // the 200 % case, the tightest one: everything else scales with it
+            let [_, f_date, _, f_time] = bar_fonts(); // the fonts the bar paints the clock with
+            let dc = CreateCompatibleDC(null_mut());
+            for (locale, name) in LOCALES {
+                let (tm, dt) = clock_texts_of(locale);
+                let (tw, dw) = (text_size(dc, f_time, &tm).0, text_size(dc, f_date, &dt).0);
+                let w = clock_cell_w(tw, dw);
+                assert!(tw <= w - 2 * sc(CLOCK_PAD), "{name}: the time {tm} does not fit its cell");
+                assert!(dw <= w - 2 * sc(CLOCK_PAD), "{name}: the date {dt} does not fit its cell");
+                assert!(w >= sc(CLOCK_MIN), "{name}: the cell is narrower than the minimum");
+            }
+            DeleteDC(dc);
+        }
+    }
+
+    /// The right group ends where its last icon ends: a wider slot was the hole between the volume icon and the clock
+    /// (and a battery panel under a click on empty space).
+    #[test]
+    fn system_group_is_as_wide_as_it_draws() {
+        use super::*;
+        BAT.set((-1, false)); // a desktop: no battery in the group
+        assert_eq!(sys_w(), SYS_LANG + SYS_WIFI + SYS_VOL + SYS_END);
+        BAT.set((80, false));
+        assert_eq!(sys_w(), SYS_LANG + SYS_WIFI + SYS_VOL + SYS_BAT + SYS_END);
+        BAT.set((-1, false));
+    }
+
     #[test]
     fn borderless_games_count_as_fullscreen() {
         use super::{RECT, covers_monitor, work_to_screen};
         let m = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
         assert!(covers_monitor(m, m, false, false)); // plain borderless / exclusive fullscreen
         assert!(covers_monitor(m, m, true, false)); // borderless window that kept its caption style
+        // Minecraft (SDL_app): caption style, not maximized, sized one pixel past the monitor — still fullscreen
+        assert!(covers_monitor(RECT { left: 0, top: 0, right: 1921, bottom: 1080 }, m, true, false));
         assert!(!covers_monitor(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, m, true, true)); // framed maximized window (#88)
         assert!(!covers_monitor(m, m, true, true)); // a maximized window is never a game
         assert!(!covers_monitor(RECT { left: 0, top: 0, right: 1920, bottom: 1032 }, m, false, false)); // leaves the bar's strip
@@ -3513,6 +3886,23 @@ mod tests {
         assert_eq!(initial_alt_tab_index(&[a], a, false), 0);
     }
 
+    fn pinned_and_running_items_can_be_reordered_together() {
+        use super::DragButton::{Pin, Window};
+        let mut items = vec![Pin(vec![1]), Window(42), Pin(vec![2])];
+        assert!(super::move_item(&mut items, 0, 1));
+        assert!(matches!(items.as_slice(), [Window(42), Pin(_), Pin(_)]));
+        assert!(super::move_item(&mut items, 2, 0));
+        assert!(matches!(items.as_slice(), [Pin(_), Window(42), Pin(_)]));
+    }
+    #[test]
+    fn drag_accepts_gaps_and_edges_without_targeting_start() {
+        assert_eq!(super::drag_slot(208, 100, 40, 4, 5, 400, 1), Some(1));
+        assert_eq!(super::drag_slot(232, 100, 40, 4, 5, 400, 1), Some(2));
+        assert_eq!(super::drag_slot(399, 100, 40, 4, 5, 400, 1), Some(4));
+        assert_eq!(super::drag_slot(400, 100, 40, 4, 5, 400, 1), None);
+        // search and Task View before Start: the first button after Start is three slots in
+        assert_eq!(super::drag_slot(100 + 3 * 44, 100, 40, 4, 5, 400, 2), Some(1));
+    }
     #[test]
     fn network_icon_state() {
         use super::{INET, Link, WIFI, arcs_lit, net};

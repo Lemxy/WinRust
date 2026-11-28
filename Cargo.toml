@@ -1,6 +1,6 @@
 [package]
 name = "plugin-launcher"
-version = "0.5.9"
+version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -20,11 +20,15 @@ path = "src/update/manifest.rs"
 name = "update-swap"
 path = "src/update/swap.rs"
 
+[[test]]
+name = "explorer-folder-backups"
+path = "src/install/explorer/folder_backup.rs"
+
 [dependencies]
 winrust-common = { path = "common" }
 ed25519-dalek = "2.1.1" # signed update manifests (src/update)
 sha2 = "0.10.8"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_GdiPlus", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_GdiPlus", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_Services", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 embed-resource = "3"
@@ -63,3 +67,7 @@ opt-level = 3 # MFT parsing: speed over size, as before the workspace
 [[test]]
 name = "explorer-service-settings"
 path = "src/install/explorer/dword_snapshot.rs"
+
+[[test]]
+name = "explorer-service-state"
+path = "src/install/explorer/service_state.rs"
