@@ -168,10 +168,11 @@ fn row(name: String, m: Option<&fs::Metadata>) -> Row {
     Row { name, dir: m.is_some_and(|m| m.is_dir()), size: m.map_or(0, |m| m.len()), time: m.map_or(0, |m| m.last_write_time()), icon: -1, thumb: -2, hdr: false }
 }
 
-/// Folders first (unless "Folders first" is off in the folder's menu, #162); inside each group by the column (0 name, 1 size, 2 modified), ties by name.
+/// Folders first (unless "Folders first" is off in the folder's menu, #162; sorted by date they mix with the files unless
+/// "Folders first by date too" is on); inside each group by the column (0 name, 1 modified, 2 type, 3 size), ties by name.
 fn sort_rows(rows: &mut [Row], col: usize, asc: bool) {
     let key = |r: &Row| r.name.rsplit('\\').next().unwrap_or("").to_lowercase();
-    let mixed = !desk() && mixed_marker().exists();
+    let mixed = !desk() && (mixed_marker().exists() || (col == 1 && !date_dirs_marker().exists()));
     rows.sort_by(|a, b| {
         let o = match col { 1 => a.time.cmp(&b.time), 2 => type_text(&a.name, a.dir).cmp(&type_text(&b.name, b.dir)), 3 => a.size.cmp(&b.size), _ => key(a).cmp(&key(b)) };
         let dirs = if mixed { std::cmp::Ordering::Equal } else { (!a.dir).cmp(&!b.dir) };
@@ -203,6 +204,8 @@ thread_local! {
 }
 
 fn mixed_marker() -> PathBuf { PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join("rust-explorer").join("folders-mixed") }
+/// Present: sorting by date keeps folders on top as the other columns do; absent (default): newest is newest, folder or file.
+fn date_dirs_marker() -> PathBuf { PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join(r"rust-explorer\date-folders-first") }
 fn group_marker() -> PathBuf { PathBuf::from(env::var_os("APPDATA").unwrap_or_default()).join(r"rust-explorer\group-by-date") }
 static THUMBS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false); // thumbnail view: no headings
 fn group_on() -> bool { !desk() && !THUMBS.load(Relaxed) && group_marker().exists() }
@@ -560,6 +563,7 @@ unsafe fn bg_menu(h: HWND) {
         menu::item(sort, 31, "\u{E74B}", t!("По убыванию", "Descending", ja: "降順", pt: "Decrescente", zh: "降序"), !asc);
         menu::sep(sort);
         menu::item(sort, 14, "\u{E8B7}", t!("Папки сверху", "Folders first", ja: "フォルダーを先頭に表示", pt: "Pastas primeiro", zh: "文件夹优先"), !mixed_marker().exists());
+        menu::item(sort, 16, "\u{E787}", t!("Папки сверху и по дате", "Folders first by date too", ja: "日付順でもフォルダーを先頭に表示", pt: "Pastas primeiro também por data", zh: "按日期排序时也文件夹优先"), date_dirs_marker().exists());
         menu::submenu(m, "\u{E8CB}", t!("Сортировка", "Sort by", ja: "並べ替え", pt: "Classificar por", zh: "排序方式"), sort);
         menu::item(m, 15, "\u{E91B}", t!("Предпросмотр при наведении", "Preview on hover", ja: "ポイントしてプレビュー", pt: "Pré-visualizar ao passar o mouse", zh: "悬停预览"), !preview::off_marker().exists());
         menu::item(m, 13, "\u{E81C}", t!("Группировать по дате", "Group by date", ja: "日付でグループ化", pt: "Agrupar por data", zh: "按日期分组"), group_on());
@@ -597,8 +601,8 @@ unsafe fn bg_menu(h: HWND) {
             let k = preview::off_marker();
             if k.exists() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
         }
-        14 => {
-            let k = mixed_marker();
+        14 | 16 => {
+            let k = if id == 14 { mixed_marker() } else { date_dirs_marker() };
             if k.exists() { let _ = fs::remove_file(&k); } else { if let Some(d) = k.parent() { let _ = fs::create_dir_all(d); } let _ = fs::write(&k, "1"); }
         }
         40..=43 => { // keep saved icon positions, mapped to the new grid
@@ -2574,8 +2578,8 @@ mod tests {
         assert_eq!(names(&v), ["A", "a.txt", "b.txt"]);
         sort_rows(&mut v, 3, false); // biggest first, the folder still on top
         assert_eq!(names(&v), ["A", "a.txt", "b.txt"]);
-        sort_rows(&mut v, 1, true); // oldest first
-        assert_eq!(names(&v), ["A", "b.txt", "a.txt"]);
+        sort_rows(&mut v, 1, true); // oldest first, folders and files together
+        assert_eq!(names(&v), ["b.txt", "A", "a.txt"]);
     }
 
     #[test]
