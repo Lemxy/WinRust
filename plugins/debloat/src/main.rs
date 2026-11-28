@@ -16,7 +16,7 @@
 use std::{
     env,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -571,41 +571,155 @@ fn restored(ok: bool) -> &'static str {
     }
 }
 
-fn undo(g: Group) -> Result<(), String> {
-    let path = undo_path(g);
-    let Ok(text) = fs::read_to_string(&path) else {
-        println!("{}", t!("отменять нечего (нет файла отмены)", "nothing to undo (no undo file)", ja: "元に戻すものはありません (元に戻すファイルがありません)", pt: "nada para desfazer (sem arquivo de desfazer)", zh: "没有可撤销的内容（没有撤销文件）"));
-        return Ok(());
+enum UndoEntry<'a> {
+    Service { name: &'a str, mode: &'a str },
+    Registry { key: &'a str, value: &'a str, previous: &'a str },
+    EnableTask(&'a str),
+    DeleteTask(&'a str),
+    DefenderExclusion { kind: &'static str, value: &'a str },
+    HostsBlock,
+}
+
+fn parse_undo_line(line: &str) -> Option<UndoEntry<'_>> {
+    if line.contains('\0') {
+        return None;
+    }
+    let fields: Vec<_> = line.split('|').collect();
+    let present = |field: &str| !field.trim().is_empty();
+    Some(match fields.as_slice() {
+        ["svc", name, mode @ ("auto" | "delayed-auto" | "demand" | "disabled")] if present(name) => {
+            UndoEntry::Service { name, mode }
+        }
+        ["reg", key, value, previous] if present(key) && present(value)
+            && (*previous == "-" || previous.parse::<u32>().is_ok()) =>
+        {
+            UndoEntry::Registry { key, value, previous }
+        }
+        ["task", name] if present(name) => UndoEntry::EnableTask(name),
+        ["newtask", name] if present(name) => UndoEntry::DeleteTask(name),
+        ["mpx", "path", value] if present(value) => UndoEntry::DefenderExclusion { kind: "Path", value },
+        ["mpx", "proc", value] if present(value) => UndoEntry::DefenderExclusion { kind: "Process", value },
+        ["hosts", "block"] => UndoEntry::HostsBlock,
+        _ => return None,
+    })
+}
+
+fn delete_saved_value(key: &str, value: &str) -> bool {
+    let target = reg::user_path(key);
+    if target != key {
+        // A user's unloaded hive does not prove that the backed-up value is absent.
+        let hive = target.splitn(3, '\\').take(2).collect::<Vec<_>>().join("\\");
+        if !reg::exists(&hive, None) {
+            return false;
+        }
+    }
+    reg::delete_value(&target, value)
+}
+
+fn powershell_confirms_absence((ok, output): (bool, String)) -> bool {
+    ok && output.trim() == "absent"
+}
+
+fn task_is_missing(path: &str, powershell: impl FnOnce(&str) -> (bool, String)) -> bool {
+    let Some((folder, task)) = path.rsplit_once('\\') else { return false };
+    if task.is_empty() {
+        return false;
+    }
+    let folder = psq(if folder.is_empty() { r"\" } else { folder });
+    let task = psq(task);
+    // Ask for the exact task. Only file/path-not-found from the lookup proves absence.
+    let script = format!(
+        "$s=New-Object -ComObject Schedule.Service -ErrorAction Stop; $s.Connect(); \
+         try {{ $null=$s.GetFolder({folder}).GetTask({task}) }} catch {{ \
+             $e=$_.Exception; while ($null -ne $e) {{ \
+                 if ($e.HResult -eq -2147024894 -or $e.HResult -eq -2147024893) {{ 'absent'; return }} \
+                 $e=$e.InnerException \
+             }}; throw \
+         }}"
+    );
+    powershell_confirms_absence(powershell(&script))
+}
+
+fn restore_defender_exclusion(
+    kind: &str,
+    value: &str,
+    mut powershell: impl FnMut(&str) -> (bool, String),
+) -> bool {
+    let value = psq(value);
+    if powershell(&format!("Remove-MpPreference -ErrorAction Stop -Exclusion{kind} {value}")).0 {
+        return true;
+    }
+
+    // A prior attempt can have removed it. A hidden or unverifiable list cannot prove absence.
+    powershell_confirms_absence(powershell(&format!(
+        "$p=Get-MpPreference -ErrorAction Stop; \
+         if ($null -ne $p) {{ \
+             $visibility = $p.PSObject.Properties['HideExclusionsFromLocalAdmins']; \
+             if ($null -ne $visibility -and $null -ne $visibility.Value -and $visibility.Value -eq 0 \
+                 -and $p.Exclusion{kind} -notcontains {value}) {{ 'absent' }} \
+         }}"
+    )))
+}
+
+fn restore_entry(entry: UndoEntry<'_>) -> bool {
+    match entry {
+        UndoEntry::Service { name, mode } => winrust_common::svc::set_start(name, mode),
+        UndoEntry::Registry { key, value, previous: "-" } => delete_saved_value(key, value),
+        UndoEntry::Registry { key, value, previous } => {
+            previous.parse().is_ok_and(|data| reg_set(key, value, data))
+        }
+        UndoEntry::EnableTask(name) => {
+            run("schtasks.exe", &["/change", "/tn", name, "/enable"]).0 || task_is_missing(name, ps)
+        }
+        UndoEntry::DeleteTask(name) => {
+            run("schtasks.exe", &["/delete", "/tn", name, "/f"]).0 || task_is_missing(name, ps)
+        }
+        UndoEntry::DefenderExclusion { kind, value } => restore_defender_exclusion(kind, value, ps),
+        UndoEntry::HostsBlock => {
+            let path = hosts_path();
+            let ok = fs::read_to_string(&path).is_ok_and(|text| fs::write(&path, strip_block(&text)).is_ok());
+            let _ = run("ipconfig.exe", &["/flushdns"]);
+            ok
+        }
+    }
+}
+
+fn undo_journal(path: &Path, read: io::Result<String>, mut restore: impl FnMut(UndoEntry<'_>) -> bool) -> Result<(), String> {
+    let text = match read {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            println!("{}", t!("отменять нечего (нет файла отмены)", "nothing to undo (no undo file)", ja: "元に戻すものはありません (元に戻すファイルがありません)", pt: "nada para desfazer (sem arquivo de desfazer)", zh: "没有可撤销的内容（没有撤销文件）"));
+            return Ok(());
+        }
+        Err(error) => return Err(tf!("Не удалось прочитать файл отмены {}: {error}", "Could not read undo file {}: {error}", ja: "元に戻すファイル {} を読み取れませんでした: {error}", pt: "Não foi possível ler o arquivo de desfazer {}: {error}", zh: "无法读取撤销文件 {}：{error}", path.display())),
     };
+    let invalid = |line| tf!("Неверная строка {line} в файле отмены {}; файл сохранён", "Invalid line {line} in undo file {}; the file was kept", ja: "元に戻すファイル {} の {line} 行目が無効です。ファイルは保持されました", pt: "Linha {line} inválida no arquivo de desfazer {}; o arquivo foi mantido", zh: "撤销文件 {} 的第 {line} 行无效，文件已保留", path.display());
+    let entries: Vec<_> = text.lines().enumerate().map(|(index, line)| {
+        parse_undo_line(line).map(|entry| (line, entry)).ok_or_else(|| invalid(index + 1))
+    }).collect::<Result<_, _>>()?;
+    // The writer terminates each record before applying its change. A torn final record can still look valid.
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(invalid(entries.len()));
+    }
+
     let mut failed = 0;
-    // the first line per item holds the ORIGINAL value (an earlier --apply may have logged the same item again)
-    for line in text.lines().rev() {
-        let f: Vec<&str> = line.splitn(4, '|').collect();
-        let ok = match f.as_slice() {
-            ["svc", name, mode] => winrust_common::svc::set_start(name, mode),
-            ["reg", key, value, "-"] => reg::delete_value(&reg::user_path(key), value), // also true when never written (the change itself failed)
-            ["reg", key, value, old] => old.parse().is_ok_and(|d| reg_set(key, value, d)),
-            ["task", name] => run("schtasks.exe", &["/change", "/tn", name, "/enable"]).0 || task_enabled(name).is_none(), // uninstalled with its app meanwhile
-            ["newtask", name] => run("schtasks.exe", &["/delete", "/tn", name, "/f"]).0 || task_enabled(name).is_none(),
-            ["mpx", "path", p] => ps(&format!("Remove-MpPreference -ErrorAction Stop -ExclusionPath {}", psq(p))).0,
-            ["mpx", "proc", p] => ps(&format!("Remove-MpPreference -ErrorAction Stop -ExclusionProcess {}", psq(p))).0,
-            ["hosts", "block"] => {
-                let p = hosts_path();
-                let ok = fs::read_to_string(&p).is_ok_and(|t| fs::write(&p, strip_block(&t)).is_ok());
-                let _ = run("ipconfig.exe", &["/flushdns"]);
-                ok
-            }
-            _ => continue,
-        };
+    // The first entry for each item holds the original value, so play later entries back first.
+    for (line, entry) in entries.into_iter().rev() {
+        let ok = restore(entry);
         failed += !ok as u32;
         println!("{}", tf!("{0}  {1}", "{0}  {1}", ja: "{0}  {1}", pt: "{0}  {1}", zh: "{0}  {1}", restored(ok), line));
     }
     if failed > 0 {
         return Err(tf!("{failed} элемент(ов) не восстановлено; файл отмены сохранён в {}", "{failed} item(s) not restored; the undo file is kept at {}", ja: "{failed} 件を元に戻せませんでした。元に戻すファイルは {} に残っています", pt: "{failed} item(ns) não restaurado(s); o arquivo de desfazer foi mantido em {}", zh: "{failed} 项未能恢复；撤销文件保留在 {}", path.display()));
     }
-    fs::remove_file(&path).map_err(|e| e.to_string())?;
+    fs::remove_file(path).map_err(|e| e.to_string())?;
     println!("{}", t!("\nВсё восстановлено (службы снова запустятся после перезагрузки или вручную).", "\nRestored (services start again after a reboot or by hand).", ja: "\n復元しました (サービスは再起動後、または手動で再び開始されます)。", pt: "\nRestaurado (os serviços voltam a iniciar após reiniciar ou manualmente).", zh: "\n已恢复（服务会在重启后或手动启动时重新运行）。"));
     Ok(())
+}
+
+fn undo(g: Group) -> Result<(), String> {
+    let path = undo_path(g);
+    undo_journal(&path, fs::read_to_string(&path), restore_entry)
 }
 
 fn main() {
@@ -643,6 +757,99 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_treats_only_a_missing_journal_as_success() {
+        let path = Path::new("undo.txt");
+        let absent = Err(io::ErrorKind::NotFound.into());
+        assert!(undo_journal(path, absent, |_| panic!("unexpected restore")).is_ok());
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::InvalidData] {
+            let error = Err(kind.into());
+            assert!(undo_journal(path, error, |_| panic!("unexpected restore")).is_err());
+        }
+    }
+
+    #[test]
+    fn undo_leaves_journal_intact_until_a_retry_succeeds() {
+        let dir = env::temp_dir().join(format!(
+            "winrust-debloat-undo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("undo.txt");
+        for invalid in [
+            "svc|DiagTrack|auto\nunknown|record\nhosts|block\n",
+            "svc|DiagTrack|auto\nreg|HKLM\\Example|Value|invalid\n",
+            "svc|DiagTrack|auto\nreg|HKLM\\Example|Value|1",
+        ] {
+            fs::write(&path, invalid).unwrap();
+            assert!(undo_journal(&path, fs::read_to_string(&path), |_| panic!("unexpected restore")).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+
+        let journal = "svc|DiagTrack|auto\r\nsvc|DiagTrack|demand\r\n";
+        fs::write(&path, journal).unwrap();
+        assert!(undo_journal(&path, fs::read_to_string(&path), |_| false).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), journal);
+
+        let mut modes = Vec::new();
+        undo_journal(&path, fs::read_to_string(&path), |entry| {
+            let UndoEntry::Service { mode, .. } = entry else { panic!("unexpected entry") };
+            modes.push(mode.to_owned());
+            true
+        }).unwrap();
+        assert_eq!(modes, ["demand", "auto"]);
+        assert!(!path.exists());
+        fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn defender_undo_can_retry_after_only_one_exclusion_was_removed() {
+        let mut present = [true, true];
+        let mut restore = |index: usize, interrupted: bool| {
+            let (kind, value) = [("Path", r"C:\Build"), ("Process", "build.exe")][index];
+            restore_defender_exclusion(kind, value, |script| {
+                if script.starts_with("Remove-MpPreference") {
+                    let removed = present[index] && !interrupted;
+                    if removed {
+                        present[index] = false;
+                    }
+                    (removed, String::new())
+                } else {
+                    assert!(script.starts_with("$p=Get-MpPreference -ErrorAction Stop;"));
+                    assert!(script.contains("HideExclusionsFromLocalAdmins") && script.contains("$visibility.Value -eq 0"));
+                    assert!(script.contains(&format!(".Exclusion{kind} -notcontains {}", psq(value))));
+                    (true, if present[index] { "" } else { "absent\r\n" }.into())
+                }
+            })
+        };
+
+        assert!(restore(0, false));
+        assert!(!restore(1, true));
+        assert!(restore(0, false));
+        assert!(restore(1, false));
+        assert_eq!(present, [false, false]);
+    }
+
+    #[test]
+    fn defender_undo_does_not_accept_absence_from_a_failed_query() {
+        assert!(!restore_defender_exclusion("Path", r"C:\Build", |script| {
+            let output = if script.starts_with("Remove-MpPreference") { "" } else { "absent\r\n" };
+            (false, output.into())
+        }));
+    }
+
+    #[test]
+    fn undo_task_only_accepts_explicitly_confirmed_absence() {
+        let task = r"\Vendor\Update";
+        assert!(task_is_missing(task, |script| {
+            assert!(script.contains(r"GetFolder('\Vendor').GetTask('Update')"));
+            (true, "absent\r\n".into())
+        }));
+        assert!(!task_is_missing(task, |_| (true, String::new())));
+        assert!(!task_is_missing(task, |_| (false, "absent".into())));
+    }
 
     #[test]
     fn reads_values_and_start_modes_natively() {
