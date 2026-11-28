@@ -1,5 +1,6 @@
 //! Тонкие обёртки над Win32: службы, приоритет/ядра/suspend, запуск от администратора, системный диспетчер задач.
-use std::{collections::HashMap, ptr::null_mut};
+use std::{collections::HashMap, mem::size_of, ptr::null_mut};
+use winapi::shared::windef::HWND;
 use winapi::um::{
     errhandlingapi::GetLastError,
     handleapi::CloseHandle,
@@ -344,6 +345,14 @@ mod tests {
     }
 
     #[test]
+    fn run_task_starts_a_command_and_rejects_empty() {
+        // «Запустить новую задачу»: пустая строка — ничего, обычная команда — создаётся
+        assert!(!run_task("   "));
+        let cmd = std::env::var("ComSpec").unwrap();
+        assert!(run_task(&format!("\"{cmd}\" /c exit 3")));
+    }
+
+    #[test]
     fn debug_spawn_is_released_and_runs_to_its_end() {
         use winapi::um::{processthreadsapi::GetExitCodeProcess, synchapi::WaitForSingleObject};
         let cmd = std::env::var("ComSpec").unwrap();
@@ -456,8 +465,65 @@ pub fn hung_windows() -> Vec<(u32, String)> {
     v
 }
 
-// ---------- запуск с обычными правами ----------
+// ---------- запуск задачи из «Запустить новую задачу» ----------
 
+/// Диалог выбора файла (тот же, что у кнопки «Обзор…» в «Выполнить»). None — отменили.
+pub fn pick_file(owner: HWND, initial: &str) -> Option<String> {
+    use winapi::um::commdlg::{GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+    let mut buf = [0u16; 1024];
+    let start: Vec<u16> = initial.trim().trim_matches('"').encode_utf16().take(1023).collect();
+    buf[..start.len()].copy_from_slice(&start);
+    let filter: Vec<u16> = format!(
+        "{}\0*.exe;*.bat;*.cmd;*.com;*.lnk\0{}\0*.*\0",
+        t!("Программы", "Programs", ja: "プログラム", pt: "Programas", zh: "程序"),
+        t!("Все файлы", "All files", ja: "すべてのファイル", pt: "Todos os arquivos", zh: "所有文件")
+    )
+    .encode_utf16()
+    .chain(Some(0))
+    .collect();
+    let title = wide(t!("Обзор", "Browse", ja: "参照", pt: "Procurar", zh: "浏览"));
+    let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    ofn.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = filter.as_ptr();
+    ofn.lpstrFile = buf.as_mut_ptr();
+    ofn.nMaxFile = buf.len() as u32;
+    ofn.lpstrTitle = title.as_ptr();
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
+    if unsafe { GetOpenFileNameW(&mut ofn) } == 0 {
+        return None;
+    }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(0);
+    (n > 0).then(|| String::from_utf16_lossy(&buf[..n]))
+}
+
+/// Запускает команду так, как её ввели: сначала целой командной строкой (аргументы сохраняются),
+/// при неудаче — через ShellExecute (URL, документы, ассоциации, переменные окружения).
+/// Окно «Выполнить» самого проводника здесь не используется: оно живёт в отдельном COM-процессе
+/// explorer.exe, который после закрытия диалога висит ещё десятки секунд (своё время жизни COM-сервера).
+pub fn run_task(cmd: &str) -> bool {
+    use winapi::um::processthreadsapi::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return false;
+    }
+    unsafe {
+        let mut si: STARTUPINFOW = std::mem::zeroed();
+        si.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        let mut line = wide(cmd);
+        let ok = CreateProcessW(std::ptr::null(), line.as_mut_ptr(), null_mut(), null_mut(), 0, 0, null_mut(), null_mut(), &mut si, &mut pi) != 0;
+        if ok {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            return true;
+        }
+        let (op, file) = (wide("open"), wide(cmd));
+        winapi::um::shellapi::ShellExecuteW(null_mut(), op.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) as usize > 32
+    }
+}
+
+// ---------- запуск с обычными правами ----------
 /// Запускает `cmdline` с токеном процесса-донора из нашего сеанса (sihost.exe: есть всегда и работает без повышения).
 /// Иначе программа, закрытая профилем и запущенная обратно отсюда, унаследовала бы права администратора.
 pub fn run_unelevated(donors: &[u32], cmdline: &str) -> bool {

@@ -34,6 +34,11 @@ pub enum Hit {
     Header(usize),
     /// Граница колонки i (между i-1 и i) — тянется мышью.
     ColResize(usize),
+    /// Кнопки окна «Запустить новую задачу».
+    RunOk,
+    RunCancel,
+    RunBrowse,
+    RunPanel,
     Row(usize),
     Chevron(usize),
     VBar,
@@ -60,6 +65,13 @@ pub struct Lay {
     pub perf_items: Vec<R>,
     pub perf_main: R,
     pub setting_cards: Vec<(R, SettingId)>,
+    /// Окно «Запустить новую задачу»: панель, поле ввода (настоящий контрол поверх), кнопки.
+    pub run_panel: R,
+    pub run_label: R,
+    pub run_input: R,
+    pub run_ok: R,
+    pub run_cancel: R,
+    pub run_browse: R,
 }
 
 pub struct Ui {
@@ -82,6 +94,8 @@ pub struct Ui {
     pub last_click: Option<(Instant, String)>,
     /// Перетаскивание границы колонки: (граница i, x нажатия, ширина колонки i-1 в начале).
     pub col_drag: Option<(usize, i32, f64)>,
+    /// Открыто ли окно «Запустить новую задачу» (текст живёт в настоящем поле ввода).
+    pub run: bool,
 }
 
 impl Ui {
@@ -139,6 +153,8 @@ pub enum MI {
 pub struct App {
     pub win: nwg::Window,
     pub search: nwg::TextInput,
+    /// Поле ввода окна «Запустить новую задачу»: настоящий контрол, виден только пока окно открыто.
+    pub run_input: nwg::TextInput,
     #[allow(dead_code, deprecated)] // owned only to stay alive: dropping it stops the 1 s refresh
     pub timer: nwg::Timer,
     pub tray: nwg::TrayNotification,
@@ -152,6 +168,7 @@ pub struct App {
     pub scale: f64,
     pub edit_brush: Cell<isize>,
     pub search_rect: Cell<R>,
+    pub run_rect: Cell<R>,
     pub last_tick: Cell<Instant>,
 }
 
@@ -230,6 +247,12 @@ impl App {
             perf_items: vec![],
             perf_main: R::new(0, 0, 0, 0),
             setting_cards: vec![],
+            run_panel: R::new(0, 0, 0, 0),
+            run_label: R::new(0, 0, 0, 0),
+            run_input: R::new(0, 0, 0, 0),
+            run_ok: R::new(0, 0, 0, 0),
+            run_cancel: R::new(0, 0, 0, 0),
+            run_browse: R::new(0, 0, 0, 0),
         };
         if ui.has_table() {
             let cols = columns(ui.page);
@@ -261,6 +284,22 @@ impl App {
                 lay.setting_cards = ids.iter().enumerate().map(|(i, id)| (R::new(body.l + px(24.0), body.t + px(16.0) + i as i32 * px(76.0), body.l + px(24.0) + cw, body.t + px(16.0) + i as i32 * px(76.0) + px(66.0)), *id)).collect();
             }
             _ => {}
+        }
+        // окно «Запустить новую задачу» — по центру рабочей области
+        if ui.run {
+            let w = px(560.0).min(body.w() - px(40.0));
+            let h = px(196.0);
+            let x = body.l + (body.w() - w) / 2;
+            let y = body.t + ((body.h() - h) / 2 - px(56.0)).max(px(16.0));
+            lay.run_panel = R::new(x, y, x + w, y + h);
+            lay.run_label = R::new(x + px(24.0), y + px(56.0), x + px(24.0) + px(58.0), y + px(56.0) + px(30.0));
+            lay.run_input = R::new(x + px(24.0) + px(66.0), y + px(56.0), x + w - px(24.0), y + px(56.0) + px(30.0));
+            // кнопки справа налево: «Обзор…», «Отмена», «ОК» (как в «Выполнить»)
+            let bw = px(96.0);
+            let (bt, bb) = (y + h - px(26.0) - px(30.0), y + h - px(26.0));
+            lay.run_browse = R::new(x + w - px(24.0) - bw, bt, x + w - px(24.0), bb);
+            lay.run_cancel = R::new(lay.run_browse.l - px(12.0) - bw, bt, lay.run_browse.l - px(12.0), bb);
+            lay.run_ok = R::new(lay.run_cancel.l - px(12.0) - bw, bt, lay.run_cancel.l - px(12.0), bb);
         }
         lay
     }
@@ -307,6 +346,7 @@ impl App {
                 self.draw_band(&g, &ui, &d, &lay);
                 self.draw_nav(&g, &ui, &lay);
                 self.draw_overlay(&g, &ui, lay.client);
+                self.draw_run_dialog(&g, &ui, &lay);
                 winapi::um::wingdi::BitBlt(hdc, 0, 0, w, h, mem, 0, 0, winapi::um::wingdi::SRCCOPY);
                 winapi::um::wingdi::SelectObject(mem, old);
                 winapi::um::wingdi::DeleteObject(bmp as *mut _);
@@ -321,6 +361,7 @@ impl App {
                         t += &format!("nav{i}={},{},{},{}\n", r.l, r.t, r.r, r.b);
                     }
                     t += &format!("toggle={},{},{},{}\ncols={:?}\n", lay.nav_toggle.l, lay.nav_toggle.t, lay.nav_toggle.r, lay.nav_toggle.b, lay.col_x);
+                    t += &format!("run={},{},{},{}\nrunok={},{},{},{}\n", lay.run_panel.l, lay.run_panel.t, lay.run_panel.r, lay.run_panel.b, lay.run_ok.l, lay.run_ok.t, lay.run_ok.r, lay.run_ok.b);
                     let _ = std::fs::write(path, t);
                 }
                 ui.lay = Some(lay);
@@ -329,13 +370,14 @@ impl App {
         }
         drop(ui);
         self.place_search();
+        self.place_run_input();
     }
 
     /// Ставит поле поиска в шапку (оно настоящее, а рамка вокруг нарисована).
     pub fn place_search(&self) {
         let ui = self.ui.borrow();
         let Some(lay) = &ui.lay else { return };
-        let show = ui.page_has_search();
+        let show = ui.page_has_search() && !ui.run; // окно «Запустить новую задачу» убирает поиск
         let s = self.scale;
         let r = lay.search;
         if self.search_rect.get() != r || self.search.visible() != show {
@@ -353,9 +395,92 @@ impl App {
         }
     }
 
+    // ================= окно «Запустить новую задачу» =================
+
+    /// Открывает своё окно ввода вместо диалога «Выполнить» проводника: тот живёт в отдельном
+    /// COM-процессе explorer.exe и висит ещё десятки секунд после закрытия.
+    pub fn open_run_dialog(&self) {
+        self.search.set_visible(false);
+        {
+            let mut ui = self.ui.borrow_mut();
+            ui.run = true;
+            ui.tip = None;
+        }
+        self.run_input.set_text("");
+        self.invalidate();
+        self.place_run_input();
+        self.run_input.set_focus();
+    }
+
+    pub fn close_run_dialog(&self) {
+        if !self.ui.borrow().run {
+            return;
+        }
+        self.ui.borrow_mut().run = false;
+        self.run_input.set_visible(false);
+        // фокус возвращаем окну: иначе он остаётся на скрытом поле ввода
+        if let Some(h) = self.win.handle.hwnd() {
+            unsafe { SetFocus(h) };
+        }
+        self.invalidate();
+    }
+
+    /// «Обзор…»: обычный диалог открытия файла, путь подставляется в поле ввода.
+    fn browse_file(&self) {
+        let Some(path) = self.win.handle.hwnd().and_then(|h| sys::pick_file(h, &self.run_input.text())) else { return };
+        // путь с пробелами — в кавычках, как это делает «Выполнить»
+        let text = if path.contains(' ') { format!("\"{path}\"") } else { path };
+        self.run_input.set_text(&text);
+        self.run_input.set_focus();
+    }
+
+    pub fn run_command(&self) {
+        if !self.ui.borrow().run {
+            return;
+        }
+        let cmd = self.run_input.text();
+        self.close_run_dialog();
+        if cmd.trim().is_empty() {
+            return;
+        }
+        if !sys::run_task(&cmd) {
+            self.toast(&tf!("Не удалось запустить: {cmd}", "Could not start: {cmd}", ja: "起動できませんでした: {cmd}", pt: "Não foi possível iniciar: {cmd}", zh: "无法启动：{cmd}"));
+        }
+    }
+
+    /// Ставит поле ввода поверх нарисованной рамки (как `place_search` для панели поиска).
+    pub fn place_run_input(&self) {
+        let ui = self.ui.borrow();
+        let Some(lay) = &ui.lay else { return };
+        let show = ui.run;
+        let s = self.scale;
+        let r = lay.run_input;
+        if self.run_rect.get() != r || self.run_input.visible() != show {
+            self.run_rect.set(r);
+            let lg = |v: i32| (v as f64 / s).round() as i32;
+            self.run_input.set_position(lg(r.l) + 2, lg(r.t) + 4);
+            self.run_input.set_size((lg(r.w()) - 4).max(40) as u32, 22);
+            self.run_input.set_visible(show);
+        }
+    }
+
     // ================= проверка попаданий =================
     fn hit_test(&self, ui: &Ui, x: i32, y: i32) -> Hit {
         let Some(lay) = &ui.lay else { return Hit::None };
+        // открытое окно «Запустить новую задачу» забирает ввод целиком
+        if ui.run {
+            return if lay.run_ok.contains(x, y) {
+                Hit::RunOk
+            } else if lay.run_cancel.contains(x, y) {
+                Hit::RunCancel
+            } else if lay.run_browse.contains(x, y) {
+                Hit::RunBrowse
+            } else if lay.run_panel.contains(x, y) || lay.run_input.contains(x, y) {
+                Hit::RunPanel
+            } else {
+                Hit::RunCancel // клик мимо панели закрывает, как у модального окна
+            };
+        }
         if lay.nav_toggle.contains(x, y) {
             return Hit::NavToggle;
         }
@@ -518,6 +643,10 @@ impl App {
             self.hit_test(&ui, x, y)
         };
         match hit {
+            Hit::RunOk => self.run_command(),
+            Hit::RunCancel => self.close_run_dialog(),
+            Hit::RunBrowse => self.browse_file(),
+            Hit::RunPanel => self.run_input.set_focus(), // клик по панели не должен отбирать ввод у поля
             Hit::NavToggle => {
                 let mut ui = self.ui.borrow_mut();
                 ui.nav_open = !ui.nav_open;
@@ -961,8 +1090,9 @@ impl App {
             }
             Act::Go(p) => return self.go_page(p),
             Act::RunTask => {
-                // стандартное окно «Выполнить»
-                let _ = std::process::Command::new("explorer.exe").arg("shell:::{2559a1f3-21d7-11d4-bdaf-00c04f60b9f0}").spawn();
+                // своё окно ввода: «Выполнить» проводника тянет за собой процесс explorer.exe,
+                // который после закрытия диалога живёт ещё десятки секунд (время жизни COM-сервера)
+                self.open_run_dialog();
                 return;
             }
             Act::SetTheme(t) => {

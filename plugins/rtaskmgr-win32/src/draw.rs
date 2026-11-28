@@ -409,6 +409,39 @@ impl App {
     }
 
     // ---------------- подсказка и уведомление ----------------
+    // ---------------- окно «Запустить новую задачу» ----------------
+    pub fn draw_run_dialog(&self, g: &G, ui: &Ui, lay: &Lay) {
+        if !ui.run {
+            return;
+        }
+        let th = g.th;
+        let p = lay.run_panel;
+        // затемняем рабочую область: окно читается как модальное
+        g.fill(lay.body, th.bg.lerp(Rgb(0, 0, 0), if th.dark { 0.45 } else { 0.10 }));
+        g.round(p, g.px(8.0), Some(th.panel), Some(th.dim.lerp(th.bg, 0.25)));
+        g.text(R::new(p.l + g.px(24.0), p.t + g.px(16.0), p.r - g.px(24.0), p.t + g.px(42.0)), t!("Запустить новую задачу", "Run new task", ja: "新しいタスクの実行", pt: "Executar nova tarefa", zh: "运行新任务"), Font::Semibold, th.text);
+        g.text_right(lay.run_label, t!("Открыть:", "Open:", ja: "開く:", pt: "Abrir:", zh: "打开:"), Font::Ui, th.text);
+        // рамка поля ввода: сам контрол лежит поверх неё (place_run_input)
+        g.round(lay.run_input, g.px(5.0), Some(th.bg), Some(th.border));
+        let hint = R::new(lay.run_input.l, lay.run_input.b + g.px(6.0), p.r - g.px(24.0), lay.run_input.b + g.px(28.0));
+        g.text(hint, t!("Имя программы, папки, документа или веб-адреса", "A program, folder, document or web address", ja: "プログラム、フォルダー、ドキュメント、または Web アドレス", pt: "Um programa, pasta, documento ou endereço web", zh: "程序、文件夹、文档或网址"), Font::Small, th.dim);
+        let buttons = [
+            (lay.run_ok, t!("ОК", "OK", ja: "OK", pt: "OK", zh: "确定"), Hit::RunOk, true),
+            (lay.run_cancel, t!("Отмена", "Cancel", ja: "キャンセル", pt: "Cancelar", zh: "取消"), Hit::RunCancel, false),
+            (lay.run_browse, t!("Обзор…", "Browse…", ja: "参照…", pt: "Procurar…", zh: "浏览…"), Hit::RunBrowse, false),
+        ];
+        for (r, label, hit, primary) in buttons {
+            let hov = ui.hit == hit;
+            if primary {
+                g.round(r, g.px(5.0), Some(th.accent.lerp(if th.dark { Rgb(255, 255, 255) } else { Rgb(0, 0, 0) }, if hov { 0.18 } else { 0.0 })), None);
+                g.text_center(r, label, Font::Ui, if th.dark { Rgb(0, 0, 0) } else { Rgb(255, 255, 255) });
+            } else {
+                g.round(r, g.px(5.0), Some(if hov { th.hover } else { th.panel }), Some(th.border));
+                g.text_center(r, label, Font::Ui, th.text);
+            }
+        }
+    }
+
     pub fn draw_overlay(&self, g: &G, ui: &Ui, client: R) {
         let th = g.th;
         if let Some((text, (mx, my))) = &ui.tip {

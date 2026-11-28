@@ -168,6 +168,16 @@ fn main() {
         .size((300, 20))
         .build(&mut search)
         .unwrap();
+    // поле ввода окна «Запустить новую задачу»: контрол создаётся сразу, показывается по требованию
+    let mut run_input = nwg::TextInput::default();
+    nwg::TextInput::builder()
+        .parent(&win)
+        .placeholder_text(Some(t!("например, notepad.exe", "e.g. notepad.exe", ja: "例: notepad.exe", pt: "por exemplo, notepad.exe", zh: "例如 notepad.exe")))
+        .flags(nwg::TextInputFlags::TAB_STOP)
+        .position((0, 0))
+        .size((200, 22))
+        .build(&mut run_input)
+        .unwrap();
     #[allow(deprecated)] // the plain WM_TIMER is all a 1-second refresh needs; AnimationTimer runs its own thread
     let mut timer = nwg::Timer::default();
     #[allow(deprecated)]
@@ -194,10 +204,12 @@ fn main() {
         lay: None,
         last_click: None,
         col_drag: None,
+        run: false,
     };
     let app = Rc::new(App {
         win,
         search,
+        run_input,
         timer,
         tray,
         tray_icon,
@@ -208,6 +220,7 @@ fn main() {
         scale,
         edit_brush: Cell::new(0),
         search_rect: Cell::new(R::new(0, 0, 0, 0)),
+        run_rect: Cell::new(R::new(0, 0, 0, 0)),
         last_tick: Cell::new(Instant::now()),
     });
     app.apply_theme();
@@ -344,5 +357,25 @@ fn main() {
             _ => {}
         }
     });
+
+    // Enter — запустить, Esc — закрыть: клавиши приходят в поле ввода, до окна они не доходят
+    let a = app.clone();
+    let _run_keys = nwg::bind_raw_event_handler(&app.run_input.handle, 0x10001, move |_hwnd, msg, w, _l| -> Option<isize> {
+        if msg != WM_KEYDOWN {
+            return None;
+        }
+        match w as u32 {
+            13 => {
+                a.run_command();
+                Some(0)
+            }
+            27 => {
+                a.close_run_dialog();
+                Some(0)
+            }
+            _ => None,
+        }
+    })
+    .unwrap();
     nwg::dispatch_thread_events();
 }
